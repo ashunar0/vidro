@@ -8,6 +8,9 @@
     "build": "tsc && vp build",
     "preview": "vp preview"
   },
+  "dependencies": {
+    "@vidro/core": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "~6.0.2",
     "vite": "catalog:",
