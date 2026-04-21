@@ -1,0 +1,70 @@
+import { setCurrentObserver, type Observer, type ObserverSource } from "./observer";
+
+type CleanupFn = () => void;
+type EffectFn = () => void | CleanupFn;
+
+/** Signal 変更に追従して副作用を実行する reactive primitive。生成時に即実行、依存変更で同期再実行する。 */
+export class Effect implements Observer {
+  #fn: EffectFn;
+  #sources = new Set<ObserverSource>();
+  #cleanup: CleanupFn | null = null;
+  #disposed = false;
+  #running = false;
+
+  constructor(fn: EffectFn) {
+    this.#fn = fn;
+    this.#run();
+  }
+
+  /** Signal からの通知を受け取り、再実行する。#running は再入ガード (run 中に自分宛ての notify が来ても無視する)。 */
+  notify(): void {
+    if (this.#disposed || this.#running) return;
+    this.#run();
+  }
+
+  /** Signal の getter から呼ばれ、自分が依存した source を記録する。 */
+  addSource(source: ObserverSource): void {
+    this.#sources.add(source);
+  }
+
+  /** 全依存から自分を外し、cleanup を呼んで以降の再実行を止める。 */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#clearSources();
+    this.#runCleanup();
+  }
+
+  // 本体の実行。前回の cleanup と依存を掃除してから fn を新しい依存追跡で走らせる。
+  #run(): void {
+    this.#running = true;
+    this.#runCleanup();
+    this.#clearSources();
+
+    const prev = setCurrentObserver(this);
+    try {
+      const result = this.#fn();
+      if (typeof result === "function") this.#cleanup = result;
+    } finally {
+      setCurrentObserver(prev);
+      this.#running = false;
+    }
+  }
+
+  #runCleanup(): void {
+    if (this.#cleanup === null) return;
+    const cleanup = this.#cleanup;
+    this.#cleanup = null;
+    cleanup();
+  }
+
+  #clearSources(): void {
+    for (const source of this.#sources) source.removeObserver(this);
+    this.#sources.clear();
+  }
+}
+
+/** factory 形式の生成 API。中身は new Effect と等価。 */
+export function effect(fn: EffectFn): Effect {
+  return new Effect(fn);
+}

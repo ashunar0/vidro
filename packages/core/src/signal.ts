@@ -1,7 +1,7 @@
-import { getCurrentObserver, type Observer } from "./observer";
+import { getCurrentObserver, type Observer, type ObserverSource } from "./observer";
 
 /** 値を 1 つ保持し、変更時に購読者へ通知する reactive primitive。 */
-export class Signal<T> {
+export class Signal<T> implements ObserverSource {
   #value: T;
   #observers = new Set<Observer>();
   #subscribers = new Set<(value: T) => void>();
@@ -13,7 +13,10 @@ export class Signal<T> {
   /** 読み取り。Effect 実行中なら自動で依存として記録する。 */
   get value(): T {
     const observer = getCurrentObserver();
-    if (observer !== null) this.#observers.add(observer);
+    if (observer !== null) {
+      this.#observers.add(observer);
+      observer.addSource(this);
+    }
     return this.#value;
   }
 
@@ -22,8 +25,11 @@ export class Signal<T> {
     // Object.is: NaN→NaN を等価扱いするため === ではなくこれを使う
     if (Object.is(this.#value, next)) return;
     this.#value = next;
-    for (const observer of this.#observers) observer.notify();
-    for (const subscriber of this.#subscribers) subscriber(next);
+    // 通知中に Observer が #observers を変更する (Effect が再登録する) ため、snapshot を取って iterate する
+    // eslint-disable-next-line unicorn/no-useless-spread
+    for (const observer of [...this.#observers]) observer.notify();
+    // eslint-disable-next-line unicorn/no-useless-spread
+    for (const subscriber of [...this.#subscribers]) subscriber(next);
   }
 
   /** 自動 subscribe を経由せず現在値だけ返す。 */
@@ -37,6 +43,11 @@ export class Signal<T> {
     return () => {
       this.#subscribers.delete(fn);
     };
+  }
+
+  /** Observer を依存から外す。Effect の再実行 / dispose で使う internal API。 */
+  removeObserver(observer: Observer): void {
+    this.#observers.delete(observer);
   }
 }
 

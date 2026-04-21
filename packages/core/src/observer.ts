@@ -1,6 +1,13 @@
 /** Effect が実装する通知受け手の契約。 */
 export interface Observer {
   notify(): void;
+  /** Signal の getter から呼ばれ、自分が依存した source を記録する。 */
+  addSource(source: ObserverSource): void;
+}
+
+/** Observer に観測される側の契約。Signal が実装する。 */
+export interface ObserverSource {
+  removeObserver(observer: Observer): void;
 }
 
 // 現在実行中の Observer。Signal の getter はここを覗いて依存関係を記録する。
