@@ -1,4 +1,4 @@
-import { Signal } from "@vidro/core";
+import { Signal, Show } from "@vidro/core";
 
 // JSX 経由のカウンター。Signal を children に渡すと @vidro/core 側が Effect で textNode を
 // 自動更新する (B 書き)。onClick 内で count.value++ すると即座に DOM に反映される。
@@ -18,6 +18,9 @@ export function App() {
           +
         </button>
       </div>
+      <Show when={() => count.value >= 3} fallback={<p class="hint">3 以上で褒めます</p>}>
+        <p class="cheer">Well done!</p>
+      </Show>
       <button
         type="button"
         class="reset"
