@@ -94,8 +94,14 @@ export function For<T>(props: ForProps<T>): Node {
 }
 
 // each の 3 形式を一本化。Effect 内で呼ばれるので Signal / 関数なら依存追跡に乗る。
+// A 方式 transform で `{signal}` が `() => signal` に包まれた場合、関数の返り値が
+// Signal instance になるので unwrap する。
 function readEach<T>(each: Signal<T[]> | (() => T[]) | T[]): T[] {
   if (each instanceof Signal) return each.value;
-  if (typeof each === "function") return (each as () => T[])();
+  if (typeof each === "function") {
+    const result = (each as () => T[])();
+    if (result instanceof Signal) return result.value as T[];
+    return result;
+  }
   return each;
 }

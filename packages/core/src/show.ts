@@ -53,9 +53,14 @@ export function Show<T>(props: ShowProps<T>): Node {
 }
 
 // when の 3 形式 (Signal / 関数 / プレーン値) を一本化して読む。Effect 内で呼ばれるので
-// Signal.value と function() はどちらも依存追跡に乗る。
+// Signal.value と function() はどちらも依存追跡に乗る。A 方式 transform で `{signal}` が
+// `() => signal` に包まれた場合、関数呼び出しの返り値が Signal instance になるので unwrap。
 function readWhen<T>(when: Signal<T> | (() => T) | T): T {
   if (when instanceof Signal) return when.value;
-  if (typeof when === "function") return (when as () => T)();
+  if (typeof when === "function") {
+    const result = (when as () => T)();
+    if (result instanceof Signal) return result.value as T;
+    return result;
+  }
   return when;
 }

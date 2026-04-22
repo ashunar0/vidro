@@ -26,7 +26,7 @@ export function Counter() {
         <Button variant="icon" onClick={handleDecrement}>
           -
         </Button>
-        <span class="text-5xl font-semibold tabular-nums min-w-20">{count}</span>
+        <span class="text-5xl font-semibold tabular-nums min-w-20">{count.value}</span>
         <Button variant="icon" onClick={handleIncrement}>
           +
         </Button>

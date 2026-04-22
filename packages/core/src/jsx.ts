@@ -85,11 +85,15 @@ function appendChild(parent: Node, child: unknown): void {
   }
 
   if (typeof child === "function") {
-    // A 方式 compile transform の結果 (`{expr}` → `() => expr`) を受ける
+    // A 方式 compile transform の結果 (`{expr}` → `() => expr`) を受ける。
+    // `{signal}` が transform されたケースでは関数呼び出しの返り値が Signal instance に
+    // なるので、そこでもう一段 .value を読んで unwrap する (forward-compat)。
     const text = document.createTextNode("");
     parent.appendChild(text);
     new Effect(() => {
-      text.data = toText((child as () => unknown)());
+      let v = (child as () => unknown)();
+      if (v instanceof Signal) v = v.value;
+      text.data = toText(v);
     });
     return;
   }
@@ -131,7 +135,9 @@ function applyProp(el: Element, key: string, value: unknown): void {
 
   if (typeof value === "function") {
     new Effect(() => {
-      apply(el, key, (value as () => unknown)());
+      let v = (value as () => unknown)();
+      if (v instanceof Signal) v = v.value;
+      apply(el, key, v);
     });
     return;
   }
