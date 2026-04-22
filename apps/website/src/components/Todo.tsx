@@ -1,4 +1,4 @@
-import { Signal, For } from "@vidro/core";
+import { Signal, For, Computed } from "@vidro/core";
 import { Button } from "./Button";
 
 type Item = { id: string; label: string };
@@ -10,6 +10,9 @@ export function Todo() {
     { id: crypto.randomUUID(), label: "Cherry" },
   ]);
   const draft = new Signal("");
+  // items.length の派生値。For の reconcile と同じ依存 (items) を共有するが Computed
+  // が memoize してるので表示用の読み取りは安く済む。
+  const itemCount = new Computed(() => items.value.length);
 
   const handleAddItem = () => {
     const label = draft.value.trim();
@@ -26,7 +29,7 @@ export function Todo() {
     <section class="text-center">
       <h2 class="text-2xl font-semibold mb-2 tracking-tight">todo list</h2>
       <p class="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
-        For primitive で配列を reactive にレンダリング
+        For primitive で配列を reactive にレンダリング ({itemCount.value} 件)
       </p>
       <div class="flex gap-2 justify-center mb-4">
         <input

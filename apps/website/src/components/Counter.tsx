@@ -1,8 +1,9 @@
-import { Signal } from "@vidro/core";
+import { Signal, Computed } from "@vidro/core";
 import { Button } from "./Button";
 
 export function Counter() {
   const count = new Signal(0);
+  const doubled = new Computed(() => count.value * 2);
 
   const handleDecrement = () => {
     count.value--;
@@ -31,6 +32,9 @@ export function Counter() {
           +
         </Button>
       </div>
+      <p class="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
+        doubled: <span class="tabular-nums">{doubled.value}</span>
+      </p>
       <Button variant="muted" onClick={handleReset}>
         reset
       </Button>
