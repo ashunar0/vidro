@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vite-plus/test";
 import { Signal } from "../src/signal";
 import { Effect, effect } from "../src/effect";
 import { untrack } from "../src/observer";
+import { Owner } from "../src/owner";
 
 describe("Effect", () => {
   describe("両形式", () => {
@@ -191,6 +192,93 @@ describe("Effect", () => {
       // b は inner の依存なので outer は反応しない
       b.value = 1;
       expect(outer).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("Owner との統合", () => {
+    test("Owner.run 内で作った Effect は Owner.dispose で dispose される", () => {
+      const owner = new Owner(null);
+      const count = new Signal(0);
+      const fn = vi.fn(() => {
+        void count.value;
+      });
+      owner.run(() => new Effect(fn));
+      expect(fn).toHaveBeenCalledTimes(1);
+
+      owner.dispose();
+      count.value = 1;
+      expect(fn).toHaveBeenCalledTimes(1); // owner dispose 済みなので再実行されない
+    });
+
+    test("Owner.dispose で Effect 内の cleanup も呼ばれる", () => {
+      const owner = new Owner(null);
+      const cleanup = vi.fn();
+      owner.run(() => new Effect(() => cleanup));
+      owner.dispose();
+      expect(cleanup).toHaveBeenCalledTimes(1);
+    });
+
+    test("ネスト Owner: 親 dispose で子 Owner 内の Effect も dispose される", () => {
+      const parent = new Owner(null);
+      const count = new Signal(0);
+      const fn = vi.fn(() => {
+        void count.value;
+      });
+
+      parent.run(() => {
+        const child = new Owner(); // parent が current owner、child の親は parent
+        child.run(() => new Effect(fn));
+      });
+      expect(fn).toHaveBeenCalledTimes(1);
+
+      parent.dispose();
+      count.value = 1;
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    test("Owner 外で作った Effect は Owner.dispose の影響を受けない", () => {
+      const owner = new Owner(null);
+      const count = new Signal(0);
+      const fn = vi.fn(() => {
+        void count.value;
+      });
+      new Effect(fn); // owner.run の外で生成
+      expect(fn).toHaveBeenCalledTimes(1);
+
+      owner.dispose();
+      count.value = 1;
+      expect(fn).toHaveBeenCalledTimes(2); // 独立 Effect なので生きてる
+    });
+
+    test("同じ Owner に複数の Effect を登録、全部 dispose される", () => {
+      const owner = new Owner(null);
+      const a = new Signal(0);
+      const b = new Signal(0);
+      const fnA = vi.fn(() => void a.value);
+      const fnB = vi.fn(() => void b.value);
+
+      owner.run(() => {
+        new Effect(fnA);
+        new Effect(fnB);
+      });
+      expect(fnA).toHaveBeenCalledTimes(1);
+      expect(fnB).toHaveBeenCalledTimes(1);
+
+      owner.dispose();
+      a.value = 1;
+      b.value = 1;
+      expect(fnA).toHaveBeenCalledTimes(1);
+      expect(fnB).toHaveBeenCalledTimes(1);
+    });
+
+    test("Effect を手動 dispose 済みでも Owner.dispose は安全 (idempotent)", () => {
+      const owner = new Owner(null);
+      let eff: Effect | null = null;
+      owner.run(() => {
+        eff = new Effect(() => {});
+      });
+      eff!.dispose();
+      expect(() => owner.dispose()).not.toThrow();
     });
   });
 });

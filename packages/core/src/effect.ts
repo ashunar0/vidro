@@ -1,4 +1,5 @@
 import { setCurrentObserver, type Observer, type ObserverSource } from "./observer";
+import { getCurrentOwner } from "./owner";
 
 type CleanupFn = () => void;
 type EffectFn = () => void | CleanupFn;
@@ -13,6 +14,8 @@ export class Effect implements Observer {
 
   constructor(fn: EffectFn) {
     this.#fn = fn;
+    // 現 Owner (scope) があれば自分を cleanup 対象として登録 — Owner.dispose() で巻き込み解放される
+    getCurrentOwner()?.addCleanup(() => this.dispose());
     this.#run();
   }
 
