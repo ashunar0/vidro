@@ -6,10 +6,9 @@
     "types": ["vite/client"],
     "skipLibCheck": true,
 
-    /* JSX classic runtime (h / Fragment は @vidro/core から import) */
-    "jsx": "react",
-    "jsxFactory": "h",
-    "jsxFragmentFactory": "Fragment",
+    /* JSX automatic runtime (@vidro/core/jsx-runtime から自動 import) */
+    "jsx": "react-jsx",
+    "jsxImportSource": "@vidro/core",
 
     /* Bundler mode */
     "moduleResolution": "bundler",

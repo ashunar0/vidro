@@ -1,5 +1,5 @@
 import "./style.css";
-import { h, mount } from "@vidro/core";
+import { mount } from "@vidro/core";
 import { App } from "./App";
 
 // エントリポイント: #app を見つけて <App /> をマウントする。

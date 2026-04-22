@@ -1,4 +1,4 @@
-import { h, Signal } from "@vidro/core";
+import { Signal } from "@vidro/core";
 
 // JSX 経由のカウンター。Signal を children に渡すと @vidro/core 側が Effect で textNode を
 // 自動更新する (B 書き)。onClick 内で count.value++ すると即座に DOM に反映される。
