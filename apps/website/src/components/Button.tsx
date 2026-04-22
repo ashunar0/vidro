@@ -4,6 +4,8 @@ type ButtonProps = {
   onClick?: (e: MouseEvent) => void;
   "aria-label"?: string;
   variant?: Variant;
+  // 関数で渡すと h 側が Effect で追従する (active 状態を reactive に変えたい時用)
+  active?: () => boolean;
   children?: unknown;
 };
 
@@ -18,12 +20,19 @@ const VARIANTS: Record<Variant, string> = {
   "icon-sm": "px-2.5 py-1 text-sm",
 };
 
+const ACTIVE = "border-indigo-500 dark:border-indigo-400 text-indigo-500 dark:text-indigo-400";
+
 export function Button(props: ButtonProps) {
   const variant = props.variant ?? "default";
+  const baseClass = `${BASE} ${VARIANTS[variant]}`;
+  // active が渡されていれば class を関数化 → h が Effect で class 属性を追従更新
+  const classExpr = props.active
+    ? () => `${baseClass} ${props.active?.() ? ACTIVE : ""}`
+    : baseClass;
   return (
     <button
       type="button"
-      class={`${BASE} ${VARIANTS[variant]}`}
+      class={classExpr}
       aria-label={props["aria-label"]}
       onClick={props.onClick}
     >
