@@ -1,9 +1,9 @@
-import { Counter } from "./Counter";
-import { Todo } from "./Todo";
+import { Counter } from "./components/Counter";
+import { Todo } from "./components/Todo";
 
 export function App() {
   return (
-    <main class="app">
+    <main class="flex flex-col gap-12 p-8 w-[min(100%,480px)]">
       <Counter />
       <Todo />
     </main>
