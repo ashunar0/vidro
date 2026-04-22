@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vite-plus/test";
 import { Signal } from "../src/signal";
 import { Effect, effect } from "../src/effect";
 import { untrack } from "../src/observer";
-import { Owner } from "../src/owner";
+import { Owner, onCleanup } from "../src/owner";
 
 describe("Effect", () => {
   describe("両形式", () => {
@@ -192,6 +192,103 @@ describe("Effect", () => {
       // b は inner の依存なので outer は反応しない
       b.value = 1;
       expect(outer).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("子 scope の管理", () => {
+    test("親 Effect 再実行時に、前回の内側で作った子 Effect は dispose される", () => {
+      const trigger = new Signal(0);
+      const innerSignal = new Signal(0);
+      const inner = vi.fn(() => {
+        void innerSignal.value;
+      });
+
+      new Effect(() => {
+        void trigger.value;
+        new Effect(inner);
+      });
+      expect(inner).toHaveBeenCalledTimes(1);
+
+      // 親再実行 → 旧 inner は dispose、新 inner が 1 回走る (合計 2)
+      trigger.value = 1;
+      expect(inner).toHaveBeenCalledTimes(2);
+
+      // innerSignal を変更 → 生きてる inner は 1 つだけなので +1 (合計 3)
+      // 旧 inner が生きてると +2 されてしまう
+      innerSignal.value = 99;
+      expect(inner).toHaveBeenCalledTimes(3);
+    });
+
+    test("Effect 内の onCleanup は次回再実行前に発火する", () => {
+      const trigger = new Signal(0);
+      const cleanup = vi.fn();
+      new Effect(() => {
+        void trigger.value;
+        onCleanup(cleanup);
+      });
+      expect(cleanup).toHaveBeenCalledTimes(0);
+
+      trigger.value = 1;
+      expect(cleanup).toHaveBeenCalledTimes(1);
+
+      trigger.value = 2;
+      expect(cleanup).toHaveBeenCalledTimes(2);
+    });
+
+    test("Effect dispose 時に子 Effect も dispose される", () => {
+      const innerSignal = new Signal(0);
+      const inner = vi.fn(() => {
+        void innerSignal.value;
+      });
+
+      const outer = new Effect(() => {
+        new Effect(inner);
+      });
+      expect(inner).toHaveBeenCalledTimes(1);
+
+      outer.dispose();
+      innerSignal.value = 1;
+      expect(inner).toHaveBeenCalledTimes(1); // 子も巻き込まれて死んでる
+    });
+
+    test("多段ネスト: 孫 Effect も親再実行でまとめて dispose される", () => {
+      const trigger = new Signal(0);
+      const grandchildSignal = new Signal(0);
+      const grandchild = vi.fn(() => {
+        void grandchildSignal.value;
+      });
+
+      new Effect(() => {
+        void trigger.value;
+        new Effect(() => {
+          new Effect(grandchild);
+        });
+      });
+      expect(grandchild).toHaveBeenCalledTimes(1);
+
+      // 親再実行で孫まで一旦全消し、新しい孫が 1 回走る
+      trigger.value = 1;
+      expect(grandchild).toHaveBeenCalledTimes(2);
+
+      // 生きてる孫は 1 つだけの証明
+      grandchildSignal.value = 1;
+      expect(grandchild).toHaveBeenCalledTimes(3);
+    });
+
+    test("子 Effect 内の onCleanup は親再実行時にも発火する (子ごと dispose される流れ)", () => {
+      const trigger = new Signal(0);
+      const innerCleanup = vi.fn();
+      new Effect(() => {
+        void trigger.value;
+        new Effect(() => {
+          onCleanup(innerCleanup);
+        });
+      });
+      expect(innerCleanup).toHaveBeenCalledTimes(0);
+
+      trigger.value = 1;
+      // 親再実行 → 子 childOwner dispose → 孫 Effect dispose → その中の onCleanup が発火
+      expect(innerCleanup).toHaveBeenCalledTimes(1);
     });
   });
 
