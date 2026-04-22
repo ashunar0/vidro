@@ -33,12 +33,21 @@ body {
   place-items: center;
 }
 
-.counter {
-  text-align: center;
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
   padding: 32px;
+  width: min(100%, 480px);
 }
 
-.counter h1 {
+.counter,
+.todo {
+  text-align: center;
+}
+
+.counter h1,
+.todo h2 {
   margin: 0 0 8px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -93,4 +102,50 @@ button:hover {
 .reset {
   font-size: 13px;
   color: var(--text-dim);
+}
+
+.todo-input {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.todo-input input {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  flex: 1;
+  max-width: 200px;
+}
+
+.todo-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.todo-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.todo-list li span {
+  flex: 1;
+  text-align: left;
+}
+
+.todo-list li button {
+  padding: 4px 10px;
+  font-size: 14px;
 }

@@ -5,3 +5,4 @@ export { untrack } from "./observer";
 export { onCleanup } from "./owner";
 export { h, Fragment, mount } from "./jsx";
 export { Show } from "./show";
+export { For } from "./for";
