@@ -108,6 +108,10 @@ function toText(value: unknown): string {
   return "";
 }
 
+// input.value / checkbox.checked / option.selected 等は attribute ではなく DOM property で
+// 扱う必要がある (ユーザー操作で変動する live state と attribute が別 bookkeeping のため)。
+const PROPS_AS_PROPERTY = new Set(["value", "checked", "selected"]);
+
 // Element に 1 つの prop を適用する。on[Event] は listener、function / Signal は reactive。
 function applyProp(el: Element, key: string, value: unknown): void {
   if (key.startsWith("on") && key.length > 2 && typeof value === "function") {
@@ -116,21 +120,28 @@ function applyProp(el: Element, key: string, value: unknown): void {
     return;
   }
 
+  const apply = PROPS_AS_PROPERTY.has(key) ? setProperty : setAttr;
+
   if (value instanceof Signal) {
     new Effect(() => {
-      setAttr(el, key, value.value);
+      apply(el, key, value.value);
     });
     return;
   }
 
   if (typeof value === "function") {
     new Effect(() => {
-      setAttr(el, key, (value as () => unknown)());
+      apply(el, key, (value as () => unknown)());
     });
     return;
   }
 
-  setAttr(el, key, value);
+  apply(el, key, value);
+}
+
+// DOM property に直接代入 (null / undefined は空文字へ正規化)
+function setProperty(el: Element, key: string, value: unknown): void {
+  (el as unknown as Record<string, unknown>)[key] = value ?? "";
 }
 
 // class / className / style を特別扱いし、それ以外は setAttribute / removeAttribute を使う

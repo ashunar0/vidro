@@ -12,34 +12,18 @@ export function Todo() {
     { id: genId(), label: "Banana" },
     { id: genId(), label: "Cherry" },
   ]);
-
-  // input を変数に取り出して ref 的に扱う (invoke-once なので評価済み DOM を直接参照できる)
-  const inputEl = (
-    <input
-      type="text"
-      placeholder="new item..."
-      class="flex-1 max-w-[200px] px-3 py-2 border border-neutral-300 dark:border-neutral-700 rounded-lg bg-transparent"
-    />
-  ) as HTMLInputElement;
+  // 入力値を Signal で双方向バインド。value / onInput で DOM property と同期する。
+  const draft = new Signal("");
 
   const add = () => {
-    const label = inputEl.value.trim();
+    const label = draft.value.trim();
     if (!label) return;
     items.value = [...items.value, { id: genId(), label }];
-    inputEl.value = "";
+    draft.value = ""; // Signal 経由で input の DOM value もクリアされる
   };
 
   const removeItem = (id: string) => {
     items.value = items.value.filter((x) => x.id !== id);
-  };
-
-  const shuffle = () => {
-    const arr = [...items.value];
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    items.value = arr;
   };
 
   return (
@@ -49,9 +33,16 @@ export function Todo() {
         For primitive で配列を reactive にレンダリング
       </p>
       <div class="flex gap-2 justify-center mb-4">
-        {inputEl}
+        <input
+          type="text"
+          placeholder="new item..."
+          value={draft}
+          onInput={(e: Event) => {
+            draft.value = (e.target as HTMLInputElement).value;
+          }}
+          class="flex-1 max-w-[200px] px-3 py-2 border border-neutral-300 dark:border-neutral-700 rounded-lg bg-transparent"
+        />
         <Button onClick={add}>add</Button>
-        <Button onClick={shuffle}>shuffle</Button>
       </div>
       <ul class="list-none p-0 m-0 flex flex-col gap-2">
         <For
