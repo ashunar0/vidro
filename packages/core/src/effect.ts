@@ -1,4 +1,10 @@
-import { setCurrentObserver, type Observer, type ObserverSource } from "./observer";
+import {
+  enqueueEffect,
+  isBatching,
+  setCurrentObserver,
+  type Observer,
+  type ObserverSource,
+} from "./observer";
 import { getCurrentOwner, Owner } from "./owner";
 
 type CleanupFn = () => void;
@@ -22,9 +28,14 @@ export class Effect implements Observer {
     this.#run();
   }
 
-  /** Signal からの通知を受け取り、再実行する。#running は再入ガード (run 中に自分宛ての notify が来ても無視する)。 */
+  /** Signal からの通知を受け取り、再実行する。#running は再入ガード (run 中に自分宛ての notify が来ても無視する)。
+   *  batch 中は queue に積むだけで、batch が抜ける時にまとめて走る。 */
   notify(): void {
     if (this.#disposed || this.#running) return;
+    if (isBatching()) {
+      enqueueEffect(this);
+      return;
+    }
     this.#run();
   }
 
