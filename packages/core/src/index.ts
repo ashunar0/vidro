@@ -5,6 +5,7 @@ export { Computed, computed } from "./computed";
 export { untrack } from "./observer";
 export { batch } from "./batch";
 export { onCleanup } from "./owner";
+export { onMount } from "./mount-queue";
 export { h, Fragment, mount } from "./jsx";
 export { Show } from "./show";
 export { For } from "./for";

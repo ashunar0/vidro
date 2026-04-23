@@ -1,5 +1,6 @@
 import { Signal } from "./signal";
 import { Effect } from "./effect";
+import { flushMountQueue, runWithMountScope } from "./mount-queue";
 import { Owner } from "./owner";
 
 /** Fragment marker: `<>...</>` / `h(Fragment, null, ...)` で children をグループ化する。 */
@@ -50,8 +51,11 @@ export function h(
 export function mount(fn: () => Node, target: Element): () => void {
   // detached root (parent=null) を作って mount 用の独立スコープにする
   const owner = new Owner(null);
-  const node = owner.run(fn);
+  // runWithMountScope で囲んでいる間、onMount(fn) が queue に積まれる。
+  // appendChild の後に flush して、fn は DOM attach 済みの状態で呼ばれる。
+  const node = runWithMountScope(() => owner.run(fn));
   target.appendChild(node);
+  flushMountQueue();
   return () => {
     node.parentNode?.removeChild(node);
     owner.dispose();
