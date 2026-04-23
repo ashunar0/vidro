@@ -1,5 +1,6 @@
 import { Signal } from "./signal";
 import { effect } from "./effect";
+import { untrack } from "./observer";
 import { flushMountQueue, runWithMountScope } from "./mount-queue";
 import { Owner } from "./owner";
 import { Ref } from "./ref";
@@ -96,10 +97,24 @@ function appendChild(parent: Node, child: unknown): void {
 
   if (typeof child === "function") {
     // A 方式 compile transform の結果 (`{expr}` → `() => expr`) を受ける。
-    // `{signal}` が transform されたケースでは関数呼び出しの返り値が Signal instance に
-    // なるので、そこでもう一段 .value を読んで unwrap する (forward-compat)。
+    // 依存追跡なしで peek して、返り値が静的な構造 (Array / Node) の場合は static
+    // スロットとして展開する。配列を動的に差し替えたいケースは <For> を使う想定で、
+    // appendChild では初回評価のみの挿入にとどめる。
+    // primitive / Signal は dynamic text として effect 内で追従。
+    const peeked = untrack(() => (child as () => unknown)());
+    if (Array.isArray(peeked)) {
+      for (const c of peeked) appendChild(parent, c);
+      return;
+    }
+    if (peeked instanceof Node) {
+      parent.appendChild(peeked);
+      return;
+    }
     const text = document.createTextNode("");
     parent.appendChild(text);
+    // 初回は上の peek で評価済みだが、依存追跡に乗せるため effect 内で改めて呼ぶ。
+    // `{signal}` が transform されたケースでは返り値が Signal instance になるので、
+    // もう一段 .value を読んで unwrap する (forward-compat)。
     effect(() => {
       let v = (child as () => unknown)();
       if (v instanceof Signal) v = v.value;
