@@ -1,17 +1,26 @@
 /**
  * Reactive な副作用の親子 scope を表す容れ物。Effect や子 Owner は生成時に現在の
  * Owner へ自動登録され、Owner を dispose すれば配下のリソースがまとめて片付く。
+ *
+ * エラー伝播: 各 Owner は optional な errorHandler を持つ。runCatching が捕まえた
+ * 例外は handleError → 自身の handler → 親 → ... と遡り、root まで無ければ再 throw。
+ * これが ErrorBoundary の catch chain 本体。
  */
 export class Owner {
   #parent: Owner | null;
   #children = new Set<Owner>();
   #cleanups: Array<() => void> = [];
   #disposed = false;
+  #errorHandler: ((err: unknown) => void) | null = null;
 
-  // 省略時は現在アクティブな Owner を親にする (ネスト時の自然な挙動)
-  constructor(parent: Owner | null = currentOwner) {
+  // 省略時は現在アクティブな Owner を親にする (ネスト時の自然な挙動)。
+  // attach: false にすると親の #children に入らず、親 dispose に巻き込まれない。
+  // #parent 参照だけは持つので handleError() の chain は遡れる — Effect の childOwner
+  // はこの形で作り、「dispose tree には載せないが error chain には載る」を両立する。
+  constructor(parent: Owner | null = currentOwner, options: { attach?: boolean } = {}) {
+    const attach = options.attach ?? true;
     this.#parent = parent;
-    if (parent) parent.#children.add(this);
+    if (parent && attach) parent.#children.add(this);
   }
 
   get disposed(): boolean {
@@ -24,12 +33,47 @@ export class Owner {
     this.#cleanups.push(fn);
   }
 
+  /** この scope の error handler を設定する (ErrorBoundary から使う internal API)。 */
+  setErrorHandler(fn: (err: unknown) => void): void {
+    this.#errorHandler = fn;
+  }
+
+  /** err を handler chain に届ける。自分に handler があれば呼び、無ければ親へ。
+   *  root まで無ければ再 throw して呼び出し側に返す。handler 内で throw すると親へ伝播。 */
+  handleError(err: unknown): void {
+    if (this.#errorHandler) {
+      this.#errorHandler(err);
+      return;
+    }
+    if (this.#parent) {
+      this.#parent.handleError(err);
+      return;
+    }
+    throw err;
+  }
+
   /** この Owner を active にして fn を実行する。fn 内で作られた Owner / Effect は子として登録される。 */
   run<T>(fn: () => T): T {
     const prev = setCurrentOwner(this);
     try {
       return fn();
     } finally {
+      setCurrentOwner(prev);
+    }
+  }
+
+  /** run の try/catch 版。例外は handleError に流し、fn の返り値は throw 時 undefined になる。
+   *  currentOwner は handleError 実行前に元へ戻す (handler が外の scope で動く方が自然)。 */
+  runCatching<T>(fn: () => T): T | undefined {
+    const prev = setCurrentOwner(this);
+    try {
+      return fn();
+    } catch (err) {
+      setCurrentOwner(prev);
+      this.handleError(err);
+      return undefined;
+    } finally {
+      // 正常 return と catch 後の両方で実行されるが、setCurrentOwner は冪等なので問題ない。
       setCurrentOwner(prev);
     }
   }

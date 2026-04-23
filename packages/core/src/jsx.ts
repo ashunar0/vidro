@@ -29,9 +29,14 @@ export function h(
     // children を props.children に合流させる (1 件なら unwrap、それ以外は配列のまま)
     if (children.length === 1) resolvedProps.children = children[0];
     else if (children.length > 1) resolvedProps.children = children;
-    // component は独立した child Owner の中で 1 回だけ評価する (invoke-once)
+    // component は独立した child Owner の中で 1 回だけ評価する (invoke-once)。
+    // runCatching で囲んで、component 関数内の throw を nearest ErrorBoundary に届ける。
+    // 例外で undefined が返ったら placeholder Comment を返す — ErrorBoundary があれば
+    // その effect が fallback を差し替えるので placeholder は実質見えない。Boundary 無しなら
+    // handleError が root で再 throw するのでここには到達しない。
     const owner = new Owner();
-    return owner.run(() => type(resolvedProps));
+    const result = owner.runCatching(() => type(resolvedProps));
+    return result ?? document.createComment("vidro-error");
   }
 
   const el = document.createElement(type);

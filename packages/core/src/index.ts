@@ -10,3 +10,4 @@ export { onMount } from "./mount-queue";
 export { h, Fragment, mount } from "./jsx";
 export { Show } from "./show";
 export { For } from "./for";
+export { ErrorBoundary } from "./error-boundary";

@@ -16,15 +16,18 @@ export class Effect implements Observer {
   #sources = new Set<ObserverSource>();
   #cleanup: CleanupFn | null = null;
   // fn の内側で作られた子 Effect / 子 Owner を束ねる scope。再実行のたびに作り直して旧 scope を dispose する。
-  // parent=null (detached) にして親 Owner の children には登録しない — 親 → Effect → childOwner の芋づる構造で十分。
+  // parent は Effect 構築時の Owner を持つが attach: false で dispose tree からは切り離し、
+  // error chain (handleError) だけ親に繋がる状態にする。
   #childOwner: Owner | null = null;
+  #parentOwner: Owner | null;
   #disposed = false;
   #running = false;
 
   constructor(fn: EffectFn) {
     this.#fn = fn;
-    // 現 Owner (scope) があれば自分を cleanup 対象として登録 — Owner.dispose() で巻き込み解放される
-    getCurrentOwner()?.addCleanup(() => this.dispose());
+    // 構築時点の Owner を覚え、その cleanup に自分の dispose を登録 (Owner.dispose で巻き込み解放)
+    this.#parentOwner = getCurrentOwner();
+    this.#parentOwner?.addCleanup(() => this.dispose());
     this.#run();
   }
 
@@ -54,16 +57,17 @@ export class Effect implements Observer {
   }
 
   // 本体の実行。前回の cleanup / 子 scope / 依存を掃除してから、新しい child Owner を立てて fn を走らせる。
+  // fn の throw は childOwner.runCatching が nearest ancestor の errorHandler に流す。
   #run(): void {
     this.#running = true;
     this.#runCleanup();
     this.#clearSources();
     this.#disposeChildOwner();
 
-    this.#childOwner = new Owner(null);
+    this.#childOwner = new Owner(this.#parentOwner, { attach: false });
     const prev = setCurrentObserver(this);
     try {
-      const result = this.#childOwner.run(() => this.#fn());
+      const result = this.#childOwner.runCatching(() => this.#fn());
       if (typeof result === "function") this.#cleanup = result;
     } finally {
       setCurrentObserver(prev);
