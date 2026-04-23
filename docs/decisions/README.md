@@ -33,3 +33,4 @@ Consequences と Revisit when は**暫定実装の場合は必ず書く**。
 - [0002-on-mount](./0002-on-mount.md) — `onMount(fn)` の実装方針 (同期 / warn / 伝播)
 - [0003-ref](./0003-ref.md) — `Ref<T>` primitive の実装方針 (new Ref / `.current` / class + factory)
 - [0004-error-boundary](./0004-error-boundary.md) — `<ErrorBoundary>` primitive の実装方針 (onError required / 関数 fallback / children 関数包み)
+- [0005-switch-match](./0005-switch-match.md) — `<Switch>` / `<Match>` primitive の実装方針 (Match は descriptor / 早い者勝ち / fallback / invoke-once)

@@ -9,5 +9,6 @@ export { onCleanup } from "./owner";
 export { onMount } from "./mount-queue";
 export { h, Fragment, mount } from "./jsx";
 export { Show } from "./show";
+export { Switch, Match } from "./switch";
 export { For } from "./for";
 export { ErrorBoundary } from "./error-boundary";
