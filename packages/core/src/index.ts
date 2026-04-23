@@ -2,6 +2,7 @@
 export { Signal, signal } from "./signal";
 export { Effect, effect } from "./effect";
 export { Computed, computed } from "./computed";
+export { Ref, ref } from "./ref";
 export { untrack } from "./observer";
 export { batch } from "./batch";
 export { onCleanup } from "./owner";

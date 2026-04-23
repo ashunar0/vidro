@@ -83,6 +83,35 @@ Vidro に `onMount(fn)` を追加する。論点は 3 つ:
 - onMount 内で throw すると、**後続の onMount が走らない**。ユーザー側で
   try/catch を書く必要あり
 
+## Known gotchas
+
+### Show の fallback 側では onMount の DOM 操作が効かない
+
+`<Show when={...} fallback={<Todo />}>` のような構造で、**fallback 側のコンポーネント内**
+で `onMount(() => input.focus())` のような DOM 操作を書いた場合、**それは no-op になる**。
+
+理由:
+
+1. App の mount() 実行中、JSX 評価で children と fallback は**両方とも**呼ばれる
+   (Show は invoke-once モデルで Node を事前に全部作る)
+2. Todo() の中で onMount(fn) が queue に積まれる
+3. mount() が target.appendChild した後、flushMountQueue で fn が走る
+4. **この時点で Todo の DOM は Show の detach 側**。document tree に繋がっていない
+5. 繋がっていない要素への `focus()` / `getBoundingClientRect()` は効かない
+6. その後 Show の切替で Todo が attach されても、**onMount は再発火しない** (1 回きり)
+
+回避策:
+
+- 「タブ切替時」等の動的 attach に反応したいなら onMount ではなく Effect で切替用
+  Signal を watch する方が適切 (ただし依存追跡に乗るので注意)
+- 単純な「ページロード時の初期 focus」なら HTML 標準の `autofocus` 属性が最短
+- **デモ/開発で気づきづらい**ので、ref 経由の DOM 操作を書く時は「この要素は
+  root mount 時に DOM tree にいるか」を確認する
+
+これは「Vidro のコンポーネントはリマウントしない」という invoke-once 設計の直接的な
+帰結であり、仕様。将来 `onAttach` / `onDetach` のような attach/detach hook を導入する
+場合はここで吸収される。
+
 ## Revisit when
 
 以下が起きたら再設計:
@@ -95,3 +124,6 @@ Vidro に `onMount(fn)` を追加する。論点は 3 つ:
   flag 分岐を追加
 - **SSR / Worker で複数インスタンスが必要になった時**: global state を
   per-instance 化
+- **attach / detach 系 hook (`onAttach` / `onDetach`) が必要になった時**: Show / For
+  の切替で動的に DOM tree 出入りするコンポーネントに対して hook を発火させる仕組みを
+  別途導入 (上記 gotcha の根本解決)

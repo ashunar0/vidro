@@ -2,6 +2,7 @@ import { Signal } from "./signal";
 import { Effect } from "./effect";
 import { flushMountQueue, runWithMountScope } from "./mount-queue";
 import { Owner } from "./owner";
+import { Ref } from "./ref";
 
 /** Fragment marker: `<>...</>` / `h(Fragment, null, ...)` で children をグループ化する。 */
 export const Fragment = Symbol("Fragment");
@@ -122,6 +123,13 @@ const PROPS_AS_PROPERTY = new Set(["value", "checked", "selected"]);
 
 // Element に 1 つの prop を適用する。on[Event] は listener、function / Signal は reactive。
 function applyProp(el: Element, key: string, value: unknown): void {
+  // ref={myRef} は属性としてではなく、Ref インスタンスの .current に要素を代入して終了。
+  // Ref 以外 (関数 callback 等) は現状サポート対象外、黙って attribute 化せず捨てる。
+  if (key === "ref") {
+    if (value instanceof Ref) (value as Ref<Element>).current = el;
+    return;
+  }
+
   if (key.startsWith("on") && key.length > 2 && typeof value === "function") {
     const eventName = key.slice(2).toLowerCase();
     el.addEventListener(eventName, value as EventListener);
