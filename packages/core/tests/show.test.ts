@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, test } from "vite-plus/test";
-import { Signal } from "../src/signal";
+import { signal } from "../src/signal";
 import { Show } from "../src/show";
 import { mount } from "../src/jsx";
 
@@ -36,7 +36,7 @@ describe("Show", () => {
 
   test("Signal when の切替で children/fallback がスワップされる", () => {
     const target = document.createElement("div");
-    const cond = new Signal(true);
+    const cond = signal(true);
     const child = document.createElement("p");
     child.textContent = "A";
     const fb = document.createElement("p");
@@ -54,7 +54,7 @@ describe("Show", () => {
 
   test("関数 when で依存追跡される", () => {
     const target = document.createElement("div");
-    const count = new Signal(0);
+    const count = signal(0);
     const child = document.createElement("p");
     child.textContent = "positive";
 
@@ -70,7 +70,7 @@ describe("Show", () => {
 
   test("children は同じ Node が再利用される (state 保持)", () => {
     const target = document.createElement("div");
-    const cond = new Signal(true);
+    const cond = signal(true);
     const child = document.createElement("input");
     child.value = "typed"; // "state" を Node 自身に持たせて検証
 
@@ -91,7 +91,7 @@ describe("Show", () => {
 
   test("mount の dispose で内部 Effect も掃除される", () => {
     const target = document.createElement("div");
-    const cond = new Signal(true);
+    const cond = signal(true);
     const child = document.createElement("p");
     child.textContent = "x";
 

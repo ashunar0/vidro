@@ -1,19 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, test } from "vite-plus/test";
 import { mount, h } from "../src/jsx";
-import { Ref, ref } from "../src/ref";
+import { ref } from "../src/ref";
 
 describe("Ref", () => {
-  describe("両形式", () => {
-    test("new Ref() は Ref インスタンスを返す", () => {
-      const r = new Ref<HTMLInputElement>();
-      expect(r).toBeInstanceOf(Ref);
-      expect(r.current).toBeNull();
-    });
-
-    test("ref() は Ref インスタンスを返す", () => {
+  describe("生成", () => {
+    test("ref() は .current が null の Ref を返す", () => {
       const r = ref<HTMLInputElement>();
-      expect(r).toBeInstanceOf(Ref);
       expect(r.current).toBeNull();
     });
   });
@@ -21,22 +14,15 @@ describe("Ref", () => {
   describe("JSX 経由で要素を受け取る", () => {
     test("<input ref={myRef} /> で .current に要素が入る", () => {
       const target = document.createElement("div");
-      const myRef = new Ref<HTMLInputElement>();
+      const myRef = ref<HTMLInputElement>();
       mount(() => h("input", { ref: myRef }), target);
       expect(myRef.current).toBeInstanceOf(HTMLInputElement);
       expect(myRef.current?.tagName).toBe("INPUT");
     });
 
-    test("factory ref() で作った Ref でも同様に動く", () => {
-      const target = document.createElement("div");
-      const myRef = ref<HTMLDivElement>();
-      mount(() => h("div", { ref: myRef, class: "hello" }), target);
-      expect(myRef.current?.className).toBe("hello");
-    });
-
     test("ref 属性は attribute として setAttribute されない", () => {
       const target = document.createElement("div");
-      const myRef = new Ref<HTMLInputElement>();
+      const myRef = ref<HTMLInputElement>();
       mount(() => h("input", { ref: myRef }), target);
       // ref は特別扱いなので DOM 属性には出ない
       expect(myRef.current?.hasAttribute("ref")).toBe(false);
@@ -44,7 +30,7 @@ describe("Ref", () => {
 
     test("ref 以外の props (class / onClick) と共存できる", () => {
       const target = document.createElement("div");
-      const myRef = new Ref<HTMLButtonElement>();
+      const myRef = ref<HTMLButtonElement>();
       const clicks: number[] = [];
       mount(
         () =>

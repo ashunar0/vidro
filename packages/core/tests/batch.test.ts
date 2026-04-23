@@ -1,18 +1,18 @@
 import { describe, expect, test, vi } from "vite-plus/test";
 import { batch } from "../src/batch";
-import { Computed } from "../src/computed";
-import { Effect } from "../src/effect";
-import { Signal } from "../src/signal";
+import { computed } from "../src/computed";
+import { effect } from "../src/effect";
+import { signal } from "../src/signal";
 
 describe("batch", () => {
   test("複数 Signal 書き込みは 1 回の Effect 実行にまとまる", () => {
-    const a = new Signal(0);
-    const b = new Signal(0);
+    const a = signal(0);
+    const b = signal(0);
     const fn = vi.fn(() => {
       void a.value;
       void b.value;
     });
-    new Effect(fn);
+    effect(fn);
     expect(fn).toHaveBeenCalledTimes(1);
 
     batch(() => {
@@ -24,11 +24,11 @@ describe("batch", () => {
   });
 
   test("batch 内での同一 Effect に対する notify は重複排除される", () => {
-    const a = new Signal(0);
+    const a = signal(0);
     const fn = vi.fn(() => {
       void a.value;
     });
-    new Effect(fn);
+    effect(fn);
 
     batch(() => {
       a.value = 1;
@@ -40,13 +40,13 @@ describe("batch", () => {
   });
 
   test("nested batch は最外で 1 回だけ flush される", () => {
-    const a = new Signal(0);
-    const b = new Signal(0);
+    const a = signal(0);
+    const b = signal(0);
     const fn = vi.fn(() => {
       void a.value;
       void b.value;
     });
-    new Effect(fn);
+    effect(fn);
 
     batch(() => {
       a.value = 1;
@@ -65,13 +65,13 @@ describe("batch", () => {
   });
 
   test("batch 内で fn が throw した場合も queue を flush してから例外を再送する", () => {
-    const a = new Signal(0);
-    const b = new Signal(0);
+    const a = signal(0);
+    const b = signal(0);
     const fn = vi.fn(() => {
       void a.value;
       void b.value;
     });
-    new Effect(fn);
+    effect(fn);
 
     expect(() =>
       batch(() => {
@@ -86,11 +86,11 @@ describe("batch", () => {
   });
 
   test("例外後も batchDepth が復元されていて次の batch が正しく動く", () => {
-    const a = new Signal(0);
+    const a = signal(0);
     const fn = vi.fn(() => {
       void a.value;
     });
-    new Effect(fn);
+    effect(fn);
 
     expect(() =>
       batch(() => {
@@ -107,12 +107,12 @@ describe("batch", () => {
   });
 
   test("batch 中でも Computed は最新値を pull できる (batch は Computed の lazy 性に干渉しない)", () => {
-    const a = new Signal(1);
-    const doubled = new Computed(() => a.value * 2);
+    const a = signal(1);
+    const doubled = computed(() => a.value * 2);
     const fn = vi.fn(() => {
       void doubled.value;
     });
-    new Effect(fn);
+    effect(fn);
     expect(fn).toHaveBeenCalledTimes(1);
 
     batch(() => {
@@ -124,11 +124,11 @@ describe("batch", () => {
   });
 
   test("batch 外の Signal 書き込みは従来どおり即 Effect 実行", () => {
-    const a = new Signal(0);
+    const a = signal(0);
     const fn = vi.fn(() => {
       void a.value;
     });
-    new Effect(fn);
+    effect(fn);
     expect(fn).toHaveBeenCalledTimes(1);
     a.value = 1;
     expect(fn).toHaveBeenCalledTimes(2);

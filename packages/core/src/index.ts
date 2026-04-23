@@ -1,8 +1,14 @@
 // @vidro/core の公開エントリ。
-export { Signal, signal } from "./signal";
-export { Effect, effect } from "./effect";
-export { Computed, computed } from "./computed";
-export { Ref, ref } from "./ref";
+// primitive の生成は factory (signal / computed / ref / effect) に統一。class 本体は
+// internal、型としての Signal<T> 等は `export type` で引き続き使える (型注釈目的)。
+export { signal } from "./signal";
+export type { Signal } from "./signal";
+export { effect } from "./effect";
+export type { Effect } from "./effect";
+export { computed } from "./computed";
+export type { Computed } from "./computed";
+export { ref } from "./ref";
+export type { Ref } from "./ref";
 export { untrack } from "./observer";
 export { batch } from "./batch";
 export { onCleanup } from "./owner";

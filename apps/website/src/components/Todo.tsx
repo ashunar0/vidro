@@ -1,22 +1,22 @@
-import { Signal, Ref, For, Computed, effect, batch, onMount, untrack } from "@vidro/core";
+import { signal, ref, For, computed, effect, batch, onMount, untrack } from "@vidro/core";
 import { Button } from "./Button";
 
 type Item = { id: string; label: string };
 
 export function Todo() {
-  const items = new Signal<Item[]>([
+  const items = signal<Item[]>([
     { id: crypto.randomUUID(), label: "Apple" },
     { id: crypto.randomUUID(), label: "Banana" },
     { id: crypto.randomUUID(), label: "Cherry" },
   ]);
-  const draft = new Signal("");
+  const draft = signal("");
   // items.length の派生値。For の reconcile と同じ依存 (items) を共有するが Computed
   // が memoize してるので表示用の読み取りは安く済む。
-  const itemCount = new Computed(() => items.value.length);
+  const itemCount = computed(() => items.value.length);
 
   // batch の効果を可視化する観測用 Effect。items が変わるたびに +1 される。
   // 書き込みは untrack で包み、自身の再実行ループを断つ。
-  const effectRuns = new Signal(0);
+  const effectRuns = signal(0);
   effect(() => {
     void items.value;
     untrack(() => {
@@ -57,7 +57,7 @@ export function Todo() {
   // Vidro では App の mount 時に 1 回だけ flush されるため、Todo が Show の
   // fallback 側 (初期表示でない) だと focus() は DOM detach 状態で no-op になる
   // 点に注意 (docs/decisions/0002-on-mount.md の gotcha 参照)。
-  const draftInput = new Ref<HTMLInputElement>();
+  const draftInput = ref<HTMLInputElement>();
   onMount(() => draftInput.current?.focus());
 
   return (

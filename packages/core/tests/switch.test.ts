@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, test } from "vite-plus/test";
-import { Signal } from "../src/signal";
+import { signal } from "../src/signal";
 import { Switch, Match } from "../src/switch";
 import { mount } from "../src/jsx";
 
@@ -74,7 +74,7 @@ describe("Switch / Match", () => {
 
   test("Signal state の変更で branch が swap される", () => {
     const target = document.createElement("div");
-    const state = new Signal<"loading" | "error" | "ok">("loading");
+    const state = signal<"loading" | "error" | "ok">("loading");
     const loading = document.createElement("p");
     loading.textContent = "loading";
     const error = document.createElement("p");
@@ -104,7 +104,7 @@ describe("Switch / Match", () => {
 
   test("同じ Node 参照が再利用される (state 保持)", () => {
     const target = document.createElement("div");
-    const flag = new Signal(true);
+    const flag = signal(true);
     const a = document.createElement("input");
     a.value = "typed";
     const b = document.createElement("p");
@@ -133,7 +133,7 @@ describe("Switch / Match", () => {
 
   test("mount dispose で Effect が掃除される", () => {
     const target = document.createElement("div");
-    const cond = new Signal(true);
+    const cond = signal(true);
     const a = document.createElement("p");
     a.textContent = "A";
 

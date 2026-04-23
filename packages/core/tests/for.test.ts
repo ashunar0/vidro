@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, test } from "vite-plus/test";
-import { Signal } from "../src/signal";
-import { Effect } from "../src/effect";
+import { signal } from "../src/signal";
+import { effect } from "../src/effect";
 import { For } from "../src/for";
 import { mount } from "../src/jsx";
 
@@ -16,7 +16,7 @@ function labels(target: Element): string[] {
 describe("For", () => {
   test("初期 list を render する", () => {
     const target = document.createElement("ul");
-    const items = new Signal<Item[]>([mk("a"), mk("b"), mk("c")]);
+    const items = signal<Item[]>([mk("a"), mk("b"), mk("c")]);
 
     mount(() => {
       const li = (item: Item) => {
@@ -32,7 +32,7 @@ describe("For", () => {
 
   test("item 追加で DOM が足される", () => {
     const target = document.createElement("ul");
-    const items = new Signal<Item[]>([mk("a")]);
+    const items = signal<Item[]>([mk("a")]);
     const renderItem = (item: Item) => {
       const el = document.createElement("li");
       el.textContent = item.label;
@@ -52,7 +52,7 @@ describe("For", () => {
     const a = mk("a");
     const b = mk("b");
     const c = mk("c");
-    const items = new Signal<Item[]>([a, b, c]);
+    const items = signal<Item[]>([a, b, c]);
 
     const renderItem = (item: Item) => {
       const el = document.createElement("li");
@@ -74,10 +74,10 @@ describe("For", () => {
     const target = document.createElement("ul");
     const a = mk("a");
     const b = mk("b");
-    const items = new Signal<Item[]>([a, b]);
+    const items = signal<Item[]>([a, b]);
 
     let innerRunCount = 0;
-    const external = new Signal(0);
+    const external = signal(0);
 
     mount(
       () =>
@@ -85,7 +85,7 @@ describe("For", () => {
           each: items,
           children: (item) => {
             // item の owner 配下に Effect を作り、external の更新で再実行される
-            new Effect(() => {
+            effect(() => {
               void external.value;
               innerRunCount++;
             });
@@ -109,7 +109,7 @@ describe("For", () => {
 
   test("空リストで fallback を表示、非空に戻すと fallback が外れる", () => {
     const target = document.createElement("div");
-    const items = new Signal<Item[]>([]);
+    const items = signal<Item[]>([]);
     const fb = document.createElement("p");
     fb.textContent = "empty";
 
@@ -139,7 +139,7 @@ describe("For", () => {
   test("並び替え: 同じ item 群を順序だけ変更 → 全 DOM が再利用される", () => {
     const target = document.createElement("ul");
     const [a, b, c] = [mk("a"), mk("b"), mk("c")];
-    const items = new Signal<Item[]>([a, b, c]);
+    const items = signal<Item[]>([a, b, c]);
     mount(
       () =>
         For({
@@ -164,8 +164,8 @@ describe("For", () => {
 
   test("関数 each で依存追跡され、フィルタ結果に追従する", () => {
     const target = document.createElement("ul");
-    const items = new Signal<Item[]>([mk("a"), mk("b"), mk("c")]);
-    const showB = new Signal(true);
+    const items = signal<Item[]>([mk("a"), mk("b"), mk("c")]);
+    const showB = signal(true);
     mount(
       () =>
         For({
@@ -189,7 +189,7 @@ describe("For", () => {
 
   test("mount dispose で anchor と全 item が掃除される", () => {
     const target = document.createElement("ul");
-    const items = new Signal<Item[]>([mk("a"), mk("b")]);
+    const items = signal<Item[]>([mk("a"), mk("b")]);
     const dispose = mount(
       () =>
         For({

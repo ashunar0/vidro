@@ -1,35 +1,24 @@
 import { describe, expect, test, vi } from "vite-plus/test";
-import { Signal } from "../src/signal";
-import { Effect, effect } from "../src/effect";
+import { signal } from "../src/signal";
+import { effect } from "../src/effect";
+import type { Effect } from "../src/effect";
 import { untrack } from "../src/observer";
 import { Owner, onCleanup } from "../src/owner";
 
 describe("Effect", () => {
-  describe("両形式", () => {
-    test("new Effect(fn) は Effect インスタンスを返す", () => {
-      const e = new Effect(() => {});
-      expect(e).toBeInstanceOf(Effect);
-    });
-
-    test("effect(fn) は Effect インスタンスを返す", () => {
-      const e = effect(() => {});
-      expect(e).toBeInstanceOf(Effect);
-    });
-  });
-
   describe("基本動作", () => {
     test("生成時に fn が即実行される", () => {
       const fn = vi.fn();
-      new Effect(fn);
+      effect(fn);
       expect(fn).toHaveBeenCalledTimes(1);
     });
 
     test("依存 Signal の変更で再実行される", () => {
-      const count = new Signal(0);
+      const count = signal(0);
       const fn = vi.fn(() => {
         void count.value;
       });
-      new Effect(fn);
+      effect(fn);
       expect(fn).toHaveBeenCalledTimes(1);
       count.value = 1;
       expect(fn).toHaveBeenCalledTimes(2);
@@ -38,23 +27,23 @@ describe("Effect", () => {
     });
 
     test("同値への代入では再実行されない", () => {
-      const count = new Signal(0);
+      const count = signal(0);
       const fn = vi.fn(() => {
         void count.value;
       });
-      new Effect(fn);
+      effect(fn);
       count.value = 0;
       expect(fn).toHaveBeenCalledTimes(1);
     });
 
     test("複数の Signal に依存 → いずれの変更でも再実行", () => {
-      const a = new Signal(0);
-      const b = new Signal(0);
+      const a = signal(0);
+      const b = signal(0);
       const fn = vi.fn(() => {
         void a.value;
         void b.value;
       });
-      new Effect(fn);
+      effect(fn);
       expect(fn).toHaveBeenCalledTimes(1);
       a.value = 1;
       expect(fn).toHaveBeenCalledTimes(2);
@@ -63,12 +52,12 @@ describe("Effect", () => {
     });
 
     test("依存してない Signal の変更では再実行されない", () => {
-      const a = new Signal(0);
-      const b = new Signal(0);
+      const a = signal(0);
+      const b = signal(0);
       const fn = vi.fn(() => {
         void a.value;
       });
-      new Effect(fn);
+      effect(fn);
       b.value = 1;
       expect(fn).toHaveBeenCalledTimes(1);
     });
@@ -76,18 +65,18 @@ describe("Effect", () => {
 
   describe("dispose", () => {
     test("dispose 後は再実行されない", () => {
-      const count = new Signal(0);
+      const count = signal(0);
       const fn = vi.fn(() => {
         void count.value;
       });
-      const eff = new Effect(fn);
+      const eff = effect(fn);
       eff.dispose();
       count.value = 1;
       expect(fn).toHaveBeenCalledTimes(1);
     });
 
     test("dispose を複数回呼んでもエラーにならない", () => {
-      const eff = new Effect(() => {});
+      const eff = effect(() => {});
       eff.dispose();
       expect(() => eff.dispose()).not.toThrow();
     });
@@ -95,9 +84,9 @@ describe("Effect", () => {
 
   describe("cleanup", () => {
     test("次の再実行前に前回の cleanup が呼ばれる", () => {
-      const count = new Signal(0);
+      const count = signal(0);
       const cleanup = vi.fn();
-      new Effect(() => {
+      effect(() => {
         void count.value;
         return cleanup;
       });
@@ -110,15 +99,15 @@ describe("Effect", () => {
 
     test("dispose 時にも cleanup が呼ばれる", () => {
       const cleanup = vi.fn();
-      const eff = new Effect(() => cleanup);
+      const eff = effect(() => cleanup);
       eff.dispose();
       expect(cleanup).toHaveBeenCalledTimes(1);
     });
 
     test("cleanup を return しなくても動く", () => {
-      const count = new Signal(0);
+      const count = signal(0);
       expect(() => {
-        new Effect(() => {
+        effect(() => {
           void count.value;
         });
         count.value = 1;
@@ -128,13 +117,13 @@ describe("Effect", () => {
 
   describe("動的依存", () => {
     test("条件分岐で読む Signal が変わると古い依存は外れる", () => {
-      const flag = new Signal(true);
-      const a = new Signal("a");
-      const b = new Signal("b");
+      const flag = signal(true);
+      const a = signal("a");
+      const b = signal("b");
       const fn = vi.fn(() => {
         void (flag.value ? a.value : b.value);
       });
-      new Effect(fn);
+      effect(fn);
       expect(fn).toHaveBeenCalledTimes(1);
 
       // 最初は flag と a に依存
@@ -157,13 +146,13 @@ describe("Effect", () => {
 
   describe("untrack", () => {
     test("untrack() で読んだ Signal は依存に加えられない", () => {
-      const a = new Signal(0);
-      const b = new Signal(0);
+      const a = signal(0);
+      const b = signal(0);
       const fn = vi.fn(() => {
         void a.value;
         untrack(() => b.value);
       });
-      new Effect(fn);
+      effect(fn);
       expect(fn).toHaveBeenCalledTimes(1);
 
       // untrack 経由なので反応しない
@@ -178,15 +167,15 @@ describe("Effect", () => {
 
   describe("ネスト", () => {
     test("Effect 内で別の Effect を作っても外側の依存は乱れない", () => {
-      const a = new Signal(0);
-      const b = new Signal(0);
+      const a = signal(0);
+      const b = signal(0);
       const outer = vi.fn(() => {
         void a.value;
-        new Effect(() => {
+        effect(() => {
           void b.value;
         });
       });
-      new Effect(outer);
+      effect(outer);
       expect(outer).toHaveBeenCalledTimes(1);
 
       // b は inner の依存なので outer は反応しない
@@ -197,15 +186,15 @@ describe("Effect", () => {
 
   describe("子 scope の管理", () => {
     test("親 Effect 再実行時に、前回の内側で作った子 Effect は dispose される", () => {
-      const trigger = new Signal(0);
-      const innerSignal = new Signal(0);
+      const trigger = signal(0);
+      const innerSignal = signal(0);
       const inner = vi.fn(() => {
         void innerSignal.value;
       });
 
-      new Effect(() => {
+      effect(() => {
         void trigger.value;
-        new Effect(inner);
+        effect(inner);
       });
       expect(inner).toHaveBeenCalledTimes(1);
 
@@ -220,9 +209,9 @@ describe("Effect", () => {
     });
 
     test("Effect 内の onCleanup は次回再実行前に発火する", () => {
-      const trigger = new Signal(0);
+      const trigger = signal(0);
       const cleanup = vi.fn();
-      new Effect(() => {
+      effect(() => {
         void trigger.value;
         onCleanup(cleanup);
       });
@@ -236,13 +225,13 @@ describe("Effect", () => {
     });
 
     test("Effect dispose 時に子 Effect も dispose される", () => {
-      const innerSignal = new Signal(0);
+      const innerSignal = signal(0);
       const inner = vi.fn(() => {
         void innerSignal.value;
       });
 
-      const outer = new Effect(() => {
-        new Effect(inner);
+      const outer = effect(() => {
+        effect(inner);
       });
       expect(inner).toHaveBeenCalledTimes(1);
 
@@ -252,16 +241,16 @@ describe("Effect", () => {
     });
 
     test("多段ネスト: 孫 Effect も親再実行でまとめて dispose される", () => {
-      const trigger = new Signal(0);
-      const grandchildSignal = new Signal(0);
+      const trigger = signal(0);
+      const grandchildSignal = signal(0);
       const grandchild = vi.fn(() => {
         void grandchildSignal.value;
       });
 
-      new Effect(() => {
+      effect(() => {
         void trigger.value;
-        new Effect(() => {
-          new Effect(grandchild);
+        effect(() => {
+          effect(grandchild);
         });
       });
       expect(grandchild).toHaveBeenCalledTimes(1);
@@ -276,11 +265,11 @@ describe("Effect", () => {
     });
 
     test("子 Effect 内の onCleanup は親再実行時にも発火する (子ごと dispose される流れ)", () => {
-      const trigger = new Signal(0);
+      const trigger = signal(0);
       const innerCleanup = vi.fn();
-      new Effect(() => {
+      effect(() => {
         void trigger.value;
-        new Effect(() => {
+        effect(() => {
           onCleanup(innerCleanup);
         });
       });
@@ -295,11 +284,11 @@ describe("Effect", () => {
   describe("Owner との統合", () => {
     test("Owner.run 内で作った Effect は Owner.dispose で dispose される", () => {
       const owner = new Owner(null);
-      const count = new Signal(0);
+      const count = signal(0);
       const fn = vi.fn(() => {
         void count.value;
       });
-      owner.run(() => new Effect(fn));
+      owner.run(() => effect(fn));
       expect(fn).toHaveBeenCalledTimes(1);
 
       owner.dispose();
@@ -310,21 +299,21 @@ describe("Effect", () => {
     test("Owner.dispose で Effect 内の cleanup も呼ばれる", () => {
       const owner = new Owner(null);
       const cleanup = vi.fn();
-      owner.run(() => new Effect(() => cleanup));
+      owner.run(() => effect(() => cleanup));
       owner.dispose();
       expect(cleanup).toHaveBeenCalledTimes(1);
     });
 
     test("ネスト Owner: 親 dispose で子 Owner 内の Effect も dispose される", () => {
       const parent = new Owner(null);
-      const count = new Signal(0);
+      const count = signal(0);
       const fn = vi.fn(() => {
         void count.value;
       });
 
       parent.run(() => {
         const child = new Owner(); // parent が current owner、child の親は parent
-        child.run(() => new Effect(fn));
+        child.run(() => effect(fn));
       });
       expect(fn).toHaveBeenCalledTimes(1);
 
@@ -335,11 +324,11 @@ describe("Effect", () => {
 
     test("Owner 外で作った Effect は Owner.dispose の影響を受けない", () => {
       const owner = new Owner(null);
-      const count = new Signal(0);
+      const count = signal(0);
       const fn = vi.fn(() => {
         void count.value;
       });
-      new Effect(fn); // owner.run の外で生成
+      effect(fn); // owner.run の外で生成
       expect(fn).toHaveBeenCalledTimes(1);
 
       owner.dispose();
@@ -349,14 +338,14 @@ describe("Effect", () => {
 
     test("同じ Owner に複数の Effect を登録、全部 dispose される", () => {
       const owner = new Owner(null);
-      const a = new Signal(0);
-      const b = new Signal(0);
+      const a = signal(0);
+      const b = signal(0);
       const fnA = vi.fn(() => void a.value);
       const fnB = vi.fn(() => void b.value);
 
       owner.run(() => {
-        new Effect(fnA);
-        new Effect(fnB);
+        effect(fnA);
+        effect(fnB);
       });
       expect(fnA).toHaveBeenCalledTimes(1);
       expect(fnB).toHaveBeenCalledTimes(1);
@@ -372,7 +361,7 @@ describe("Effect", () => {
       const owner = new Owner(null);
       let eff: Effect | null = null;
       owner.run(() => {
-        eff = new Effect(() => {});
+        eff = effect(() => {});
       });
       eff!.dispose();
       expect(() => owner.dispose()).not.toThrow();

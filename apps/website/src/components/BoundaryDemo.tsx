@@ -1,10 +1,10 @@
-import { Signal, ErrorBoundary, effect } from "@vidro/core";
+import { signal, ErrorBoundary, effect } from "@vidro/core";
 import { Button } from "./Button";
 
 // 子コンポーネント: count が 3 以上になると Effect 内で throw する。
 // boundary の catch 対象としては「子 Effect の再実行時 throw (B パターン)」に該当。
 function Risky() {
-  const count = new Signal(0);
+  const count = signal(0);
 
   effect(() => {
     if (count.value >= 3) throw new Error(`count reached ${count.value}`);

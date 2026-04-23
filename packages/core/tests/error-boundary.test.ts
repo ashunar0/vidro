@@ -2,7 +2,7 @@
 import { describe, expect, test, vi } from "vite-plus/test";
 import { h, mount } from "../src/jsx";
 import { ErrorBoundary } from "../src/error-boundary";
-import { Signal } from "../src/signal";
+import { signal } from "../src/signal";
 import { effect } from "../src/effect";
 import { onMount } from "../src/mount-queue";
 
@@ -56,7 +56,7 @@ describe("ErrorBoundary", () => {
   test("子 Effect の再実行 throw を catch", () => {
     const target = document.createElement("div");
     const onError = vi.fn();
-    const trigger = new Signal(0);
+    const trigger = signal(0);
 
     const Child = (): Node => {
       effect(() => {
@@ -158,7 +158,7 @@ describe("ErrorBoundary", () => {
   test("reset で children を再 mount (state 初期化)", () => {
     const target = document.createElement("div");
     const onError = vi.fn();
-    const trigger = new Signal(1);
+    const trigger = signal(1);
     let mountCount = 0;
 
     const Child = (): Node => {
@@ -241,7 +241,7 @@ describe("ErrorBoundary", () => {
   test("mount dispose で children owner も後片付けされる", () => {
     const target = document.createElement("div");
     const cleanup = vi.fn();
-    const trigger = new Signal(0);
+    const trigger = signal(0);
 
     const Child = (): Node => {
       effect(() => {

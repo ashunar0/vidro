@@ -1,9 +1,9 @@
-import { Signal, Computed } from "@vidro/core";
+import { signal, computed } from "@vidro/core";
 import { Button } from "./Button";
 
 export function Counter() {
-  const count = new Signal(0);
-  const doubled = new Computed(() => count.value * 2);
+  const count = signal(0);
+  const doubled = computed(() => count.value * 2);
 
   const handleDecrement = () => {
     count.value--;

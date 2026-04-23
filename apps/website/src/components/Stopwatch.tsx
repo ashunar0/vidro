@@ -1,12 +1,12 @@
-import { Signal, Computed, effect, Show } from "@vidro/core";
+import { signal, computed, effect, Show } from "@vidro/core";
 import { Button } from "./Button";
 
 export function Stopwatch() {
-  const elapsed = new Signal(0); // 経過時間 (ms)
-  const running = new Signal(false);
+  const elapsed = signal(0); // 経過時間 (ms)
+  const running = signal(false);
 
   // mm:ss.cs 形式の表示文字列。elapsed が変わるたび再計算される。
-  const display = new Computed(() => {
+  const display = computed(() => {
     const ms = elapsed.value;
     const m = Math.floor(ms / 60000);
     const s = Math.floor((ms % 60000) / 1000);

@@ -1,4 +1,4 @@
-import { Signal, Switch, Match } from "@vidro/core";
+import { signal, Switch, Match } from "@vidro/core";
 import { Counter } from "./components/Counter";
 import { Todo } from "./components/Todo";
 import { BoundaryDemo } from "./components/BoundaryDemo";
@@ -14,7 +14,7 @@ const VIEWS: { value: View; label: string }[] = [
 ];
 
 export function App() {
-  const view = new Signal<View>("counter");
+  const view = signal<View>("counter");
 
   const handleChange = (e: Event) => {
     view.value = (e.currentTarget as HTMLSelectElement).value as View;

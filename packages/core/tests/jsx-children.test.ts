@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, test } from "vite-plus/test";
-import { Signal } from "../src/signal";
+import { signal } from "../src/signal";
 import { h, mount } from "../src/jsx";
 
 // A 方式 transform が `{expr}` を `() => expr` に包むので、runtime は child として
@@ -35,7 +35,7 @@ describe("appendChild: function child の返り値ハンドリング", () => {
 
   test("関数が primitive を返すと reactive text として動く", () => {
     const target = document.createElement("div");
-    const count = new Signal(0);
+    const count = signal(0);
 
     mount(() => h("p", null, () => count.value), target);
     expect(target.textContent).toBe("0");
@@ -46,7 +46,7 @@ describe("appendChild: function child の返り値ハンドリング", () => {
 
   test("関数が Signal を返すと unwrap されて reactive text になる", () => {
     const target = document.createElement("div");
-    const count = new Signal(7);
+    const count = signal(7);
 
     // `{count}` が transform されて `() => count` になるケースを再現
     mount(() => h("p", null, () => count), target);
@@ -58,7 +58,7 @@ describe("appendChild: function child の返り値ハンドリング", () => {
 
   test("静的配列の中で Signal を混ぜても初回挿入のみ (reactive にはならない)", () => {
     const target = document.createElement("div");
-    const sig = new Signal("live");
+    const sig = signal("live");
     const staticLi = document.createElement("li");
     staticLi.textContent = "static";
     const items = [staticLi, () => sig.value] as unknown[];
