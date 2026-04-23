@@ -1,56 +1,54 @@
-import { Signal, Show } from "@vidro/core";
+import { Signal, Switch, Match } from "@vidro/core";
 import { Counter } from "./components/Counter";
 import { Todo } from "./components/Todo";
 import { BoundaryDemo } from "./components/BoundaryDemo";
-import { Button } from "./components/Button";
+import { Stopwatch } from "./components/Stopwatch";
 
-type View = "counter" | "todo" | "boundary";
+type View = "counter" | "todo" | "stopwatch" | "boundary";
+
+const VIEWS: { value: View; label: string }[] = [
+  { value: "counter", label: "counter" },
+  { value: "todo", label: "todo" },
+  { value: "stopwatch", label: "stopwatch" },
+  { value: "boundary", label: "boundary" },
+];
 
 export function App() {
   const view = new Signal<View>("counter");
 
-  // 各 view の Show は mount 時 1 回だけ children を評価する (invoke-once)。
-  // 切替は attach/detach のみ → Counter / Todo / BoundaryDemo の state はどれも保持される。
+  const handleChange = (e: Event) => {
+    view.value = (e.currentTarget as HTMLSelectElement).value as View;
+  };
+
+  // Switch + Match は早い者勝ちで 1 branch だけ mount。各 view は invoke-once で
+  // 初期化されるので、切替は attach/detach のみ → state が保持される。
   return (
     <main class="flex flex-col gap-6 p-8 w-[min(100%,480px)]">
-      <nav class="flex gap-2 justify-center">
-        <Button
-          variant="muted"
-          active={() => view.value === "counter"}
-          onClick={() => {
-            view.value = "counter";
-          }}
+      <nav class="flex justify-center">
+        <select
+          value={view.value}
+          onChange={handleChange}
+          class="px-4 py-2 text-sm border border-neutral-300 dark:border-neutral-700 rounded-lg bg-transparent text-neutral-700 dark:text-neutral-300 cursor-pointer hover:border-indigo-500 dark:hover:border-indigo-400 transition-colors"
         >
-          counter
-        </Button>
-        <Button
-          variant="muted"
-          active={() => view.value === "todo"}
-          onClick={() => {
-            view.value = "todo";
-          }}
-        >
-          todo
-        </Button>
-        <Button
-          variant="muted"
-          active={() => view.value === "boundary"}
-          onClick={() => {
-            view.value = "boundary";
-          }}
-        >
-          boundary
-        </Button>
+          {VIEWS.map((v) => (
+            <option value={v.value}>{v.label}</option>
+          ))}
+        </select>
       </nav>
-      <Show when={() => view.value === "counter"}>
-        <Counter />
-      </Show>
-      <Show when={() => view.value === "todo"}>
-        <Todo />
-      </Show>
-      <Show when={() => view.value === "boundary"}>
-        <BoundaryDemo />
-      </Show>
+      <Switch>
+        <Match when={() => view.value === "counter"}>
+          <Counter />
+        </Match>
+        <Match when={() => view.value === "todo"}>
+          <Todo />
+        </Match>
+        <Match when={() => view.value === "stopwatch"}>
+          <Stopwatch />
+        </Match>
+        <Match when={() => view.value === "boundary"}>
+          <BoundaryDemo />
+        </Match>
+      </Switch>
     </main>
   );
 }
