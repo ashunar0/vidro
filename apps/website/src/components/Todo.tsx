@@ -1,4 +1,4 @@
-import { Signal, Ref, For, Computed, Effect, batch, onMount, untrack } from "@vidro/core";
+import { Signal, Ref, For, Computed, effect, batch, onMount, untrack } from "@vidro/core";
 import { Button } from "./Button";
 
 type Item = { id: string; label: string };
@@ -17,7 +17,7 @@ export function Todo() {
   // batch の効果を可視化する観測用 Effect。items が変わるたびに +1 される。
   // 書き込みは untrack で包み、自身の再実行ループを断つ。
   const effectRuns = new Signal(0);
-  new Effect(() => {
+  effect(() => {
     void items.value;
     untrack(() => {
       effectRuns.value = effectRuns.value + 1;

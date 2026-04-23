@@ -1,4 +1,4 @@
-import { Effect } from "./effect";
+import { effect } from "./effect";
 import { Signal } from "./signal";
 import { onCleanup, Owner } from "./owner";
 
@@ -27,7 +27,7 @@ export function For<T>(props: ForProps<T>): Node {
   let entries = new Map<T, { node: Node; owner: Owner }>();
   let fallbackNode: Node | null = null;
 
-  new Effect(() => {
+  effect(() => {
     const list = readEach(props.each);
     const parent = anchor.parentNode;
 

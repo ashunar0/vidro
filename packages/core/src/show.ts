@@ -1,4 +1,4 @@
-import { Effect } from "./effect";
+import { effect } from "./effect";
 import { Signal } from "./signal";
 import { onCleanup } from "./owner";
 
@@ -25,7 +25,7 @@ export function Show<T>(props: ShowProps<T>): Node {
 
   let currentBranch: Node | null = null;
 
-  new Effect(() => {
+  effect(() => {
     const cond = readWhen(props.when);
     const next = (cond ? props.children : props.fallback) ?? null;
 

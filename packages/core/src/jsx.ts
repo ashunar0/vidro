@@ -1,5 +1,5 @@
 import { Signal } from "./signal";
-import { Effect } from "./effect";
+import { effect } from "./effect";
 import { flushMountQueue, runWithMountScope } from "./mount-queue";
 import { Owner } from "./owner";
 import { Ref } from "./ref";
@@ -83,7 +83,7 @@ function appendChild(parent: Node, child: unknown): void {
     // B 書き: `{signal}` をそのまま渡された場合のサポート
     const text = document.createTextNode("");
     parent.appendChild(text);
-    new Effect(() => {
+    effect(() => {
       text.data = toText(child.value);
     });
     return;
@@ -95,7 +95,7 @@ function appendChild(parent: Node, child: unknown): void {
     // なるので、そこでもう一段 .value を読んで unwrap する (forward-compat)。
     const text = document.createTextNode("");
     parent.appendChild(text);
-    new Effect(() => {
+    effect(() => {
       let v = (child as () => unknown)();
       if (v instanceof Signal) v = v.value;
       text.data = toText(v);
@@ -139,14 +139,14 @@ function applyProp(el: Element, key: string, value: unknown): void {
   const apply = PROPS_AS_PROPERTY.has(key) ? setProperty : setAttr;
 
   if (value instanceof Signal) {
-    new Effect(() => {
+    effect(() => {
       apply(el, key, value.value);
     });
     return;
   }
 
   if (typeof value === "function") {
-    new Effect(() => {
+    effect(() => {
       let v = (value as () => unknown)();
       if (v instanceof Signal) v = v.value;
       apply(el, key, v);
