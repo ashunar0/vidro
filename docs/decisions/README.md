@@ -37,3 +37,4 @@ Consequences と Revisit when は**暫定実装の場合は必ず書く**。
 - [0006-factory-only-api](./0006-factory-only-api.md) — primitive 生成 API を factory 一本化、class を internal に (`new Signal(0)` 廃止 / 型は `export type` で残す)
 - [0007-component-props-proxy](./0007-component-props-proxy.md) — A 方式 transform を component 境界まで貫通 (Proxy props + `_reactive` marker)
 - [0008-error-tsx-convention](./0008-error-tsx-convention.md) — `error.tsx` 規約 + Router での error 統合 (階層的 lookup / `ErrorPageProps` / reset で loader 再実行)
+- [0009-layout-loader-parallel-fetch](./0009-layout-loader-parallel-fetch.md) — `layout.server.ts` 規約 + 並列 fetch + `LayoutProps<L>` conditional (waterfall 解消、親 data → 子は提供しない、error 階層は MVP 単純化)
