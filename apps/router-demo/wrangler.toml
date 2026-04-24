@@ -1,0 +1,8 @@
+name = "router-demo"
+main = "./dist-server/index.mjs"
+compatibility_date = "2026-04-17"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"

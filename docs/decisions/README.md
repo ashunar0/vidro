@@ -42,3 +42,4 @@ Consequences と Revisit when は**暫定実装の場合は必ず書く**。
 - [0011-route-tree-type-generation](./0011-route-tree-type-generation.md) — Route tree 型生成 plugin (`@vidro/plugin` の `routeTypes()`) + props 完結方針 (useParams 不採用) + `LoaderArgs<R extends keyof Routes>` 拡張
 - [0012-server-boundary-dev](./0012-server-boundary-dev.md) — `serverBoundary()` plugin (dev 版): `/__loader` HTTP RPC + client bundle stub + error hydrate (案 B Step 1-4)
 - [0013-vidro-output-directory](./0013-vidro-output-directory.md) — 生成物置き場を `.vidro/` に集約、tsconfig base を `@vidro/plugin/tsconfig.base.json` で module extends 配布 (src/ 純化 + chicken-egg 回避)
+- [0014-server-boundary-prod](./0014-server-boundary-prod.md) — prod 側 server boundary: route manifest 生成 + `@vidro/router/server` 切り出し + 2nd pass ssr build + `env.ASSETS.fetch` で SPA fallback (案 B-2 Step 1 全体まとめ)
