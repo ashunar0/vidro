@@ -12,7 +12,7 @@ import type { Plugin } from "vite-plus";
 export type RouteTypesOptions = {
   /** routes ディレクトリ (vite root 相対)。default: "src/routes" */
   routesDir?: string;
-  /** 出力先 .d.ts (vite root 相対)。default: "src/.vidro/routes.d.ts" */
+  /** 出力先 .d.ts (vite root 相対)。default: "src/_vidro/routes.d.ts" */
   outFile?: string;
 };
 

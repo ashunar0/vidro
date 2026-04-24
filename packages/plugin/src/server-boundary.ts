@@ -18,7 +18,10 @@ import {
 // 混ざらず、DB credential / server-only logic を client に晒さない (ADR 0012 予定)。
 //
 // Step 2: route 解決 + loader 並列実行 + JSON 返却。
-//   Step 3 で Router を RPC モードに切替、Step 4 で client bundle 除外。
+// Step 3: Router を RPC モードに切替 (既存 runServerLoader 廃止)。
+// Step 4: load hook で client 環境での `.server.{ts,tsx,js,jsx}` を空 module に
+//   差し替え、client bundle に中身が含まれないようにする。SSR 側 (/__loader の
+//   ssrLoadModule 経由) は `opts.ssr === true` で通す。
 
 export type ServerBoundaryOptions = {
   /** routes ディレクトリ (vite root 相対)。default: "src/routes" */
@@ -31,8 +34,21 @@ export function serverBoundary(options: ServerBoundaryOptions = {}): Plugin {
 
   return {
     name: "vidro-server-boundary",
+    // vite 内蔵 loader や他 plugin が `.server.ts` の実ファイルを先に返してしまう
+    // ことがあるため、pre で先取りしてから stub に差し替える。
+    enforce: "pre",
     configResolved(config) {
       routesDirAbs = resolve(config.root, routesDirOpt);
+    },
+    // client bundle 除外: `.server.{ts,tsx,js,jsx}` を client 側で load したら
+    // 空 module を返す。`import.meta.glob("./routes/**/*.{ts,tsx}")` が辿る
+    // 動的 import も最終的にここを通るので、glob 経由でも中身は漏れない。
+    // SSR (opts.ssr === true) は serverBoundary 自身が ssrLoadModule で叩く
+    // pipeline なので、そちらは通して実体を読ませる。
+    load(id, opts) {
+      if (opts?.ssr) return null;
+      if (!isServerOnlyId(id)) return null;
+      return "export {}";
     },
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
@@ -157,6 +173,18 @@ function isRouteFile(name: string): boolean {
 
 function isServerFile(name: string): boolean {
   return name === "server.ts" || name === "layout.server.ts";
+}
+
+// client 側で stub に差し替える id 判定。query string (`?import` / `?url` 等) を
+// 剥がしてから basename を見る。Vidro の routes 下では:
+//   - leaf route loader: `server.ts`
+//   - layout loader: `layout.server.ts`
+// 加えて `*.server.{ts,tsx,js,jsx}` (設計書の `.server.ts` 拡張子規約) も保険で拾う。
+function isServerOnlyId(id: string): boolean {
+  const clean = id.split("?")[0] ?? id;
+  const name = clean.replace(/^.*[\\/]/, "");
+  if (name === "server.ts" || name === "layout.server.ts") return true;
+  return /\.server\.(ts|tsx|js|jsx)$/.test(clean);
 }
 
 const stubLoader = (): Promise<unknown> => Promise.resolve({});

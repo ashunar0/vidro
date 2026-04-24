@@ -40,3 +40,4 @@ Consequences と Revisit when は**暫定実装の場合は必ず書く**。
 - [0009-layout-loader-parallel-fetch](./0009-layout-loader-parallel-fetch.md) — `layout.server.ts` 規約 + 並列 fetch + `LayoutProps<L>` conditional (waterfall 解消、親 data → 子は提供しない、error 階層は MVP 単純化)
 - [0010-layout-error-propagation](./0010-layout-error-propagation.md) — layout error を **層別外側** 伝播、layout render error を `ErrorBoundary` wrap、swap の DocumentFragment 対応 (0009 の MVP を格上げ)
 - [0011-route-tree-type-generation](./0011-route-tree-type-generation.md) — Route tree 型生成 plugin (`@vidro/plugin` の `routeTypes()`) + props 完結方針 (useParams 不採用) + `LoaderArgs<R extends keyof Routes>` 拡張
+- [0012-server-boundary-dev](./0012-server-boundary-dev.md) — `serverBoundary()` plugin (dev 版): `/__loader` HTTP RPC + client bundle stub + error hydrate (案 B Step 1-4)
