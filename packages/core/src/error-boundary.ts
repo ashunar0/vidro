@@ -2,6 +2,7 @@ import { Signal } from "./signal";
 import { effect } from "./effect";
 import { Owner, getCurrentOwner, onCleanup } from "./owner";
 import { untrack } from "./observer";
+import { getRenderer } from "./renderer";
 
 type ErrorBoundaryProps = {
   /** 捕捉した error を受けて fallback UI を返す。err は throw された値、reset は state 復帰用。 */
@@ -29,6 +30,21 @@ type ErrorBoundaryProps = {
  *   自動的に親の owner chain (= 外側の ErrorBoundary もしくは root) へ伝播する。
  */
 export function ErrorBoundary(props: ErrorBoundaryProps): Node {
+  // server mode: effect / reactive 切替は不要。children を sync 実行、throw したら
+  // onError + fallback を sync 実行して返す。fallback 内 throw は bubble up に任せる
+  // (server 側で createServerHandler が拾う or renderToString caller に届く)。
+  const renderer = getRenderer();
+  if (renderer.isServer) {
+    try {
+      return props.children();
+    } catch (err) {
+      props.onError(err);
+      // fallback の reset は server では発火できない (次回は client hydration)。
+      return props.fallback(err, () => {});
+    }
+  }
+
+  // --- client mode (reactive 切替版) ---
   const anchor = document.createComment("error-boundary");
   const fragment = document.createDocumentFragment();
   fragment.appendChild(anchor);

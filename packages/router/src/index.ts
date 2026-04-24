@@ -3,6 +3,7 @@
 // 土台 interface。Routes はその alias。LoaderArgs<R> / PageProps<L> / LayoutProps<L>
 // はすべて Routes 経由で params 型を通す。
 export { Router } from "./router";
+export type { ResolvedModules, SSRProps } from "./router";
 export { Link } from "./link";
 export { navigate } from "./navigation";
 // compileRoutes / matchRoute は DOM に触らない純粋関数で、@vidro/plugin

@@ -25,6 +25,7 @@ import {
   type ServerModule,
   type ServerModuleLoader,
 } from "./route-tree";
+import type { ResolvedModules } from "./router";
 
 /**
  * navigation 処理に必要な per-request context。dev middleware は渡さず、
@@ -157,6 +158,54 @@ function jsonResponse(status: number, body: unknown): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+// --- Phase B: preload helpers (renderToString 用) ---
+// Router の server mode は sync fold するので、dynamic import は呼び側が
+// 事前に await しておく必要がある。manifest + pathname から match を計算し、
+// layout / leaf (or not-found) / error.tsx の全 modules を並列 load して
+// `ResolvedModules` で返す (ADR 0017)。
+//
+// 個別 error.tsx の load 失敗は client mode と同じく null に吸収。leaf / layout
+// の load 失敗はここで throw (呼び側の createServerHandler が捕捉する)。
+
+/** client mode の `RouteModule` / `ErrorModule` と同じ shape (router.tsx と揃える) */
+type RouteModuleLike = { default: (props: Record<string, unknown>) => unknown };
+type ErrorModuleLike = {
+  default: (props: {
+    error: unknown;
+    reset: () => void;
+    params: Record<string, string>;
+  }) => unknown;
+};
+
+/**
+ * pathname から match を計算し、必要な modules を全部並列 load する。
+ * `renderToString(<Router ssr={{resolvedModules, bootstrapData}} />)` の前に呼ぶ。
+ */
+export async function preloadRouteComponents(
+  manifest: RouteRecord,
+  pathname: string,
+): Promise<ResolvedModules> {
+  const compiled = compileRoutes(manifest);
+  const match = matchRoute(pathname, compiled);
+
+  // leaf: match.route があればそれ、無ければ not-found.tsx、どちらも無ければ null
+  const leafLoader = match.route ? match.route.load : compiled.notFound;
+
+  const [route, layouts, errors] = await Promise.all([
+    leafLoader
+      ? (leafLoader() as Promise<RouteModuleLike>).catch(() => null)
+      : Promise.resolve(null),
+    Promise.all(match.layouts.map((l) => l.load() as Promise<RouteModuleLike>)),
+    Promise.all(match.errors.map((e) => (e.load() as Promise<ErrorModuleLike>).catch(() => null))),
+  ]);
+
+  return {
+    route: route as ResolvedModules["route"],
+    layouts: layouts as ResolvedModules["layouts"],
+    errors: errors as ResolvedModules["errors"],
+  };
 }
 
 // --- bootstrap data injection ---
