@@ -81,8 +81,10 @@ export type MatchResult = {
   layouts: LayoutEntry[];
   /** 同 dir に server.ts があれば対応する ServerEntry、無ければ null */
   server: ServerEntry | null;
-  /** 最寄りの error.tsx (深い prefix が優先)。無ければ null。 */
-  error: ErrorEntry | null;
+  /** pathname に match する error.tsx 候補、**深い → 浅い順**。Router 側で
+   *  どの layer の error かに応じて、leaf は errors[0] (最寄り)、layout[i] は
+   *  pathPrefix < layouts[i].pathPrefix を満たす最初 (= 最深の外側) を選ぶ。 */
+  errors: ErrorEntry[];
   /** route + layouts の paramNames から抽出した値 */
   params: Record<string, string>;
 };
@@ -199,13 +201,18 @@ export function matchRoute(pathname: string, compiled: CompiledRoutes): MatchRes
     ? (compiled.servers.find((s) => s.path === matchedRoute!.path) ?? null)
     : null;
 
-  // error.tsx は最寄り (深い prefix) を優先。pathname にマッチする全候補から
-  // pathPrefix が最長のものを選ぶ。同 dir > 親 segment > root の優先順。
+  // error.tsx は pathname にマッチする**全候補**を深い → 浅い順で返す。Router 側で
+  // 「どの layer の error か」に応じて最寄り (leaf) / 外側 (layout) の選び分けを行う。
   const matchedErrors = compiled.errors.filter((e) => e.pattern.test(pathname));
   matchedErrors.sort((a, b) => b.pathPrefix.length - a.pathPrefix.length);
-  const error = matchedErrors[0] ?? null;
 
-  return { route: matchedRoute, layouts: matchedLayouts, server, error, params };
+  return {
+    route: matchedRoute,
+    layouts: matchedLayouts,
+    server,
+    errors: matchedErrors,
+    params,
+  };
 }
 
 // --- internal helpers ---
