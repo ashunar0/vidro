@@ -1,12 +1,23 @@
-// routes/ 配下のファイルパスを URL パターンに変換し、pathname → route + layouts の
-// match を行う。Vite plugin を挟まず app 側で import.meta.glob を書く形のため、
-// 受け取るのは `Record<filePath, () => Promise<Module>>` という最小表現。
+// routes/ 配下のファイルパスを URL パターンに変換し、pathname → route + layouts +
+// server (loader) の match を行う。Vite plugin を挟まず app 側で import.meta.glob を
+// 書く形のため、受け取るのは `Record<filePath, () => Promise<Module>>` という最小表現。
+//
+// 拾うファイル:
+// - `index.tsx` → RouteEntry (leaf component)
+// - `layout.tsx` → LayoutEntry (nested wrap)
+// - `server.ts` → ServerEntry (loader / action)
+// - `not-found.tsx` → 404 fallback (特別扱い)
 
 type RouteModule = { default: (props?: Record<string, unknown>) => Node };
 type RouteLoader = () => Promise<RouteModule>;
 
+type ServerModule = {
+  loader?: (args: { params: Record<string, string> }) => Promise<unknown>;
+};
+type ServerModuleLoader = () => Promise<ServerModule>;
+
 // Vite の import.meta.glob は `Record<string, () => Promise<unknown>>` を返すので、
-// public 型はそちらに合わせて緩く、内部で RouteLoader としてキャストする。
+// public 型はそちらに合わせて緩く、内部で個別 loader 型としてキャストする。
 export type RouteRecord = Record<string, () => Promise<unknown>>;
 
 export type RouteEntry = {
@@ -31,9 +42,17 @@ export type LayoutEntry = {
   load: RouteLoader;
 };
 
+export type ServerEntry = {
+  /** 紐付く route の URL パターン (例: "/users/:id"、RouteEntry.path と同じ) */
+  path: string;
+  /** lazy load 関数 (server.ts module) */
+  load: ServerModuleLoader;
+};
+
 export type CompiledRoutes = {
   routes: RouteEntry[];
   layouts: LayoutEntry[];
+  servers: ServerEntry[];
   notFound?: RouteLoader;
 };
 
@@ -42,41 +61,50 @@ export type MatchResult = {
   route: RouteEntry | null;
   /** 適用される layout 列。浅い → 深い順で並ぶ */
   layouts: LayoutEntry[];
+  /** 同 dir に server.ts があれば対応する ServerEntry、無ければ null */
+  server: ServerEntry | null;
   /** route + layouts の paramNames から抽出した値 */
   params: Record<string, string>;
 };
 
 /**
- * import.meta.glob の返り値を受け取り、RouteEntry / LayoutEntry のリストに変換する。
+ * import.meta.glob の返り値を受け取り、RouteEntry / LayoutEntry / ServerEntry の
+ * リストに変換する。
  * - `./routes/index.tsx` → "/"
  * - `./routes/about/index.tsx` → "/about"
  * - `./routes/users/[id]/index.tsx` → "/users/:id"
  * - `./routes/layout.tsx` → root layout (pathPrefix "")
  * - `./routes/users/layout.tsx` → "/users" 配下の layout
+ * - `./routes/users/[id]/server.ts` → "/users/:id" の server (loader)
  * - `./routes/not-found.tsx` は 404 fallback として特別扱い
  */
 export function compileRoutes(modules: RouteRecord): CompiledRoutes {
   const routes: RouteEntry[] = [];
   const layouts: LayoutEntry[] = [];
+  const servers: ServerEntry[] = [];
   let notFound: RouteLoader | undefined;
 
   for (const [filePath, rawLoad] of Object.entries(modules)) {
-    const load = rawLoad as RouteLoader;
     if (isNotFoundFile(filePath)) {
-      notFound = load;
+      notFound = rawLoad as RouteLoader;
       continue;
     }
     if (filePath.endsWith("/layout.tsx")) {
       const pathPrefix = filePathToLayoutPath(filePath);
       const { pattern, paramNames } = layoutPathToPattern(pathPrefix);
-      layouts.push({ pathPrefix, pattern, paramNames, load });
+      layouts.push({ pathPrefix, pattern, paramNames, load: rawLoad as RouteLoader });
+      continue;
+    }
+    if (filePath.endsWith("/server.ts")) {
+      const path = filePathToServerPath(filePath);
+      servers.push({ path, load: rawLoad as ServerModuleLoader });
       continue;
     }
     if (!filePath.endsWith("/index.tsx")) continue;
 
     const path = filePathToRoutePath(filePath);
     const { pattern, paramNames } = pathToPattern(path);
-    routes.push({ path, pattern, paramNames, load });
+    routes.push({ path, pattern, paramNames, load: rawLoad as RouteLoader });
   }
 
   // specificity 順で sort: dynamic segment 少ない route を先にマッチさせる。
@@ -84,13 +112,14 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
   // route 数が少ないので paramNames 数での単純比較で十分。
   routes.sort((a, b) => a.paramNames.length - b.paramNames.length);
 
-  return { routes, layouts, notFound };
+  return { routes, layouts, servers, notFound };
 }
 
 /**
- * pathname を compiled routes と突き合わせ、マッチした route と適用 layouts を返す。
- * route が見つからない (notFound 行き) ケースでも layouts は collect される。
- * これにより 404 page も root layout で wrap されて表示される。
+ * pathname を compiled routes と突き合わせ、マッチした route と適用 layouts と
+ * 対応する server を返す。route が見つからない (notFound 行き) ケースでも
+ * layouts は collect される (= 404 page も root layout で wrap される)。
+ * server は route が確定して初めて lookup する (notFound に server は無い前提)。
  */
 export function matchRoute(pathname: string, compiled: CompiledRoutes): MatchResult {
   let matchedRoute: RouteEntry | null = null;
@@ -115,7 +144,11 @@ export function matchRoute(pathname: string, compiled: CompiledRoutes): MatchRes
   // 浅い (pathPrefix が短い) 順 = 親 → 子の順
   matchedLayouts.sort((a, b) => a.pathPrefix.length - b.pathPrefix.length);
 
-  return { route: matchedRoute, layouts: matchedLayouts, params };
+  const server = matchedRoute
+    ? (compiled.servers.find((s) => s.path === matchedRoute!.path) ?? null)
+    : null;
+
+  return { route: matchedRoute, layouts: matchedLayouts, server, params };
 }
 
 // --- internal helpers ---
@@ -138,6 +171,14 @@ function filePathToRoutePath(filePath: string): string {
 function filePathToLayoutPath(filePath: string): string {
   const afterRoutes = filePath.replace(/^.*?\/routes/, "").replace(/\/layout\.tsx$/, "");
   return afterRoutes.replace(/\[([^\]]+)\]/g, ":$1");
+}
+
+// "./routes/users/[id]/server.ts" → "/users/:id"。
+// dir が同じ index.tsx と path が一致するように作る (matchRoute の lookup key)。
+function filePathToServerPath(filePath: string): string {
+  const afterRoutes = filePath.replace(/^.*?\/routes/, "").replace(/\/server\.ts$/, "");
+  const path = afterRoutes === "" ? "/" : afterRoutes;
+  return path.replace(/\[([^\]]+)\]/g, ":$1");
 }
 
 // "/users/:id" → RegExp と paramNames (route 用、完全一致)

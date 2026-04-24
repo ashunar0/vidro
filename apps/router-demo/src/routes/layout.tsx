@@ -12,7 +12,7 @@ export default function RootLayout({ children }: LayoutProps) {
         <Link href="/about">About</Link>
         <Link href="/users">Users</Link>
         <Link href="/users/1">User 1</Link>
-        <Link href="/users/42">User 42</Link>
+        <Link href="/users/5">User 5</Link>
         <Link href="/does-not-exist">404</Link>
       </nav>
       <main style="padding-top: 1rem;">{children}</main>

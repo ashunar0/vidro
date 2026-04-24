@@ -4,4 +4,4 @@ export { Router } from "./router";
 export { Link } from "./link";
 export { navigate } from "./navigation";
 export type { RouteRecord } from "./route-tree";
-export type { PageProps, LayoutProps } from "./page-props";
+export type { PageProps, LayoutProps, LoaderArgs } from "./page-props";

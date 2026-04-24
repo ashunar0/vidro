@@ -10,7 +10,7 @@ export default function Users() {
           <Link href="/users/1">User 1</Link>
         </li>
         <li>
-          <Link href="/users/42">User 42</Link>
+          <Link href="/users/5">User 5</Link>
         </li>
       </ul>
     </section>
