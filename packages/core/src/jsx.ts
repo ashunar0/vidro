@@ -4,6 +4,7 @@ import { untrack } from "./observer";
 import { flushMountQueue, runWithMountScope } from "./mount-queue";
 import { Owner } from "./owner";
 import { Ref } from "./ref";
+import { getRenderer } from "./renderer";
 
 /** Fragment marker: `<>...</>` / `h(Fragment, null, ...)` で children をグループ化する。 */
 export const Fragment = Symbol("Fragment");
@@ -11,16 +12,19 @@ export const Fragment = Symbol("Fragment");
 type ComponentFn = (props: Record<string, unknown>) => Node;
 
 /**
- * JSX 要素を real DOM として構築する。type が文字列なら IntrinsicElement、関数なら Component
- * (new child Owner の中で 1 回だけ呼ぶ)、Fragment なら DocumentFragment を返す。
+ * JSX 要素を Renderer 経由で構築する。type が文字列なら IntrinsicElement、関数なら
+ * Component (new child Owner の中で 1 回だけ呼ぶ)、Fragment なら fragment ノードを返す。
+ * DOM 依存はすべて getRenderer() 経由 (ADR 0016)。
  */
 export function h(
   type: string | ComponentFn | typeof Fragment,
   props: Record<string, unknown> | null,
   ...children: unknown[]
 ): Node {
+  const r = getRenderer();
+
   if (type === Fragment) {
-    const frag = document.createDocumentFragment();
+    const frag = r.createFragment();
     for (const child of children) appendChild(frag, child);
     return frag;
   }
@@ -44,10 +48,10 @@ export function h(
     // handleError が root で再 throw するのでここには到達しない。
     const owner = new Owner();
     const result = owner.runCatching(() => type(propsProxy));
-    return result ?? document.createComment("vidro-error");
+    return result ?? r.createComment("vidro-error");
   }
 
-  const el = document.createElement(type);
+  const el = r.createElement(type);
   if (props) {
     for (const [key, value] of Object.entries(props)) {
       applyProp(el, key, value);
@@ -61,6 +65,9 @@ export function h(
  * JSX element を target に mount する。戻り値は dispose 関数で、呼ぶと DOM を除去 + 配下の
  * Effect / child Owner を全て解放する。fn を thunk で受けるのは、root Owner を active にした
  * 状態で JSX を評価するため (h の内側で作られる Effect / 子 Owner がこの root に紐づく)。
+ *
+ * mount は client only の API なので、target.appendChild / removeChild は DOM を直接触る
+ * (ADR 0016: boundary で renderer 抽象を貫かない例外)。
  */
 export function mount(fn: () => Node, target: Element): () => void {
   // detached root (parent=null) を作って mount 用の独立スコープにする
@@ -117,22 +124,24 @@ function wrapComponentProps(rawProps: Record<string, unknown>): Record<string, u
 function appendChild(parent: Node, child: unknown): void {
   if (child == null || child === false || child === true) return;
 
+  const r = getRenderer();
+
   if (Array.isArray(child)) {
     for (const c of child) appendChild(parent, c);
     return;
   }
 
   if (child instanceof Node) {
-    parent.appendChild(child);
+    r.appendChild(parent, child);
     return;
   }
 
   if (child instanceof Signal) {
     // B 書き: `{signal}` をそのまま渡された場合のサポート
-    const text = document.createTextNode("");
-    parent.appendChild(text);
+    const text = r.createText("");
+    r.appendChild(parent, text);
     effect(() => {
-      text.data = toText(child.value);
+      r.setText(text, toText(child.value));
     });
     return;
   }
@@ -149,24 +158,24 @@ function appendChild(parent: Node, child: unknown): void {
       return;
     }
     if (peeked instanceof Node) {
-      parent.appendChild(peeked);
+      r.appendChild(parent, peeked);
       return;
     }
-    const text = document.createTextNode("");
-    parent.appendChild(text);
+    const text = r.createText("");
+    r.appendChild(parent, text);
     // 初回は上の peek で評価済みだが、依存追跡に乗せるため effect 内で改めて呼ぶ。
     // `{signal}` が transform されたケースでは返り値が Signal instance になるので、
     // もう一段 .value を読んで unwrap する (forward-compat)。
     effect(() => {
       let v = (child as () => unknown)();
       if (v instanceof Signal) v = v.value;
-      text.data = toText(v);
+      r.setText(text, toText(v));
     });
     return;
   }
 
   // primitive (string / number / bigint 等)
-  parent.appendChild(document.createTextNode(toText(child)));
+  r.appendChild(parent, r.createText(toText(child)));
 }
 
 // null / undefined / false は空文字、primitive は文字列化、object 等は空文字で妥協する
@@ -185,6 +194,8 @@ const PROPS_AS_PROPERTY = new Set(["value", "checked", "selected"]);
 
 // Element に 1 つの prop を適用する。on[Event] は listener、function / Signal は reactive。
 function applyProp(el: Element, key: string, value: unknown): void {
+  const r = getRenderer();
+
   // ref={myRef} は属性としてではなく、Ref インスタンスの .current に要素を代入して終了。
   // Ref 以外 (関数 callback 等) は現状サポート対象外、黙って attribute 化せず捨てる。
   if (key === "ref") {
@@ -194,7 +205,7 @@ function applyProp(el: Element, key: string, value: unknown): void {
 
   if (key.startsWith("on") && key.length > 2 && typeof value === "function") {
     const eventName = key.slice(2).toLowerCase();
-    el.addEventListener(eventName, value as EventListener);
+    r.addEventListener(el, eventName, value as EventListener);
     return;
   }
 
@@ -221,32 +232,34 @@ function applyProp(el: Element, key: string, value: unknown): void {
 
 // DOM property に直接代入 (null / undefined は空文字へ正規化)
 function setProperty(el: Element, key: string, value: unknown): void {
-  (el as unknown as Record<string, unknown>)[key] = value ?? "";
+  getRenderer().setProperty(el, key, value);
 }
 
 // class / className / style を特別扱いし、それ以外は setAttribute / removeAttribute を使う
 function setAttr(el: Element, key: string, value: unknown): void {
+  const r = getRenderer();
+
   if (key === "class" || key === "className") {
-    (el as HTMLElement).className = toAttrString(value);
+    r.setClassName(el, toAttrString(value));
     return;
   }
 
   if (key === "style" && value !== null && typeof value === "object") {
-    Object.assign((el as HTMLElement).style, value as object);
+    r.assignStyle(el, value as Record<string, unknown>);
     return;
   }
 
   if (value == null || value === false) {
-    el.removeAttribute(key);
+    r.removeAttribute(el, key);
     return;
   }
 
   if (value === true) {
-    el.setAttribute(key, "");
+    r.setAttribute(el, key, "");
     return;
   }
 
-  el.setAttribute(key, toAttrString(value));
+  r.setAttribute(el, key, toAttrString(value));
 }
 
 // 属性値として受け入れる primitive のみ文字列化する。オブジェクト等は空文字にして

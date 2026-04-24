@@ -44,3 +44,4 @@ Consequences と Revisit when は**暫定実装の場合は必ず書く**。
 - [0013-vidro-output-directory](./0013-vidro-output-directory.md) — 生成物置き場を `.vidro/` に集約、tsconfig base を `@vidro/plugin/tsconfig.base.json` で module extends 配布 (src/ 純化 + chicken-egg 回避)
 - [0014-server-boundary-prod](./0014-server-boundary-prod.md) — prod 側 server boundary: route manifest 生成 + `@vidro/router/server` 切り出し + 2nd pass ssr build + `env.ASSETS.fetch` で SPA fallback (案 B-2 Step 1 全体まとめ)
 - [0015-ssr-phase-a-bootstrap-data](./0015-ssr-phase-a-bootstrap-data.md) — SSR Phase A: navigation response の index.html に `__vidro_data` script を inject して初回 `/__loader` fetch をスキップ (HTML render は Phase B で追加予定)
+- [0016-ssr-phase-b-universal-renderer](./0016-ssr-phase-b-universal-renderer.md) — SSR Phase B Step B-1: Universal renderer 抽象化 + fine-grained hydration 戦略 + object tree→string buffer 段階実装方針 (effect は server で 1 回走らせて捨てる)

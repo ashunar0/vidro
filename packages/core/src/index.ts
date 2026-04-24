@@ -18,3 +18,5 @@ export { Show } from "./show";
 export { Switch, Match } from "./switch";
 export { For } from "./for";
 export { ErrorBoundary } from "./error-boundary";
+export { setRenderer, getRenderer } from "./renderer";
+export type { Renderer } from "./renderer";
