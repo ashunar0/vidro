@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import type { Plugin, ViteDevServer } from "vite-plus";
+import { build, type Plugin, type ResolvedConfig, type ViteDevServer } from "vite-plus";
 import { createServerHandler, type ServerHandler } from "@vidro/router/server";
 import type { RouteRecord } from "@vidro/router";
 
@@ -21,23 +21,37 @@ import type { RouteRecord } from "@vidro/router";
 // 最終的にここを通るので、glob 経由でも中身は漏れない。SSR (opts.ssr === true) は
 // serverBoundary 自身が ssrLoadModule で叩く pipeline なので、そちらは通して
 // 実体を読ませる。
+//
+// 案 B-2 Step 1.3: `vp build` (client bundle) 終了後、closeBundle hook で
+// vite の programmatic build() を 2nd pass として呼び、`.vidro/server-entry.ts`
+// を ssr build して `dist-server/index.mjs` を生成する。Cloudflare Workers 等の
+// WinterCG 環境で `wrangler.toml` の `main` として直接参照できる形。再帰阻止は
+// `config.build.ssr` が立ってたら抜けるだけで足りる (ssr build 時のみ立つ)。
 
 export type ServerBoundaryOptions = {
   /** routes ディレクトリ (vite root 相対)。default: "src/routes" */
   routesDir?: string;
+  /** server entry ファイル (vite root 相対)。default: ".vidro/server-entry.ts" */
+  serverEntry?: string;
+  /** server build の出力 dir (vite root 相対)。default: "dist-server" */
+  serverOutDir?: string;
 };
 
 export function serverBoundary(options: ServerBoundaryOptions = {}): Plugin {
   const routesDirOpt = options.routesDir ?? "src/routes";
+  const serverEntryOpt = options.serverEntry ?? ".vidro/server-entry.ts";
+  const serverOutDirOpt = options.serverOutDir ?? "dist-server";
   let routesDirAbs = "";
+  let config: ResolvedConfig | null = null;
 
   return {
     name: "vidro-server-boundary",
     // vite 内蔵 loader や他 plugin が `.server.ts` の実ファイルを先に返してしまう
     // ことがあるため、pre で先取りしてから stub に差し替える。
     enforce: "pre",
-    configResolved(config) {
-      routesDirAbs = resolve(config.root, routesDirOpt);
+    configResolved(c) {
+      config = c;
+      routesDirAbs = resolve(c.root, routesDirOpt);
     },
     load(id, opts) {
       if (opts?.ssr) return null;
@@ -52,6 +66,49 @@ export function serverBoundary(options: ServerBoundaryOptions = {}): Plugin {
           writeJson(res, 500, { error: { message: String(err) } });
         });
       });
+    },
+    closeBundle: {
+      sequential: true,
+      order: "post",
+      async handler() {
+        if (!config) return;
+        // dev / preview / serve 等は対象外、`vp build` だけ。
+        if (config.command !== "build") return;
+        // 2nd pass 本体 (ssr build) 中に closeBundle が再発火しても、
+        // build.ssr が立っているのでここで抜ける。再帰阻止。
+        if (config.build.ssr) return;
+
+        await build({
+          // user の vite.config.ts を自動検出させる (configFile 未指定)。
+          // jsxTransform() と routeTypes() は 2nd pass でも走ってほしいが、
+          // 再帰の起点である serverBoundary の closeBundle は `build.ssr` で抜ける。
+          root: config.root,
+          build: {
+            ssr: serverEntryOpt,
+            outDir: serverOutDirOpt,
+            emptyOutDir: true,
+            target: "es2022",
+            rollupOptions: {
+              output: {
+                entryFileNames: "index.mjs",
+                format: "esm",
+              },
+            },
+          },
+          ssr: {
+            // Cloudflare Workers (workerd) 向け。Node 向けに出す時は user が
+            // 上書きできるよう option 化する余地を残す (YAGNI、今は Workers 一択)。
+            target: "webworker",
+            // Workers では node_modules を配らないので all inline。
+            noExternal: true,
+          },
+          resolve: {
+            // @vidro/router 等が workerd / worker / browser の export
+            // condition を持つようになった時に拾えるようにしておく。
+            conditions: ["workerd", "worker", "browser"],
+          },
+        });
+      },
     },
   };
 }
