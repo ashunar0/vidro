@@ -1,15 +1,17 @@
 import type { LayoutProps } from "@vidro/router";
+import type { loader } from "./layout.server";
 
-// /users 配下 (= /users と /users/:id) で共通の nested layout。breadcrumb 風の
-// 帯を出して、その下に matched route の中身を差し込む。dashed border は
-// 「nested layout が wrap してる」ことを目視確認するための装飾。
-export default function UsersLayout({ children }: LayoutProps) {
+// /users 配下 (= /users と /users/:id) で共通の nested layout。layout 自身の loader
+// を持ち、users 一覧を小さな badge で表示。leaf 側の loader と 並列 で fetch される。
+export default function UsersLayout({ data, children }: LayoutProps<typeof loader>) {
   return (
     <div
       data-testid="users-layout"
       style="border: 1px dashed #888; padding: 0.75rem; border-radius: 4px;"
     >
-      <p style="margin: 0 0 0.5rem; font-size: 0.85rem; color: #666;">users layout (nested)</p>
+      <p style="margin: 0 0 0.5rem; font-size: 0.85rem; color: #666;">
+        users layout (nested) — <strong>{data.users.length}</strong> users in list
+      </p>
       {children}
     </div>
   );

@@ -5,17 +5,20 @@
 // 拾うファイル:
 // - `index.tsx` → RouteEntry (leaf component)
 // - `layout.tsx` → LayoutEntry (nested wrap)
-// - `server.ts` → ServerEntry (loader / action)
+// - `server.ts` → ServerEntry (leaf の loader / action)
+// - `layout.server.ts` → layout 自身の loader (Phase 3 第 2 弾)。LayoutEntry.serverLoad
+//   に紐付けられ、matchRoute 時に layout 用 data を並列 fetch する対象になる。
 // - `error.tsx` → ErrorEntry (階層的 error 表示)
 // - `not-found.tsx` → 404 fallback (特別扱い)
 
 type RouteModule = { default: (props?: Record<string, unknown>) => Node };
 type RouteLoader = () => Promise<RouteModule>;
 
-type ServerModule = {
+// router.tsx 側から layout loader 実行に使うので export。
+export type ServerModule = {
   loader?: (args: { params: Record<string, string> }) => Promise<unknown>;
 };
-type ServerModuleLoader = () => Promise<ServerModule>;
+export type ServerModuleLoader = () => Promise<ServerModule>;
 
 // Vite の import.meta.glob は `Record<string, () => Promise<unknown>>` を返すので、
 // public 型はそちらに合わせて緩く、内部で個別 loader 型としてキャストする。
@@ -39,8 +42,10 @@ export type LayoutEntry = {
   pattern: RegExp;
   /** capture group の順序に対応する param 名 */
   paramNames: string[];
-  /** lazy load 関数 */
+  /** lazy load 関数 (layout component) */
   load: RouteLoader;
+  /** 同 dir に layout.server.ts があれば layout 用 loader。なければ null。 */
+  serverLoad: ServerModuleLoader | null;
 };
 
 export type ServerEntry = {
@@ -90,6 +95,7 @@ export type MatchResult = {
  * - `./routes/users/[id]/index.tsx` → "/users/:id"
  * - `./routes/layout.tsx` → root layout (pathPrefix "")
  * - `./routes/users/layout.tsx` → "/users" 配下の layout
+ * - `./routes/users/layout.server.ts` → "/users" 配下 layout の loader
  * - `./routes/users/[id]/server.ts` → "/users/:id" の server (loader)
  * - `./routes/not-found.tsx` は 404 fallback として特別扱い
  */
@@ -98,6 +104,9 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
   const layouts: LayoutEntry[] = [];
   const servers: ServerEntry[] = [];
   const errors: ErrorEntry[] = [];
+  // layout.server.ts は layout と 1:1 で紐付くので、pathPrefix -> loader の Map に
+  // 一旦貯めて、layouts を組み立て終わってから lookup する (2-pass)。
+  const layoutServers = new Map<string, ServerModuleLoader>();
   let notFound: RouteLoader | undefined;
 
   for (const [filePath, rawLoad] of Object.entries(modules)) {
@@ -108,7 +117,13 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
     if (filePath.endsWith("/layout.tsx")) {
       const pathPrefix = filePathToLayoutPath(filePath);
       const { pattern, paramNames } = layoutPathToPattern(pathPrefix);
-      layouts.push({ pathPrefix, pattern, paramNames, load: rawLoad as RouteLoader });
+      layouts.push({
+        pathPrefix,
+        pattern,
+        paramNames,
+        load: rawLoad as RouteLoader,
+        serverLoad: null,
+      });
       continue;
     }
     if (filePath.endsWith("/error.tsx")) {
@@ -116,6 +131,12 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
       // error.tsx は layout と同じ prefix-match (sub tree 全体に効く) で挙動が一致。
       const { pattern, paramNames } = layoutPathToPattern(pathPrefix);
       errors.push({ pathPrefix, pattern, paramNames, load: rawLoad as RouteLoader });
+      continue;
+    }
+    // layout.server.ts は server.ts にも endsWith で match するので先に判定。
+    if (filePath.endsWith("/layout.server.ts")) {
+      const pathPrefix = filePathToLayoutServerPath(filePath);
+      layoutServers.set(pathPrefix, rawLoad as ServerModuleLoader);
       continue;
     }
     if (filePath.endsWith("/server.ts")) {
@@ -128,6 +149,13 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
     const path = filePathToRoutePath(filePath);
     const { pattern, paramNames } = pathToPattern(path);
     routes.push({ path, pattern, paramNames, load: rawLoad as RouteLoader });
+  }
+
+  // layouts に layout.server.ts を重ね合わせ。pathPrefix が一致する layout の
+  // serverLoad に詰める。
+  for (const layout of layouts) {
+    const ls = layoutServers.get(layout.pathPrefix);
+    if (ls) layout.serverLoad = ls;
   }
 
   // specificity 順で sort: dynamic segment 少ない route を先にマッチさせる。
@@ -213,6 +241,13 @@ function filePathToServerPath(filePath: string): string {
 // "./routes/users/error.tsx" → "/users"、"./routes/error.tsx" → "" (root)
 function filePathToErrorPath(filePath: string): string {
   const afterRoutes = filePath.replace(/^.*?\/routes/, "").replace(/\/error\.tsx$/, "");
+  return afterRoutes.replace(/\[([^\]]+)\]/g, ":$1");
+}
+
+// "./routes/users/layout.server.ts" → "/users"、"./routes/layout.server.ts" → "" (root)
+// layout.tsx と同じ pathPrefix になるよう意図的に揃える (lookup key として使う)。
+function filePathToLayoutServerPath(filePath: string): string {
+  const afterRoutes = filePath.replace(/^.*?\/routes/, "").replace(/\/layout\.server\.ts$/, "");
   return afterRoutes.replace(/\[([^\]]+)\]/g, ":$1");
 }
 

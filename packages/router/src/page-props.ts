@@ -20,13 +20,24 @@ export type PageProps<L extends AnyLoader> = {
   params: Parameters<L>[0]["params"];
 };
 
-// layout component が受け取る props 型。Phase 3 第 1 弾では layout 自身の loader は
-// scope 外なので、PageProps とは独立した shape にしている (Params + children)。
-// layout loader が来たら、ここも loader generic を取れるよう拡張する。
-export type LayoutProps<Params extends Record<string, string> = Record<string, string>> = {
-  params: Params;
-  children: Node;
-};
+// layout component が受け取る props 型。
+// - loader **なし** layout: `LayoutProps` (generic 省略) → `{ params, children }` の shape。
+// - loader **あり** layout: `LayoutProps<typeof loader>` → `{ data, params, children }` に
+//   膨らむ。PageProps と同じ思想で、loader の戻り値型を変えるだけで data 型が追従する。
+//
+// conditional type で 1 つの型に両対応を畳んでいるのは、layout を書くときに
+// loader 有無で「別の型名を使い分ける」ことを避けたいため。PageProps は loader 必須
+// 前提なのに対し、layout は loader optional という違いがここに出ている。
+export type LayoutProps<L extends AnyLoader | undefined = undefined> = L extends AnyLoader
+  ? {
+      data: Awaited<ReturnType<L>>;
+      params: Parameters<L>[0]["params"];
+      children: Node;
+    }
+  : {
+      params: Record<string, string>;
+      children: Node;
+    };
 
 // error.tsx が受け取る props 型。loader / render で発生した error を `error` で受けて、
 // `reset()` で同 pathname に再 navigate (loader 再実行) を促す。`params` は最寄りの
