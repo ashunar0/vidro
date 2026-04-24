@@ -1,23 +1,32 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import type { Plugin } from "vite-plus";
 
-// routes/ ディレクトリを walk して `RouteMap` interface を module augmentation
-// する `.d.ts` を生成する vite plugin。`routes/users/[id]/index.tsx` のような
-// ファイル配置から `"/users/:id": { params: { id: string } }` を起こし、
-// `LoaderArgs<"/users/:id">` / `PageProps<typeof loader>` のどちらも Routes
-// 辞書経由で type-safe に使えるようにする (ADR 0011)。
-// 生成物は vite root 直下の `.vidro/routes.d.ts` に出す (ADR 0013)。
-// tsconfig base は plugin package に同梱されている (`@vidro/plugin/tsconfig.base.json`)
-// ので、user tsconfig が extends するだけで Vidro が必要とする compilerOptions
-// が揃う。
+// routes/ ディレクトリを walk して `.vidro/` 配下の静的 artifact を生成する
+// vite plugin。生成物は 2 種類:
+//
+// 1. `.vidro/routes.d.ts` — `RouteMap` interface の module augmentation。
+//    `routes/users/[id]/index.tsx` から `"/users/:id": { params: { id: string } }`
+//    を起こして Routes 辞書経由で LoaderArgs<R> / PageProps<typeof loader> を
+//    type-safe に使えるようにする (ADR 0011)。
+// 2. `.vidro/route-manifest.ts` — server bundle 向けの **静的 import** による
+//    `RouteRecord`。dev は vite の `server.ssrLoadModule()` で loader を
+//    on-the-fly 読み込みするが、prod の Cloudflare Workers では動的 fs 読みが
+//    できないので、build 時に全 `.server.ts` / `layout.server.ts` を静的 import
+//    で並べた manifest を生成して server entry から読む (案 B-2 Step 1.1)。
+//
+// 置き場は vite root 直下の `.vidro/` に集約 (ADR 0013)。tsconfig base は plugin
+// package に同梱されている (`@vidro/plugin/tsconfig.base.json`) ので、user
+// tsconfig が extends するだけで Vidro が必要とする compilerOptions が揃う。
 
 export type RouteTypesOptions = {
   /** routes ディレクトリ (vite root 相対)。default: "src/routes" */
   routesDir?: string;
   /** 出力先 .d.ts (vite root 相対)。default: ".vidro/routes.d.ts" */
   outFile?: string;
+  /** 出力先 manifest .ts (vite root 相対)。default: ".vidro/route-manifest.ts" */
+  manifestFile?: string;
 };
 
 /** @vidro/plugin の routeTypes plugin 本体。 */
@@ -26,36 +35,39 @@ export function routeTypes(options: RouteTypesOptions = {}): Plugin {
   // 生成物は vite root 直下の `.vidro/` に集約 (SvelteKit `.svelte-kit/` /
   // Astro `.astro/` 式)。`.gitignore` に `.vidro/` を入れて artifact 扱いにする。
   const outFileOpt = options.outFile ?? ".vidro/routes.d.ts";
+  const manifestFileOpt = options.manifestFile ?? ".vidro/route-manifest.ts";
 
   let routesDirAbs = "";
   let outFileAbs = "";
+  let manifestFileAbs = "";
 
   return {
     name: "vidro-route-types",
     async configResolved(config) {
       routesDirAbs = resolve(config.root, routesDirOpt);
       outFileAbs = resolve(config.root, outFileOpt);
-      await generate(routesDirAbs, outFileAbs);
+      manifestFileAbs = resolve(config.root, manifestFileOpt);
+      await generateAll(routesDirAbs, outFileAbs, manifestFileAbs);
     },
     async buildStart() {
       // watch 外から呼ばれる CLI (vp build 等) でも確実に生成されるよう二重化。
-      await generate(routesDirAbs, outFileAbs);
+      await generateAll(routesDirAbs, outFileAbs, manifestFileAbs);
     },
     configureServer(server) {
-      // routesDir 配下の index.tsx / layout.tsx の add/unlink/rename で再生成。
-      // 既存ファイルの編集は RouteMap の形を変えないので listen しない (再生成
+      // routesDir 配下の routable file の add/unlink/rename で再生成。
+      // 既存ファイルの編集は artifact の形を変えないので listen しない (再生成
       // コストを抑える)。
       const handler = async (file: string) => {
         if (!file.startsWith(routesDirAbs)) return;
         if (!isRouteShapeFile(file)) return;
-        await generate(routesDirAbs, outFileAbs);
+        await generateAll(routesDirAbs, outFileAbs, manifestFileAbs);
       };
       server.watcher.on("add", handler);
       server.watcher.on("unlink", handler);
       // dir 単位の削除 (rename 等) は file 粒度の event が来ないことがあるので
       // 無条件で regenerate する。routes 数が多くない toy runtime 段階では十分。
       server.watcher.on("unlinkDir", () => {
-        void generate(routesDirAbs, outFileAbs);
+        void generateAll(routesDirAbs, outFileAbs, manifestFileAbs);
       });
     },
   };
@@ -63,35 +75,63 @@ export function routeTypes(options: RouteTypesOptions = {}): Plugin {
 
 // --- internal helpers ---
 
+type RouteFileKind = "index" | "layout" | "server" | "layout.server" | "error" | "not-found";
+
+type RouteFile = {
+  kind: RouteFileKind;
+  absPath: string;
+};
+
+const ROUTE_FILE_KIND: Record<string, RouteFileKind> = {
+  "index.tsx": "index",
+  "layout.tsx": "layout",
+  "server.ts": "server",
+  "layout.server.ts": "layout.server",
+  "error.tsx": "error",
+  "not-found.tsx": "not-found",
+};
+
+function basenameOf(filePath: string): string {
+  return filePath.split(/[\\/]/).pop() ?? "";
+}
+
 function isRouteShapeFile(filePath: string): boolean {
-  return /[\\/](index|layout)\.tsx$/.test(filePath);
+  return basenameOf(filePath) in ROUTE_FILE_KIND;
 }
 
-// routes/ を再帰的に walk し、index.tsx / layout.tsx が存在する dir の URL
-// pattern をすべて collect する。dir 単位で dedupe するので、同 dir に
-// index.tsx + layout.tsx が両方あっても 1 entry になる。
-async function collectRoutePaths(routesDirAbs: string): Promise<string[]> {
+// routes/ を再帰的に walk し、規約上の routable file を全部拾う。
+async function collectRouteFiles(routesDirAbs: string): Promise<RouteFile[]> {
   if (!existsSync(routesDirAbs)) return [];
-  const paths = new Set<string>();
-  await walk(routesDirAbs, routesDirAbs, paths);
-  return Array.from(paths).sort();
+  const files: RouteFile[] = [];
+  await walk(routesDirAbs, files);
+  // 決定的な生成のため absPath でソート (input の readdir 順に依存させない)。
+  files.sort((a, b) => a.absPath.localeCompare(b.absPath));
+  return files;
 }
 
-async function walk(dir: string, routesDirAbs: string, out: Set<string>): Promise<void> {
+async function walk(dir: string, out: RouteFile[]): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
-    const full = join(dir, entry.name);
+    const full = `${dir}/${entry.name}`;
     if (entry.isDirectory()) {
-      await walk(full, routesDirAbs, out);
+      await walk(full, out);
       continue;
     }
-    if (entry.name !== "index.tsx" && entry.name !== "layout.tsx") continue;
-    const rel = relative(routesDirAbs, dir);
-    out.add(dirToRoutePath(rel));
+    const kind = ROUTE_FILE_KIND[entry.name];
+    if (!kind) continue;
+    out.push({ kind, absPath: full });
   }
 }
 
-// "users/[id]" → "/users/:id"、"" (routes 直下) → "/"
+// "/Users/.../routes/users/[id]/server.ts" → "/routes/users/[id]/server.ts"
+// compileRoutes は filePath を `.replace(/^.*?\/routes/, "")` で解釈するので、
+// "/routes/" を含む形にしておけば absolute / relative どちらでも同じ解釈になる。
+function toManifestKey(absPath: string, routesDirAbs: string): string {
+  const suffix = absPath.slice(routesDirAbs.length).replace(/\\/g, "/");
+  return `/routes${suffix}`;
+}
+
+// dirToRoutePath: "users/[id]" → "/users/:id"、"" (routes 直下) → "/"
 function dirToRoutePath(rel: string): string {
   if (rel === "") return "/";
   const parts = rel.split(/[\\/]/).map((p) => p.replace(/^\[([^\]]+)\]$/, ":$1"));
@@ -107,12 +147,22 @@ function extractParams(path: string): string[] {
   return names;
 }
 
-function renderDts(paths: string[]): string {
+// --- renderers ---
+
+function renderDts(files: RouteFile[], routesDirAbs: string): string {
+  // index.tsx / layout.tsx が存在する dir の URL pattern を dir 単位で dedupe。
+  const set = new Set<string>();
+  for (const f of files) {
+    if (f.kind !== "index" && f.kind !== "layout") continue;
+    const relDir = relative(routesDirAbs, dirname(f.absPath));
+    set.add(dirToRoutePath(relDir));
+  }
+  const paths = Array.from(set).sort();
+
   const lines: string[] = [];
   lines.push("// AUTO-GENERATED by @vidro/plugin routeTypes() — DO NOT EDIT");
   // side effect import で @vidro/router の module resolution を確実に発火させ、
-  // その上で interface augmentation を重ねる。`export {}` 相当のファイル種別も
-  // この import が担うので別途入れる必要は無い。
+  // その上で interface augmentation を重ねる。
   lines.push('import "@vidro/router";');
   lines.push("");
   lines.push('declare module "@vidro/router" {');
@@ -130,11 +180,60 @@ function renderDts(paths: string[]): string {
   return lines.join("\n") + "\n";
 }
 
-async function generate(routesDirAbs: string, outFileAbs: string): Promise<void> {
-  const paths = await collectRoutePaths(routesDirAbs);
-  const content = renderDts(paths);
+function renderManifest(files: RouteFile[], routesDirAbs: string, manifestFileAbs: string): string {
+  // server.ts / layout.server.ts は静的 import で実 module をロード、それ以外の
+  // tsx 系は stub (server 側では呼ばれないが matchRoute の entry 作成のため key
+  // は残す)。
+  const manifestDir = dirname(manifestFileAbs);
+  const serverFiles = files.filter((f) => f.kind === "server" || f.kind === "layout.server");
+
+  const lines: string[] = [];
+  lines.push("// AUTO-GENERATED by @vidro/plugin routeTypes() — DO NOT EDIT");
+  lines.push(
+    "// prod server bundle 向け: server.ts / layout.server.ts を静的 import で並べた RouteRecord。",
+  );
+  lines.push("// tsx 系 (index / layout / error / not-found) は server では実行されないが、");
+  lines.push("// compileRoutes が matchRoute の entry を作るため key を stub で残す。");
+  lines.push("");
+  lines.push('import type { RouteRecord } from "@vidro/router";');
+  lines.push("");
+
+  serverFiles.forEach((f, i) => {
+    const relImport = relative(manifestDir, f.absPath).replace(/\\/g, "/");
+    const importPath = relImport.startsWith(".") ? relImport : `./${relImport}`;
+    lines.push(`import * as m${i} from "${importPath}";`);
+  });
+  if (serverFiles.length > 0) lines.push("");
+
+  lines.push("export const routeManifest: RouteRecord = {");
+  let si = 0;
+  for (const f of files) {
+    const key = toManifestKey(f.absPath, routesDirAbs);
+    if (f.kind === "server" || f.kind === "layout.server") {
+      lines.push(`  "${key}": () => Promise.resolve(m${si}),`);
+      si++;
+    } else {
+      lines.push(`  "${key}": () => Promise.resolve({}),`);
+    }
+  }
+  lines.push("};");
+  return lines.join("\n") + "\n";
+}
+
+// --- writers ---
+
+async function generateAll(
+  routesDirAbs: string,
+  outFileAbs: string,
+  manifestFileAbs: string,
+): Promise<void> {
+  const files = await collectRouteFiles(routesDirAbs);
+  writeIfChanged(outFileAbs, renderDts(files, routesDirAbs));
+  writeIfChanged(manifestFileAbs, renderManifest(files, routesDirAbs, manifestFileAbs));
+}
+
+function writeIfChanged(outFileAbs: string, content: string): void {
   mkdirSync(dirname(outFileAbs), { recursive: true });
-  // 同一内容なら書き出さない (vite HMR が無駄に走らないように)
   let existing = "";
   if (existsSync(outFileAbs)) {
     try {
