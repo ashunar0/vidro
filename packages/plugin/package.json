@@ -4,11 +4,13 @@
   "description": "Vite plugins for the Vidro framework (JSX transform and future tooling)",
   "license": "MIT",
   "files": [
-    "dist"
+    "dist",
+    "tsconfig.base.json"
   ],
   "type": "module",
   "exports": {
     ".": "./dist/index.mjs",
+    "./tsconfig.base.json": "./tsconfig.base.json",
     "./package.json": "./package.json"
   },
   "scripts": {

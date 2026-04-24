@@ -1,0 +1,22 @@
+{
+  "// about": "Vidro app 向け tsconfig base (ADR 0013)。user tsconfig が `\"extends\": \"@vidro/plugin/tsconfig.base.json\"` で継承する前提。user 側で include は明示的に書いてもらう (extends 親の include は node_modules 基準で解決されてしまい user の src/ を指せないため)。",
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "esnext",
+    "lib": ["ES2023", "DOM"],
+    "types": ["vite/client"],
+    "skipLibCheck": true,
+
+    "jsx": "react-jsx",
+    "jsxImportSource": "@vidro/core",
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  }
+}

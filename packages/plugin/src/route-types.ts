@@ -8,20 +8,24 @@ import type { Plugin } from "vite-plus";
 // ファイル配置から `"/users/:id": { params: { id: string } }` を起こし、
 // `LoaderArgs<"/users/:id">` / `PageProps<typeof loader>` のどちらも Routes
 // 辞書経由で type-safe に使えるようにする (ADR 0011)。
+// 生成物は vite root 直下の `.vidro/routes.d.ts` に出す (ADR 0013)。
+// tsconfig base は plugin package に同梱されている (`@vidro/plugin/tsconfig.base.json`)
+// ので、user tsconfig が extends するだけで Vidro が必要とする compilerOptions
+// が揃う。
 
 export type RouteTypesOptions = {
   /** routes ディレクトリ (vite root 相対)。default: "src/routes" */
   routesDir?: string;
-  /** 出力先 .d.ts (vite root 相対)。default: "src/_vidro/routes.d.ts" */
+  /** 出力先 .d.ts (vite root 相対)。default: ".vidro/routes.d.ts" */
   outFile?: string;
 };
 
 /** @vidro/plugin の routeTypes plugin 本体。 */
 export function routeTypes(options: RouteTypesOptions = {}): Plugin {
   const routesDirOpt = options.routesDir ?? "src/routes";
-  // 出力先を dot-prefix ディレクトリ (`.vidro/`) に置くと tsc の `include` から
-  // 自動除外されて augment が効かなくなるので、underscore prefix で置く。
-  const outFileOpt = options.outFile ?? "src/_vidro/routes.d.ts";
+  // 生成物は vite root 直下の `.vidro/` に集約 (SvelteKit `.svelte-kit/` /
+  // Astro `.astro/` 式)。`.gitignore` に `.vidro/` を入れて artifact 扱いにする。
+  const outFileOpt = options.outFile ?? ".vidro/routes.d.ts";
 
   let routesDirAbs = "";
   let outFileAbs = "";
