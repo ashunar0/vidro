@@ -41,7 +41,7 @@ export function Stopwatch() {
       </p>
       <div class="text-6xl font-semibold tabular-nums mb-8">{display.value}</div>
       <div class="flex gap-2 justify-center">
-        <Show when={running} fallback={<Button onClick={toggle}>start</Button>}>
+        <Show when={running.value} fallback={<Button onClick={toggle}>start</Button>}>
           <Button onClick={toggle}>stop</Button>
         </Show>
         <Button variant="muted" onClick={reset}>

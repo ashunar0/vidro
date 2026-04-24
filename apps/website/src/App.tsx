@@ -36,16 +36,16 @@ export function App() {
         </select>
       </nav>
       <Switch>
-        <Match when={() => view.value === "counter"}>
+        <Match when={view.value === "counter"}>
           <Counter />
         </Match>
-        <Match when={() => view.value === "todo"}>
+        <Match when={view.value === "todo"}>
           <Todo />
         </Match>
-        <Match when={() => view.value === "stopwatch"}>
+        <Match when={view.value === "stopwatch"}>
           <Stopwatch />
         </Match>
-        <Match when={() => view.value === "boundary"}>
+        <Match when={view.value === "boundary"}>
           <BoundaryDemo />
         </Match>
       </Switch>

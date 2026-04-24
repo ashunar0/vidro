@@ -13,7 +13,7 @@ export { untrack } from "./observer";
 export { batch } from "./batch";
 export { onCleanup } from "./owner";
 export { onMount } from "./mount-queue";
-export { h, Fragment, mount } from "./jsx";
+export { h, Fragment, mount, _reactive } from "./jsx";
 export { Show } from "./show";
 export { Switch, Match } from "./switch";
 export { For } from "./for";

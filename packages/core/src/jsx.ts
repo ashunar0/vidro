@@ -30,13 +30,20 @@ export function h(
     // children を props.children に合流させる (1 件なら unwrap、それ以外は配列のまま)
     if (children.length === 1) resolvedProps.children = children[0];
     else if (children.length > 1) resolvedProps.children = children;
+    // A 方式の `{expr}` → `() => expr` 変換を component 境界でも貫くため、props を
+    // Proxy でラップして「読むたびに関数を評価」する。これで intrinsic 同様に
+    // reactive props (`count={signal.value}` → 読むたびに current value) が動く。
+    // 例外: `on*` は event handler、`children` は render callback / Node / 多態
+    // を渡すスロットなので素通し。destructure すると getter が 1 度しか走らず
+    // reactivity が死ぬので使い手は `const x = props.foo` 的な個別参照を使う。
+    const propsProxy = wrapComponentProps(resolvedProps);
     // component は独立した child Owner の中で 1 回だけ評価する (invoke-once)。
     // runCatching で囲んで、component 関数内の throw を nearest ErrorBoundary に届ける。
     // 例外で undefined が返ったら placeholder Comment を返す — ErrorBoundary があれば
     // その effect が fallback を差し替えるので placeholder は実質見えない。Boundary 無しなら
     // handleError が root で再 throw するのでここには到達しない。
     const owner = new Owner();
-    const result = owner.runCatching(() => type(resolvedProps));
+    const result = owner.runCatching(() => type(propsProxy));
     return result ?? document.createComment("vidro-error");
   }
 
@@ -70,6 +77,41 @@ export function mount(fn: () => Node, target: Element): () => void {
 }
 
 // --- internal helpers ---
+
+// 内部 marker key (symbol ではなく property にすることで、transform 生成コードから
+// 直接 `fn.__vidroReactive = true` と書けるようにする)。
+const REACTIVE_MARKER = "__vidroReactive" as const;
+
+type ReactiveThunk = (() => unknown) & { [REACTIVE_MARKER]?: boolean };
+
+/**
+ * A 方式 transform が JSX 内の `{expr}` を `_reactive(() => expr)` に書き換える際に
+ * 呼ばれる runtime helper。返り値は同じ関数だが marker property が付くので、
+ * component 境界の Proxy が「ユーザーが書いた arrow」と区別して展開できる。
+ *
+ * 使うのは transform だけで、手で書く API ではない (underscore prefix で internal 表現)。
+ */
+export function _reactive<T>(fn: () => T): () => T {
+  (fn as ReactiveThunk)[REACTIVE_MARKER] = true;
+  return fn;
+}
+
+// Component に渡す props を Proxy でラップする。getter アクセス時に transform 由来
+// の marker 付き関数だけを展開し、ユーザーが書いた arrow (event handler / render
+// callback / fallback factory 等) は関数のまま素通す。
+function wrapComponentProps(rawProps: Record<string, unknown>): Record<string, unknown> {
+  return new Proxy(rawProps, {
+    get(target, key) {
+      const raw = (target as Record<string | symbol, unknown>)[key];
+      if (key === "children") return raw;
+      if (typeof key === "string" && key.startsWith("on") && key.length > 2) return raw;
+      if (typeof raw === "function" && (raw as ReactiveThunk)[REACTIVE_MARKER]) {
+        return (raw as () => unknown)();
+      }
+      return raw;
+    },
+  });
+}
 
 // 親 Node に 1 つの child slot 値を追加する。Signal / 関数は Effect で reactive 追従する。
 function appendChild(parent: Node, child: unknown): void {

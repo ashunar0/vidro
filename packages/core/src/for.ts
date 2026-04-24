@@ -1,9 +1,8 @@
 import { effect } from "./effect";
-import { Signal } from "./signal";
 import { onCleanup, Owner } from "./owner";
 
 type ForProps<T> = {
-  each: Signal<T[]> | (() => T[]) | T[];
+  each: T[];
   children: (item: T, index: number) => Node;
   fallback?: Node;
 };
@@ -28,7 +27,9 @@ export function For<T>(props: ForProps<T>): Node {
   let fallbackNode: Node | null = null;
 
   effect(() => {
-    const list = readEach(props.each);
+    // props.each は proxy 経由で毎回評価 (A 方式 transform で wrap された `{list}` が
+    // ここで展開され、signal の変化に追従する)
+    const list = props.each;
     const parent = anchor.parentNode;
 
     // 空リスト: 全 entry 掃除 + fallback 挿入
@@ -91,17 +92,4 @@ export function For<T>(props: ForProps<T>): Node {
   });
 
   return fragment;
-}
-
-// each の 3 形式を一本化。Effect 内で呼ばれるので Signal / 関数なら依存追跡に乗る。
-// A 方式 transform で `{signal}` が `() => signal` に包まれた場合、関数の返り値が
-// Signal instance になるので unwrap する。
-function readEach<T>(each: Signal<T[]> | (() => T[]) | T[]): T[] {
-  if (each instanceof Signal) return each.value;
-  if (typeof each === "function") {
-    const result = (each as () => T[])();
-    if (result instanceof Signal) return result.value as T[];
-    return result;
-  }
-  return each;
 }

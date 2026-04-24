@@ -1,12 +1,9 @@
-import { effect, onCleanup, untrack } from "@vidro/core";
+import { effect, onCleanup } from "@vidro/core";
 import { compileRoutes, matchRoute, type RouteRecord } from "./route-tree";
 import { currentPathname } from "./navigation";
 
 type RouterProps = {
-  // A 方式 JSX transform が component 側の attribute value も `() => expr` に wrap
-  // してくるため、関数も受け付ける。routes は static 前提なので 1 回 peek して object
-  // に落とす (この wrap 挙動は未決論点、ADR を別途起こす予定)。
-  routes: RouteRecord | (() => RouteRecord);
+  routes: RouteRecord;
 };
 
 /**
@@ -15,10 +12,7 @@ type RouterProps = {
  * して anchor の前に差し込む。layout nesting / data fetching は最小版では非対応。
  */
 export function Router(props: RouterProps): Node {
-  const rawRoutes = props.routes;
-  const routes =
-    typeof rawRoutes === "function" ? untrack(() => (rawRoutes as () => RouteRecord)()) : rawRoutes;
-  const compiled = compileRoutes(routes);
+  const compiled = compileRoutes(props.routes);
 
   // popstate (戻る/進む) で pathname signal を同期。Router が mount されてる間だけ
   // listener を張り、dispose で剥がす。
