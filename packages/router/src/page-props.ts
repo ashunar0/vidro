@@ -7,3 +7,11 @@
 export type PageProps<Params extends Record<string, string> = Record<string, string>> = {
   params: Params;
 };
+
+// layout component が受け取る props 型。PageProps に children を加えただけ。
+// 親 layout からは深い segment の params を型として知り得ないので、デフォルトは
+// 緩い Record<string, string>。明示的に絞りたければ `LayoutProps<{ id: string }>`。
+export type LayoutProps<Params extends Record<string, string> = Record<string, string>> =
+  PageProps<Params> & {
+    children: Node;
+  };
