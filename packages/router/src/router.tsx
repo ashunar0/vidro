@@ -1,11 +1,5 @@
 import { effect, ErrorBoundary, onCleanup, signal } from "@vidro/core";
-import {
-  compileRoutes,
-  matchRoute,
-  type RouteRecord,
-  type ServerModule,
-  type ServerModuleLoader,
-} from "./route-tree";
+import { compileRoutes, matchRoute, type RouteRecord } from "./route-tree";
 import { currentPathname } from "./navigation";
 
 type RouterProps = {
@@ -105,22 +99,41 @@ export function Router(props: RouterProps): Node {
     return defaultErrorNode(err);
   }
 
-  // server.ts / layout.server.ts を 1 layer 分 load → loader があれば実行。
-  // module load 失敗も loader throw も一様に error として扱うことで、呼び側の
-  // エラー処理が 1 箇所にまとまる。
-  async function runServerLoader(
-    loadFn: ServerModuleLoader | null,
-    params: Record<string, string>,
-  ): Promise<{ data: unknown; error: unknown }> {
-    if (!loadFn) return { data: undefined, error: undefined };
-    try {
-      const mod = (await loadFn()) as ServerModule;
-      if (!mod.loader) return { data: undefined, error: undefined };
-      const data = await mod.loader({ params });
-      return { data, error: undefined };
-    } catch (err) {
-      return { data: undefined, error: err };
+  // `/__loader?path=...` を叩いて全 layer の loader 結果を 1 回の HTTP で取得する
+  // (Remix 式 RPC)。server 側 (@vidro/plugin の serverBoundary) が layer 並列実行を
+  // 肩代わりするので、ここでの Promise.all は 1 系列だけで済む。
+  // response shape: `{ params, layers: [{ data? , error? SerializedError }, ...] }`。
+  // error は serialize された plain object で来るため、Error-like に hydrate し直して
+  // 既存の err.message / err.stack 依存コードを動かす。
+  async function fetchLoaders(pathname: string): Promise<Array<{ data: unknown; error: unknown }>> {
+    const res = await fetch(`/__loader?path=${encodeURIComponent(pathname)}`);
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+      // endpoint 自体が 4xx/5xx → 復旧できないので outer catch (default error) へ
+      throw hydrateError(body.error ?? { message: `HTTP ${res.status}` });
     }
+    const body = (await res.json()) as {
+      params: Record<string, string>;
+      layers: Array<{ data?: unknown; error?: { name: string; message: string; stack?: string } }>;
+    };
+    return body.layers.map((r) => ({
+      data: r.data,
+      error: r.error ? hydrateError(r.error) : undefined,
+    }));
+  }
+
+  // plain object → Error。server 側から JSON で来た `{ name, message, stack }` を
+  // Error インスタンスに復元することで、既存 ErrorBoundary / renderError の
+  // `err.message` / `err instanceof Error` 依存を満たす。
+  function hydrateError(raw: unknown): Error {
+    if (raw && typeof raw === "object" && "message" in raw) {
+      const obj = raw as { name?: string; message?: string; stack?: string };
+      const err = new Error(obj.message ?? "Unknown error");
+      if (obj.name) err.name = obj.name;
+      if (obj.stack) err.stack = obj.stack;
+      return err;
+    }
+    return new Error(String(raw));
   }
 
   effect(() => {
@@ -140,14 +153,12 @@ export function Router(props: RouterProps): Node {
 
     // 3 系列を同時起動して Promise.all:
     //   1. component modules (layouts + leaf の .tsx)
-    //   2. loader 実行結果 (layouts の layout.server.ts + leaf の server.ts を並列)
+    //   2. loader 実行結果 (server の /__loader endpoint から bulk 取得)
     //   3. 全 error.tsx modules (層ごとの選び分けのため preload)
-    // loader 群は「並列 fetch」の本体。layer 間で独立に走るので waterfall にならない。
+    // 並列 fetch の本体は server 側 (plugin の serverBoundary が Promise.all で
+    // layer 並列実行する)。client は HTTP 1 回だけで、waterfall にならない。
     const loadComponents = Promise.all([...match.layouts.map((l) => l.load()), leafLoader()]);
-    const loadLoaderResults = Promise.all([
-      ...match.layouts.map((l) => runServerLoader(l.serverLoad, match.params)),
-      runServerLoader(match.server ? match.server.load : null, match.params),
-    ]);
+    const loadLoaderResults = fetchLoaders(pathname);
     // match.errors[i] と errorMods[i] は 1:1 対応 (深い → 浅い順)。個別 load 失敗は
     // null に fall back させ、selectErrorMod が自然に次の候補に skip する。
     const loadErrorMods = Promise.all(

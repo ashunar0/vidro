@@ -26,10 +26,12 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@vidro/router": "workspace:*",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   },
   "peerDependencies": {
+    "@vidro/router": "workspace:*",
     "vite-plus": "catalog:"
   }
 }

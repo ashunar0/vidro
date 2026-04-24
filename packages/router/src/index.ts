@@ -5,7 +5,20 @@
 export { Router } from "./router";
 export { Link } from "./link";
 export { navigate } from "./navigation";
-export type { RouteRecord } from "./route-tree";
+// compileRoutes / matchRoute は DOM に触らない純粋関数で、@vidro/plugin
+// の serverBoundary() が server 側で match を行うために使う。
+export { compileRoutes, matchRoute } from "./route-tree";
+export type {
+  RouteRecord,
+  RouteEntry,
+  LayoutEntry,
+  ServerEntry,
+  ErrorEntry,
+  CompiledRoutes,
+  MatchResult,
+  ServerModule,
+  ServerModuleLoader,
+} from "./route-tree";
 export type {
   PageProps,
   LayoutProps,
