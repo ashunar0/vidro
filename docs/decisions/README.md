@@ -35,3 +35,5 @@ Consequences と Revisit when は**暫定実装の場合は必ず書く**。
 - [0004-error-boundary](./0004-error-boundary.md) — `<ErrorBoundary>` primitive の実装方針 (onError required / 関数 fallback / children 関数包み)
 - [0005-switch-match](./0005-switch-match.md) — `<Switch>` / `<Match>` primitive の実装方針 (Match は descriptor / 早い者勝ち / fallback / invoke-once)
 - [0006-factory-only-api](./0006-factory-only-api.md) — primitive 生成 API を factory 一本化、class を internal に (`new Signal(0)` 廃止 / 型は `export type` で残す)
+- [0007-component-props-proxy](./0007-component-props-proxy.md) — A 方式 transform を component 境界まで貫通 (Proxy props + `_reactive` marker)
+- [0008-error-tsx-convention](./0008-error-tsx-convention.md) — `error.tsx` 規約 + Router での error 統合 (階層的 lookup / `ErrorPageProps` / reset で loader 再実行)
