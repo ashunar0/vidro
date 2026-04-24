@@ -13,12 +13,7 @@
     "@vidro/router": "workspace:*"
   },
   "devDependencies": {
-    "@babel/generator": "catalog:",
-    "@babel/parser": "catalog:",
-    "@babel/traverse": "catalog:",
-    "@babel/types": "catalog:",
-    "@types/babel__generator": "catalog:",
-    "@types/babel__traverse": "catalog:",
+    "@vidro/plugin": "workspace:*",
     "typescript": "~6.0.2",
     "vite": "catalog:",
     "vite-plus": "catalog:"
