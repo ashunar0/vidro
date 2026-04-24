@@ -8,6 +8,19 @@
 // で cast する。toy runtime の境界コストとして許容。
 
 export type Renderer<N = Node, E extends N = N, T extends N = N> = {
+  /**
+   * true の時、effect / onMount が server mode で動く (ADR 0016 論点 6):
+   * - effect は body を同期で 1 回実行するだけで subscribe しない
+   * - onMount は queue に積まれたまま flush されない (no-op)
+   * - addEventListener は捨てる (serverRenderer 側で no-op)
+   */
+  readonly isServer?: boolean;
+  /**
+   * 任意の値が「この renderer が作った Node」かを判定する。jsx.ts で
+   * `child instanceof Node` の代わりに使う (server env では DOM の Node class が
+   * 存在しない)。
+   */
+  isNode(value: unknown): value is N;
   createElement(tag: string): E;
   createText(value: string): T;
   createFragment(): N;
@@ -26,6 +39,9 @@ export type Renderer<N = Node, E extends N = N, T extends N = N> = {
 
 // client (browser) 用の Renderer 実装。document.* をそのまま呼ぶ薄い wrapper。
 const browserRenderer: Renderer<Node, Element, Text> = {
+  isNode(value): value is Node {
+    return typeof Node !== "undefined" && value instanceof Node;
+  },
   createElement(tag) {
     return document.createElement(tag);
   },

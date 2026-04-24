@@ -6,6 +6,7 @@ import {
   type ObserverSource,
 } from "./observer";
 import { getCurrentOwner, Owner } from "./owner";
+import { getRenderer } from "./renderer";
 
 type CleanupFn = () => void;
 type EffectFn = () => void | CleanupFn;
@@ -28,6 +29,12 @@ export class Effect implements Observer {
     // 構築時点の Owner を覚え、その cleanup に自分の dispose を登録 (Owner.dispose で巻き込み解放)
     this.#parentOwner = getCurrentOwner();
     this.#parentOwner?.addCleanup(() => this.dispose());
+    // server mode (ADR 0016 論点 6): body を観測なしで 1 回だけ走らせて即 dispose。
+    // Signal の初期値を renderer に書き込ませ、subscribe list には載せない。
+    if (getRenderer().isServer) {
+      this.#runOnceServer();
+      return;
+    }
     this.#run();
   }
 
@@ -72,6 +79,20 @@ export class Effect implements Observer {
     } finally {
       setCurrentObserver(prev);
       this.#running = false;
+    }
+  }
+
+  // server mode 専用: observer 登録せずに body を 1 回だけ呼び、以後の追跡をしない。
+  // cleanup / childOwner / sources には何も記録しないので、`dispose()` 呼び出しも
+  // 不要 (Owner tree の cleanup に hook している分だけ残るが、何も削除対象がない)。
+  #runOnceServer(): void {
+    this.#childOwner = new Owner(this.#parentOwner, { attach: false });
+    try {
+      this.#childOwner.runCatching(() => this.#fn());
+    } finally {
+      // 即座に dispose して、server での request 完了後にメモリが残らないようにする
+      this.#disposed = true;
+      this.#disposeChildOwner();
     }
   }
 

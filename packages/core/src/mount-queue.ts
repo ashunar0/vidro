@@ -39,6 +39,14 @@ export function runWithMountScope<T>(run: () => T): T {
   }
 }
 
+/**
+ * queue を捨てるだけ (走らせない)。server renderer 用 — server では mount が
+ * 発生しないので、renderToString 終了時に leak を防ぐために drain する。
+ */
+export function discardMountQueue(): void {
+  pendingMounts.length = 0;
+}
+
 /** queue に溜まった fn を登録順に同期実行する。各 fn は呼び出し時の Owner scope で走らせ、
  *  throw は nearest ErrorBoundary の handler に流す (handler 無しなら Owner の root で再 throw)。 */
 export function flushMountQueue(): void {

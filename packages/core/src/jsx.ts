@@ -131,7 +131,7 @@ function appendChild(parent: Node, child: unknown): void {
     return;
   }
 
-  if (child instanceof Node) {
+  if (r.isNode(child)) {
     r.appendChild(parent, child);
     return;
   }
@@ -157,7 +157,7 @@ function appendChild(parent: Node, child: unknown): void {
       for (const c of peeked) appendChild(parent, c);
       return;
     }
-    if (peeked instanceof Node) {
+    if (r.isNode(peeked)) {
       r.appendChild(parent, peeked);
       return;
     }
