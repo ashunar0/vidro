@@ -27,3 +27,12 @@ export type LayoutProps<Params extends Record<string, string> = Record<string, s
   params: Params;
   children: Node;
 };
+
+// error.tsx が受け取る props 型。loader / render で発生した error を `error` で受けて、
+// `reset()` で同 pathname に再 navigate (loader 再実行) を促す。`params` は最寄りの
+// route が抽出した値 (route 自体が match しない 404 ケースでは空 object)。
+export type ErrorPageProps = {
+  error: unknown;
+  reset: () => void;
+  params: Record<string, string>;
+};

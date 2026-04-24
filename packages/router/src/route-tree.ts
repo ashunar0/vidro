@@ -6,6 +6,7 @@
 // - `index.tsx` → RouteEntry (leaf component)
 // - `layout.tsx` → LayoutEntry (nested wrap)
 // - `server.ts` → ServerEntry (loader / action)
+// - `error.tsx` → ErrorEntry (階層的 error 表示)
 // - `not-found.tsx` → 404 fallback (特別扱い)
 
 type RouteModule = { default: (props?: Record<string, unknown>) => Node };
@@ -49,10 +50,22 @@ export type ServerEntry = {
   load: ServerModuleLoader;
 };
 
+export type ErrorEntry = {
+  /** error.tsx が cover する path prefix (例: "/users"、root error は "") */
+  pathPrefix: string;
+  /** pathname がこれにマッチしたら適用候補になる RegExp */
+  pattern: RegExp;
+  /** capture group の順序に対応する param 名 */
+  paramNames: string[];
+  /** lazy load 関数 */
+  load: RouteLoader;
+};
+
 export type CompiledRoutes = {
   routes: RouteEntry[];
   layouts: LayoutEntry[];
   servers: ServerEntry[];
+  errors: ErrorEntry[];
   notFound?: RouteLoader;
 };
 
@@ -63,6 +76,8 @@ export type MatchResult = {
   layouts: LayoutEntry[];
   /** 同 dir に server.ts があれば対応する ServerEntry、無ければ null */
   server: ServerEntry | null;
+  /** 最寄りの error.tsx (深い prefix が優先)。無ければ null。 */
+  error: ErrorEntry | null;
   /** route + layouts の paramNames から抽出した値 */
   params: Record<string, string>;
 };
@@ -82,6 +97,7 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
   const routes: RouteEntry[] = [];
   const layouts: LayoutEntry[] = [];
   const servers: ServerEntry[] = [];
+  const errors: ErrorEntry[] = [];
   let notFound: RouteLoader | undefined;
 
   for (const [filePath, rawLoad] of Object.entries(modules)) {
@@ -93,6 +109,13 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
       const pathPrefix = filePathToLayoutPath(filePath);
       const { pattern, paramNames } = layoutPathToPattern(pathPrefix);
       layouts.push({ pathPrefix, pattern, paramNames, load: rawLoad as RouteLoader });
+      continue;
+    }
+    if (filePath.endsWith("/error.tsx")) {
+      const pathPrefix = filePathToErrorPath(filePath);
+      // error.tsx は layout と同じ prefix-match (sub tree 全体に効く) で挙動が一致。
+      const { pattern, paramNames } = layoutPathToPattern(pathPrefix);
+      errors.push({ pathPrefix, pattern, paramNames, load: rawLoad as RouteLoader });
       continue;
     }
     if (filePath.endsWith("/server.ts")) {
@@ -112,7 +135,7 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
   // route 数が少ないので paramNames 数での単純比較で十分。
   routes.sort((a, b) => a.paramNames.length - b.paramNames.length);
 
-  return { routes, layouts, servers, notFound };
+  return { routes, layouts, servers, errors, notFound };
 }
 
 /**
@@ -148,7 +171,13 @@ export function matchRoute(pathname: string, compiled: CompiledRoutes): MatchRes
     ? (compiled.servers.find((s) => s.path === matchedRoute!.path) ?? null)
     : null;
 
-  return { route: matchedRoute, layouts: matchedLayouts, server, params };
+  // error.tsx は最寄り (深い prefix) を優先。pathname にマッチする全候補から
+  // pathPrefix が最長のものを選ぶ。同 dir > 親 segment > root の優先順。
+  const matchedErrors = compiled.errors.filter((e) => e.pattern.test(pathname));
+  matchedErrors.sort((a, b) => b.pathPrefix.length - a.pathPrefix.length);
+  const error = matchedErrors[0] ?? null;
+
+  return { route: matchedRoute, layouts: matchedLayouts, server, error, params };
 }
 
 // --- internal helpers ---
@@ -179,6 +208,12 @@ function filePathToServerPath(filePath: string): string {
   const afterRoutes = filePath.replace(/^.*?\/routes/, "").replace(/\/server\.ts$/, "");
   const path = afterRoutes === "" ? "/" : afterRoutes;
   return path.replace(/\[([^\]]+)\]/g, ":$1");
+}
+
+// "./routes/users/error.tsx" → "/users"、"./routes/error.tsx" → "" (root)
+function filePathToErrorPath(filePath: string): string {
+  const afterRoutes = filePath.replace(/^.*?\/routes/, "").replace(/\/error\.tsx$/, "");
+  return afterRoutes.replace(/\[([^\]]+)\]/g, ":$1");
 }
 
 // "/users/:id" → RegExp と paramNames (route 用、完全一致)
