@@ -6,3 +6,10 @@ compatibility_date = "2026-04-17"
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+# navigation に bootstrap data (`__vidro_data`) を inject したいので、全 request を
+# まず Worker に通す。handler が 404 を返した request (static asset 等) は entry
+# 側で `env.ASSETS.fetch(request)` に委譲される (not_found_handling が SPA fallback)。
+#
+# 新しい wrangler (4.23+) では glob 配列で `["/*", "!/assets/*"]` と書き、static
+# asset だけ Worker skip できるが、ここでは保守的に boolean で全通しにしてある。
+run_worker_first = true

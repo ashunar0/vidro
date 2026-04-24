@@ -2,6 +2,35 @@ import { effect, ErrorBoundary, onCleanup, signal } from "@vidro/core";
 import { compileRoutes, matchRoute, type RouteRecord } from "./route-tree";
 import { currentPathname } from "./navigation";
 
+// ---- bootstrap data (Phase A SSR data injection) ----
+// server (createServerHandler) が navigation response の index.html に
+// `<script type="application/json" id="__vidro_data">` として埋め込んだ
+// 初期 loader data を module load 時に 1 回だけ取り出す。最初の render で
+// consume し、以降の navigation では従来通り /__loader を fetch する。
+type BootstrapLayer = { data?: unknown; error?: { name: string; message: string; stack?: string } };
+type BootstrapData = { pathname: string; params: Record<string, string>; layers: BootstrapLayer[] };
+
+let bootstrapData: BootstrapData | null = readBootstrapData();
+
+function readBootstrapData(): BootstrapData | null {
+  if (typeof document === "undefined") return null;
+  const el = document.getElementById("__vidro_data");
+  if (!el || !el.textContent) return null;
+  try {
+    const parsed = JSON.parse(el.textContent) as {
+      params: Record<string, string>;
+      layers: BootstrapLayer[];
+    };
+    const pathname = window.location.pathname;
+    // consume: 同じデータを 2 度使わないよう DOM からも剥がす。
+    el.remove();
+    return { pathname, params: parsed.params, layers: parsed.layers };
+  } catch {
+    el.remove();
+    return null;
+  }
+}
+
 type RouterProps = {
   routes: RouteRecord;
 };
@@ -105,7 +134,20 @@ export function Router(props: RouterProps): Node {
   // response shape: `{ params, layers: [{ data? , error? SerializedError }, ...] }`。
   // error は serialize された plain object で来るため、Error-like に hydrate し直して
   // 既存の err.message / err.stack 依存コードを動かす。
+  //
+  // Phase A bootstrap: 初回 navigation だけ、server が index.html に inline した
+  // `__vidro_data` を使って fetch を skip する。pathname 一致を確認したうえで
+  // consume し、以降は HTTP 経路に戻る。
   async function fetchLoaders(pathname: string): Promise<Array<{ data: unknown; error: unknown }>> {
+    if (bootstrapData && bootstrapData.pathname === pathname) {
+      const boot = bootstrapData;
+      bootstrapData = null;
+      return boot.layers.map((r) => ({
+        data: r.data,
+        error: r.error ? hydrateError(r.error) : undefined,
+      }));
+    }
+
     const res = await fetch(`/__loader?path=${encodeURIComponent(pathname)}`);
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };

@@ -1,11 +1,22 @@
-// `/__loader` endpoint の実装を WinterCG fetch handler として提供する。
-// dev (@vidro/plugin の serverBoundary middleware) と prod (Cloudflare Workers
-// 向けの server entry、案 B-2 Step 1.3 で追加) の両方で同じ関数を使う。
+// `/__loader` (loader JSON endpoint) と navigation (accept: text/html) の両方を
+// 同じ WinterCG fetch handler として提供する。dev (@vidro/plugin の
+// serverBoundary middleware) と prod (Cloudflare Workers 向けの server entry)
+// の両方で同じ関数を使う。
 //
 // 入力は `RouteRecord` で、dev では vite の `server.ssrLoadModule()` を
 // lazy loader として埋めたもの、prod では `.vidro/route-manifest.ts` から
 // 生成された静的 import 版 (plugin の routeTypes() が吐く)。どちらも
 // `compileRoutes` に食わせれば同じ `CompiledRoutes` が得られる設計 (ADR 0012)。
+//
+// 案 B-2 Phase A (SSR data injection): navigation request には `env.ASSETS` で
+// 取得した index.html に `<script type="application/json" id="__vidro_data">` を
+// inject する。client 側 Router が初回 mount 時にこの script を読んで
+// `/__loader` fetch を skip することで、初回表示の往復数が 3 → 2 に減る。
+// JSX の render は従来通り client で行う (Phase B で server render 化予定)。
+//
+// SSR 実装 (Phase B) 時は handleNavigation 内の `html.replace` の手前で
+// renderToString(jsx) を走らせて `<div id="app">` に流し込む分岐が増えるだけで、
+// handler の signature は共通。
 
 import {
   compileRoutes,
@@ -15,45 +26,106 @@ import {
   type ServerModuleLoader,
 } from "./route-tree";
 
-/** WinterCG 準拠の fetch handler 型。Cloudflare Workers の `fetch(req)` もこの形。 */
-export type ServerHandler = (request: Request) => Promise<Response>;
+/**
+ * navigation 処理に必要な per-request context。dev middleware は渡さず、
+ * prod entry (Cloudflare Workers) が `env.ASSETS` を assets として注入する。
+ */
+export type ServerContext = {
+  /** `env.ASSETS` 相当。渡されていれば navigation で index.html を fetch + inject。 */
+  assets?: { fetch(request: Request): Promise<Response> };
+};
+
+/** WinterCG 準拠の fetch handler 型。ctx は assets 等の per-request 依存を渡す。 */
+export type ServerHandler = (request: Request, ctx?: ServerContext) => Promise<Response>;
 
 export type CreateServerHandlerOptions = {
+  manifest: RouteRecord;
   /** loader endpoint path。default: "/__loader" */
   endpoint?: string;
 };
 
-/** `/__loader?path=...` を受けて全 layer の loader を並列実行し JSON で返す handler。 */
-export function createServerHandler(
-  manifest: RouteRecord,
-  options: CreateServerHandlerOptions = {},
-): ServerHandler {
-  const endpoint = options.endpoint ?? "/__loader";
+/**
+ * dev / prod 共通の server handler。
+ *   1. `/__loader?path=...` → loader 並列実行 + JSON
+ *   2. navigation (accept: text/html, ctx.assets あり) → index.html + data inject
+ *   3. それ以外 → 404 (entry 側で assets fallback する前提)
+ */
+export function createServerHandler(options: CreateServerHandlerOptions): ServerHandler {
+  const { manifest, endpoint = "/__loader" } = options;
   const compiled = compileRoutes(manifest);
 
-  return async (request) => {
+  return async (request, ctx = {}) => {
     const url = new URL(request.url);
-    if (url.pathname !== endpoint) {
-      return new Response(null, { status: 404 });
-    }
-    const path = url.searchParams.get("path");
-    if (!path) {
-      return jsonResponse(400, { error: { message: "missing `path` query" } });
+
+    if (url.pathname === endpoint) {
+      return handleLoaderEndpoint(url, compiled);
     }
 
-    const match = matchRoute(path, compiled);
-    // 各 layer を Promise.all で並列実行 (Remix 式)。layouts は浅い → 深い順、
-    // 最後が leaf。Router 側の `loaderResults` 並びと一致させる。
-    const layerLoads: Promise<LayerResult>[] = [
-      ...match.layouts.map((l) => runLoader(l.serverLoad, match.params)),
-      runLoader(match.server ? match.server.load : null, match.params),
-    ];
-    const layers = await Promise.all(layerLoads);
-    return jsonResponse(200, { params: match.params, layers });
+    const accept = request.headers.get("accept") ?? "";
+    if (ctx.assets && accept.includes("text/html")) {
+      return handleNavigation(url, request, ctx.assets, compiled);
+    }
+
+    return new Response(null, { status: 404 });
   };
 }
 
-// --- internal ---
+// --- handlers ---
+
+async function handleLoaderEndpoint(url: URL, compiled: CompiledFromRoutes): Promise<Response> {
+  const path = url.searchParams.get("path");
+  if (!path) {
+    return jsonResponse(400, { error: { message: "missing `path` query" } });
+  }
+  const data = await gatherRouteData(path, compiled);
+  return jsonResponse(200, data);
+}
+
+async function handleNavigation(
+  url: URL,
+  request: Request,
+  assets: NonNullable<ServerContext["assets"]>,
+  compiled: CompiledFromRoutes,
+): Promise<Response> {
+  const data = await gatherRouteData(url.pathname, compiled);
+
+  // index.html は同 origin の `/index.html` を assets から取り寄せる。
+  // Cloudflare Workers Assets は env.ASSETS.fetch() で asset を引ける。
+  const indexUrl = new URL("/index.html", url.origin);
+  const indexRes = await assets.fetch(new Request(indexUrl.toString()));
+  if (!indexRes.ok) {
+    // index.html が取れなければ 404 を返して entry 側で assets fallback に委譲。
+    return new Response(null, { status: 404 });
+  }
+  const html = await indexRes.text();
+  const injected = injectBootstrapData(html, data);
+
+  return new Response(injected, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+// --- shared: loader gather ---
+
+type CompiledFromRoutes = ReturnType<typeof compileRoutes>;
+
+/**
+ * pathname から全 layer の loader を並列実行し、`{params, layers}` を返す。
+ * loader endpoint / navigation の両方が同じ形で data を得るための共通関数。
+ */
+async function gatherRouteData(
+  path: string,
+  compiled: CompiledFromRoutes,
+): Promise<{ params: Record<string, string>; layers: LayerResult[] }> {
+  const match = matchRoute(path, compiled);
+  const layerLoads: Promise<LayerResult>[] = [
+    ...match.layouts.map((l) => runLoader(l.serverLoad, match.params)),
+    runLoader(match.server ? match.server.load : null, match.params),
+  ];
+  const layers = await Promise.all(layerLoads);
+  return { params: match.params, layers };
+}
 
 type SerializedError = { name: string; message: string; stack?: string };
 type LayerResult = { data?: unknown; error?: SerializedError };
@@ -85,4 +157,24 @@ function jsonResponse(status: number, body: unknown): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+// --- bootstrap data injection ---
+
+/**
+ * `<script type="application/json" id="__vidro_data">` を `</head>` 直前に inject。
+ * JSON.stringify の結果は `<` を `<` に置換することで `</script>` を含めない
+ * (XSS 対策、Next.js の __NEXT_DATA__ と同じアプローチ)。
+ */
+function injectBootstrapData(html: string, data: unknown): string {
+  const json = JSON.stringify(data).replace(/</g, "\\u003c");
+  const scriptTag = `<script type="application/json" id="__vidro_data">${json}</script>`;
+  if (html.includes("</head>")) {
+    return html.replace("</head>", `${scriptTag}</head>`);
+  }
+  // `</head>` が無い (minimal index.html) 場合は `</body>` の手前 or 末尾に append。
+  if (html.includes("</body>")) {
+    return html.replace("</body>", `${scriptTag}</body>`);
+  }
+  return html + scriptTag;
 }

@@ -122,7 +122,10 @@ async function handleLoader(
   routesDirAbs: string,
 ): Promise<void> {
   const manifest = await collectRouteModules(routesDirAbs, server);
-  const handler: ServerHandler = createServerHandler(manifest);
+  // dev middleware は /__loader 専用。navigation (index.html) は vite 本体の
+  // middleware が serve するので ctx.assets は渡さない (handler は loader endpoint
+  // のみ処理し、それ以外は 404 → next で vite に委譲される)。
+  const handler: ServerHandler = createServerHandler({ manifest });
   const request = nodeToRequest(req);
   const response = await handler(request);
   await writeResponse(response, res);
