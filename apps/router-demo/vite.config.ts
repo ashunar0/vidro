@@ -1,6 +1,6 @@
 import { defineConfig } from "vite-plus";
-import { jsxTransform } from "@vidro/plugin";
+import { jsxTransform, routeTypes } from "@vidro/plugin";
 
 export default defineConfig({
-  plugins: [jsxTransform()],
+  plugins: [jsxTransform(), routeTypes()],
 });

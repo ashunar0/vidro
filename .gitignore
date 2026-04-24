@@ -15,6 +15,9 @@ dist-ssr
 # Playwright MCP snapshots (developer-local artifact)
 .playwright-mcp/
 
+# @vidro/plugin routeTypes() が生成する RouteMap .d.ts (ADR 0011)
+_vidro/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

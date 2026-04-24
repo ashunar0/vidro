@@ -1,11 +1,32 @@
-// loader 関数の引数型。最小版では params のみ。将来 request / context が増える
-// 想定で型をこの場所に集約しておく。
-export type LoaderArgs<Params extends Record<string, string> = Record<string, string>> = {
-  params: Params;
+// Route 型辞書。`@vidro/plugin` の `routeTypes()` が `declare module "@vidro/router"`
+// でこの interface を augment し、`"/users/:id": { params: { id: string } }` 等の
+// エントリを流し込む。初期状態は空で、plugin を使わない場合は `LoaderArgs` の
+// generic が効かなくなるだけで runtime には影響しない。
+//
+// interface にしている理由: `declare module` 側から augment 可能にするため
+// (`type` だと交差できず上書きも不可)。
+export interface RouteMap {}
+
+// plugin が augment した RouteMap の alias。`keyof Routes` で route path literal
+// union が取れる。user 側で `Routes["/users/:id"]["params"]` のように書きたい
+// 場合にもこちらを使う。
+export type Routes = RouteMap;
+
+// loader 関数の引数型。`R` に route path (`"/users/:id"` 等) を渡すと、
+// `params` の型が RouteMap 辞書から自動展開される。generic を省略すると全 route
+// の params の union になる (= 触るときに narrow が要る)。params を触らない
+// loader (layout でよくある) は省略 OK、触るなら必ず route path を明示する運用。
+//
+// 将来 `request` / worker context 等が増えたときもここ 1 箇所に足せば、helper
+// を使ってる全 loader が追従する (ADR 0011)。
+export type LoaderArgs<R extends keyof Routes = keyof Routes> = {
+  params: Routes[R]["params"];
 };
 
-// loader として受け入れる関数の最低条件。`PageProps<L>` の generic 制約に使う。
-type AnyLoader = (args: LoaderArgs<any>) => Promise<unknown>;
+// loader として受け入れる関数の最低条件。`PageProps<L>` / `LayoutProps<L>` の
+// generic 制約に使う。params shape は route ごとに異なるので `any` で受けて、
+// 本当の型は `Parameters<L>[0]["params"]` で個別に取り出す。
+type AnyLoader = (args: { params: any }) => Promise<unknown>;
 
 // route component が受け取る props 型。loader 関数そのものを generic に取り、
 // `data` (loader の戻り値) と `params` (loader の引数から抽出) を一気に型付けする。
