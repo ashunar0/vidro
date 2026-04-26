@@ -66,8 +66,13 @@ export function h(
  * Effect / child Owner を全て解放する。fn を thunk で受けるのは、root Owner を active にした
  * 状態で JSX を評価するため (h の内側で作られる Effect / 子 Owner がこの root に紐づく)。
  *
- * mount は client only の API なので、target.appendChild / removeChild は DOM を直接触る
- * (ADR 0016: boundary で renderer 抽象を貫かない例外)。
+ * `mount` は意味論的に **fresh render**: target の既存 children をまず空にしてから新しい
+ * tree を append する。SSR (`renderToString`) で焼かれた markup が既にあっても問答無用で
+ * 上書き — Phase B-2c の暫定挙動 (一瞬 blink するが状態は壊れない)。Step B-3 の
+ * `hydrate(fn, target)` が入ったら、SSR markup を保ったまま walk + effect attach する
+ * 別 API として共存する。
+ *
+ * mount は client only の API なので、target.* は DOM を直接触る (ADR 0016 例外)。
  */
 export function mount(fn: () => Node, target: Element): () => void {
   // detached root (parent=null) を作って mount 用の独立スコープにする
@@ -75,6 +80,9 @@ export function mount(fn: () => Node, target: Element): () => void {
   // runWithMountScope で囲んでいる間、onMount(fn) が queue に積まれる。
   // appendChild の後に flush して、fn は DOM attach 済みの状態で呼ばれる。
   const node = runWithMountScope(() => owner.run(fn));
+  // SSR markup や前回 mount 残骸を全消してから fresh attach。replaceChildren は
+  // jsdom / 全 modern browser で 1 op で空にできて速い。
+  target.replaceChildren();
   target.appendChild(node);
   flushMountQueue();
   return () => {

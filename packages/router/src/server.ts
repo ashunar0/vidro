@@ -12,12 +12,14 @@
 // 取得した index.html に `<script type="application/json" id="__vidro_data">` を
 // inject する。client 側 Router が初回 mount 時にこの script を読んで
 // `/__loader` fetch を skip することで、初回表示の往復数が 3 → 2 に減る。
-// JSX の render は従来通り client で行う (Phase B で server render 化予定)。
 //
-// SSR 実装 (Phase B) 時は handleNavigation 内の `html.replace` の手前で
-// renderToString(jsx) を走らせて `<div id="app">` に流し込む分岐が増えるだけで、
-// handler の signature は共通。
+// 案 B-2 Phase B Step B-2c (true SSR): navigation で renderToString を走らせて
+// `<div id="app">` の中身として markup を inject する。bootstrap data script は
+// hydration (Step B-3) の props 復元源として残す。renderToString が throw した
+// ら Phase A 動作に degrade (空 `<div id="app">` + bootstrap data のみ) して、
+// client render に逃がす (toy runtime のセーフネット)。
 
+import { renderToString } from "@vidro/core/server";
 import {
   compileRoutes,
   matchRoute,
@@ -25,7 +27,7 @@ import {
   type ServerModule,
   type ServerModuleLoader,
 } from "./route-tree";
-import type { ResolvedModules } from "./router";
+import { Router, type ResolvedModules } from "./router";
 
 /**
  * navigation 処理に必要な per-request context。dev middleware は渡さず、
@@ -64,7 +66,7 @@ export function createServerHandler(options: CreateServerHandlerOptions): Server
 
     const accept = request.headers.get("accept") ?? "";
     if (ctx.assets && accept.includes("text/html")) {
-      return handleNavigation(url, request, ctx.assets, compiled);
+      return handleNavigation(url, ctx.assets, manifest, compiled);
     }
 
     return new Response(null, { status: 404 });
@@ -84,22 +86,43 @@ async function handleLoaderEndpoint(url: URL, compiled: CompiledFromRoutes): Pro
 
 async function handleNavigation(
   url: URL,
-  request: Request,
   assets: NonNullable<ServerContext["assets"]>,
+  manifest: RouteRecord,
   compiled: CompiledFromRoutes,
 ): Promise<Response> {
-  const data = await gatherRouteData(url.pathname, compiled);
+  // loader 並列実行 と module 並列 load は独立なので Promise.all で並列化。
+  // どちらも pathname のみに依存し、互いを参照しない。
+  const [data, resolvedModules, indexRes] = await Promise.all([
+    gatherRouteData(url.pathname, compiled),
+    preloadRouteComponents(manifest, url.pathname),
+    assets.fetch(new Request(new URL("/index.html", url.origin).toString())),
+  ]);
 
-  // index.html は同 origin の `/index.html` を assets から取り寄せる。
-  // Cloudflare Workers Assets は env.ASSETS.fetch() で asset を引ける。
-  const indexUrl = new URL("/index.html", url.origin);
-  const indexRes = await assets.fetch(new Request(indexUrl.toString()));
   if (!indexRes.ok) {
     // index.html が取れなければ 404 を返して entry 側で assets fallback に委譲。
     return new Response(null, { status: 404 });
   }
   const html = await indexRes.text();
-  const injected = injectBootstrapData(html, data);
+
+  // SSR markup を build。renderToString が throw したら Phase A degrade
+  // (空 `<div id="app">` のまま) で client render に逃がす。
+  let appHTML = "";
+  try {
+    appHTML = renderToString(() =>
+      Router({
+        routes: manifest,
+        ssr: {
+          bootstrapData: { pathname: url.pathname, params: data.params, layers: data.layers },
+          resolvedModules,
+        },
+      }),
+    );
+  } catch (err) {
+    console.error("[vidro] renderToString failed, degrading to client render:", err);
+  }
+
+  const withApp = injectAppHTML(html, appHTML);
+  const injected = injectBootstrapData(withApp, data);
 
   return new Response(injected, {
     status: 200,
@@ -208,7 +231,24 @@ export async function preloadRouteComponents(
   };
 }
 
-// --- bootstrap data injection ---
+// --- HTML injection ---
+
+/**
+ * `<div id="app">...</div>` の中身を `appHTML` で差し替える。属性 (class /
+ * data-* 等) が将来増えても耐えるよう正規表現で `<div id="app"...>` を吸収する。
+ * match しなければ html をそのまま返す (template が書き換わってる想定の保険)。
+ */
+function injectAppHTML(html: string, appHTML: string): string {
+  // `id="app"` の直後は `>` か whitespace で区切られているはず (`appx` 等の混入回避)。
+  // `\b` は `"` ↔ `>` の両 non-word では成立しないので明示的な lookahead を使う。
+  const re = /<div\s+id="app"(?=[\s>])[^>]*>[\s\S]*?<\/div>/i;
+  if (!re.test(html)) return html;
+  return html.replace(re, (match) => {
+    // 元 div の開きタグ部分だけ保持して中身を差し替える。属性は維持。
+    const openTag = match.match(/<div\s+id="app"(?=[\s>])[^>]*>/i)?.[0] ?? '<div id="app">';
+    return `${openTag}${appHTML}</div>`;
+  });
+}
 
 /**
  * `<script type="application/json" id="__vidro_data">` を `</head>` 直前に inject。
