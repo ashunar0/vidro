@@ -36,9 +36,11 @@ describe("createServerHandler — navigation HTML (Step B-2c)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     const body = await res.text();
-    // SSR markup が <div id="app"> 内に入ってる (B-3b で `<!--router-->` anchor 同梱)
+    // SSR markup が <div id="app"> 内に入ってる
+    // - B-3b: `<!--router-->` anchor
+    // - B-3c-1: 各 ErrorBoundary が `<!--error-boundary-->` anchor を吐く (leaf + root layout)
     expect(body).toContain(
-      '<div id="app"><div class="root"><h1>Home</h1></div><!--router--></div>',
+      '<div id="app"><div class="root"><h1>Home</h1><!--error-boundary--></div><!--error-boundary--><!--router--></div>',
     );
     // bootstrap data script は B-3 hydration 用に残ってる
     expect(body).toContain('<script type="application/json" id="__vidro_data">');

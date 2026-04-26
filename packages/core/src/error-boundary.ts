@@ -28,27 +28,37 @@ type ErrorBoundaryProps = {
  *
  * bubble up: fallback 内で再 throw された場合、fallback owner には handler を付けないので
  *   自動的に親の owner chain (= 外側の ErrorBoundary もしくは root) へ伝播する。
+ *
+ * server / client / hydrate 共通の renderer 経由 (ADR 0021):
+ *   - server: try/catch で content を sync 評価 → fragment + content + `<!--error-boundary-->`
+ *     anchor を返す。effect / signal は使わない
+ *   - client (mount): mountChildren で初期 content を作ってから fragment に append、
+ *     anchor も renderer 経由 → DocumentFragment 経由で DOM に展開
+ *   - client (hydrate): 同じ flow が HydrationRenderer 上で動く。createComment が
+ *     SSR で吐かれた `<!--error-boundary-->` を cursor から消費する
  */
 export function ErrorBoundary(props: ErrorBoundaryProps): Node {
-  // server mode: effect / reactive 切替は不要。children を sync 実行、throw したら
-  // onError + fallback を sync 実行して返す。fallback 内 throw は bubble up に任せる
-  // (server 側で createServerHandler が拾う or renderToString caller に届く)。
   const renderer = getRenderer();
+
+  // server mode: effect / reactive 切替は不要。children を sync 実行、throw したら
+  // onError + fallback を sync 実行して content を確定。anchor は client / hydrate と
+  // 同 shape (`<!--error-boundary-->`) で fragment 末尾に出す (ADR 0021)。
   if (renderer.isServer) {
+    let contentNode: Node;
     try {
-      return props.children();
+      contentNode = props.children();
     } catch (err) {
       props.onError(err);
       // fallback の reset は server では発火できない (次回は client hydration)。
-      return props.fallback(err, () => {});
+      contentNode = props.fallback(err, () => {});
     }
+    const fragment = renderer.createFragment();
+    renderer.appendChild(fragment, contentNode);
+    renderer.appendChild(fragment, renderer.createComment("error-boundary"));
+    return fragment;
   }
 
-  // --- client mode (reactive 切替版) ---
-  const anchor = document.createComment("error-boundary");
-  const fragment = document.createDocumentFragment();
-  fragment.appendChild(anchor);
-
+  // --- client mode (mount / hydrate 共通、renderer 経由、ADR 0021) ---
   const error = new Signal<unknown>(null);
   // ErrorBoundary 関数を呼んだ側の Owner。children / fallback owner の親にする。
   // ここには handler を付けないので bubble up が自然に外側へ抜ける。
@@ -85,12 +95,46 @@ export function ErrorBoundary(props: ErrorBoundaryProps): Node {
     childrenNode = node ?? null;
   };
 
-  // 初回は effect を立てる前に評価する。children() が初期描画で throw した場合でも、
-  // reportError が先に error.value を埋めるので、直後の effect 初回実行で fallback ブランチに入る。
+  // 初回 children を effect の前に同期評価する。renderer 経由で cursor を進めるため、
+  // anchor を作る **前** に content を確定する必要がある (cursor は post-order の
+  // 順序: content の中身 → anchor)。children() が初期描画で throw した場合は、
+  // reportError が error.value を埋めるので、ここで fallback も即同期評価して
+  // initial content として埋める (server / hydrate 整合のため、ADR 0021)。
   mountChildren();
+  if (error.value !== null) {
+    // children throw → effect 内 fallback 経路と同じ後始末 (childrenOwner dispose) を
+    // 即実行し、fallback も sync 評価する。reset 経路で childrenOwner === null 判定が
+    // 効くようにするため。
+    // (childrenOwner は mountChildren() で代入されるが TS flow analysis が関数経由を
+    // 追えないので as 再 widen する)
+    const co = childrenOwner as Owner | null;
+    if (co) {
+      co.dispose();
+      childrenOwner = null;
+      childrenNode = null;
+    }
+    fallbackOwner = new Owner(parentOwner);
+    const fbNode = fallbackOwner.runCatching(() => props.fallback(error.value, reset));
+    currentBranch = fbNode ?? null;
+  } else {
+    currentBranch = childrenNode;
+  }
 
+  const anchor = renderer.createComment("error-boundary");
+  const fragment = renderer.createFragment();
+  if (currentBranch !== null) renderer.appendChild(fragment, currentBranch);
+  renderer.appendChild(fragment, anchor);
+
+  // effect の初回 invocation は initial state を既に setup 済みなので skip。
+  // dependency (error.value) の subscribe は依然として行われる (effect body 内で
+  // 読むため)。reset 等 2 回目以降の signal 変化で本来の切替 logic に入る。
+  let initialEffect = true;
   effect(() => {
     const err = error.value;
+    if (initialEffect) {
+      initialEffect = false;
+      return;
+    }
 
     // 既存 branch を DOM から外す (切替前の共通処理)
     if (currentBranch !== null) {

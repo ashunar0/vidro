@@ -10,6 +10,7 @@ import { h, _$text, _$dynamicChild } from "../src/jsx";
 import { signal } from "../src/signal";
 import { hydrate } from "../src/hydrate";
 import { renderToString } from "../src/render-to-string";
+import { ErrorBoundary } from "../src/error-boundary";
 
 const ssrInto = (fn: () => Node): HTMLDivElement => {
   const html = renderToString(fn);
@@ -118,6 +119,54 @@ describe("hydrate", () => {
     expect(container.textContent).toBe("1");
     // DOM は残ってる (mount と違って hydrate は dispose 時に DOM 削除しない)
     expect(container.firstChild).not.toBeNull();
+  });
+
+  test("ErrorBoundary を含む subtree が cursor 整合で hydrate できる (B-3c-1)", () => {
+    // server: ErrorBoundary が `<contentNode><!--error-boundary-->` を吐く。
+    // hydrate 時は HydrationRenderer が content の中身 + anchor を post-order で
+    // 消費し、event listener を attach する。
+    let clicks = 0;
+    const App = () =>
+      ErrorBoundary({
+        fallback: (err) => h("p", null, _$text(`failed: ${(err as Error).message}`)),
+        onError: () => {},
+        children: () => h("button", { onClick: () => clicks++ }, _$text("ok")),
+      });
+    const container = ssrInto(App);
+    // SSR markup は `<button>ok</button><!--error-boundary-->` の形になっているはず
+    expect(container.innerHTML).toBe("<button>ok</button><!--error-boundary-->");
+    const buttonBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    // hydrate 後も同じ Node、event listener が attach されてる
+    expect(container.firstChild).toBe(buttonBefore);
+    (container.querySelector("button") as HTMLButtonElement).click();
+    expect(clicks).toBe(1);
+    // anchor も維持
+    expect(container.lastChild?.nodeType).toBe(Node.COMMENT_NODE);
+  });
+
+  test("ErrorBoundary 内 throw → hydrate で fallback に切り替わる (B-3c-1)", () => {
+    // server: children が throw → fallback の出力 (= `<p>fallback</p>`) + anchor が SSR markup に焼かれる
+    // hydrate: client でも同じく throw → fallback、cursor は fallback 出力 + anchor を消費する
+    const App = () =>
+      ErrorBoundary({
+        fallback: () => h("p", null, _$text("fb")),
+        onError: () => {},
+        children: () => {
+          throw new Error("server-render-fail");
+        },
+      });
+    const container = ssrInto(App);
+    expect(container.innerHTML).toBe("<p>fb</p><!--error-boundary-->");
+    const pBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    // hydrate 後も同じ p Node を使う (fallback DOM の再生成なし)
+    expect(container.firstChild).toBe(pBefore);
+    expect(container.textContent).toBe("fb");
   });
 
   test("text content mismatch は warn + override", () => {

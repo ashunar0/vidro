@@ -99,7 +99,15 @@ export function createHydrationRenderer(target: Element): Renderer<Node, Element
     appendChild(parent, child) {
       // 新規 DocumentFragment への append のみ実行。既存 target 内 Node 同士の
       // append は DOM がすでに連結されているので skip (不要な mutation を避ける)。
+      //
+      // ADR 0021: anchor + fragment 系 primitive (ErrorBoundary 等) では、
+      // children を先に renderer 経由で評価してから新規 fragment に append する
+      // 構造になっている。この時点で child は既に target subtree 内 (cursor 経由
+      // で取得した既存 Node)。これを fragment.appendChild で動かすと target から
+      // 外れてしまうので、target.contains(child) なら skip する (元の DOM 位置を
+      // 維持)。
       if (parent.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+        if (target.contains(child)) return;
         parent.appendChild(child);
       }
     },

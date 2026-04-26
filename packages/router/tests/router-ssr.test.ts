@@ -35,8 +35,11 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    // anchor (`<!--router-->`) は B-3b で client/server 共通化された marker。
-    expect(html).toBe('<div class="root"><h1>Home</h1></div><!--router-->');
+    // anchor: B-3b で `<!--router-->`、B-3c-1 で各 ErrorBoundary 出力に
+    // `<!--error-boundary-->`。leaf + root layout の 2 層 wrap になる。
+    expect(html).toBe(
+      '<div class="root"><h1>Home</h1><!--error-boundary--></div><!--error-boundary--><!--router-->',
+    );
   });
 
   test("nested route: /about が about/index.tsx を render", async () => {
@@ -59,7 +62,7 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe("<h1>About us</h1><!--router-->");
+    expect(html).toBe("<h1>About us</h1><!--error-boundary--><!--router-->");
   });
 
   test("loader data が leaf の props.data として届く", async () => {
@@ -86,7 +89,7 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe("<p>Hello zundamon</p><!--router-->");
+    expect(html).toBe("<p>Hello zundamon</p><!--error-boundary--><!--router-->");
   });
 
   test("loader error → 最寄り error.tsx で置換される", async () => {
@@ -119,6 +122,8 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
+    // loader error 経路は ErrorBoundary で wrap されない (foldRouteTree が
+    // 自分で renderError を呼ぶ。layouts も無いので Router anchor のみ)
     expect(html).toBe('<div class="error">failed: boom</div><!--router-->');
   });
 
@@ -150,7 +155,10 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe('<div class="error">caught: render crash</div><!--router-->');
+    // render error 経路は leaf を ErrorBoundary で wrap、fallback が anchor 内に入る
+    expect(html).toBe(
+      '<div class="error">caught: render crash</div><!--error-boundary--><!--router-->',
+    );
   });
 
   test("404: route マッチ無し & not-found.tsx 無し → 素朴な text", async () => {
@@ -198,6 +206,6 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe('<p class="nf">No such page</p><!--router-->');
+    expect(html).toBe('<p class="nf">No such page</p><!--error-boundary--><!--router-->');
   });
 });
