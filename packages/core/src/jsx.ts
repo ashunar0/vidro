@@ -101,14 +101,72 @@ type ReactiveThunk = (() => unknown) & { [REACTIVE_MARKER]?: boolean };
 
 /**
  * A 方式 transform が JSX 内の `{expr}` を `_reactive(() => expr)` に書き換える際に
- * 呼ばれる runtime helper。返り値は同じ関数だが marker property が付くので、
- * component 境界の Proxy が「ユーザーが書いた arrow」と区別して展開できる。
+ * 呼ばれる runtime helper (attribute 位置)。返り値は同じ関数だが marker property
+ * が付くので、component 境界の Proxy が「ユーザーが書いた arrow」と区別して展開できる。
  *
  * 使うのは transform だけで、手で書く API ではない (underscore prefix で internal 表現)。
  */
 export function _reactive<T>(fn: () => T): () => T {
   (fn as ReactiveThunk)[REACTIVE_MARKER] = true;
   return fn;
+}
+
+/**
+ * JSX child position の literal text (`<div>hi</div>` の "hi") を transform が書き換えた
+ * call 先 (ADR 0019)。h() の引数として **先に** 評価されることで `createText` が
+ * `createElement(parent)` より前に呼ばれ、HydrationRenderer の post-order cursor
+ * (`<div>hi</div>` の post-order: text, div) と一致する。
+ */
+export function _$text(value: unknown): Node {
+  return getRenderer().createText(toText(value));
+}
+
+/**
+ * JSX child position の `{expr}` (`<div>{count.value}</div>`) を transform が書き換えた
+ * call 先 (ADR 0019)。peek + (Array / Node / primitive 判定) を h() より前に行い、
+ * 必要なら effect で reactive 追従を仕掛けた上で Node を返す。
+ *
+ * 旧来 jsx.ts 内の `appendChild` ヘルパーで「function を peek + createText」していた
+ * 経路は手書き JSX の後方互換のため残してあるが、transform 経由ではこの helper
+ * が先に解決するので post-order が崩れない。
+ */
+export function _$dynamicChild(thunk: () => unknown): Node {
+  const r = getRenderer();
+  const peeked = untrack(thunk);
+
+  if (Array.isArray(peeked)) {
+    const frag = r.createFragment();
+    for (const item of peeked) {
+      if (item == null || item === false || item === true) continue;
+      if (r.isNode(item)) {
+        r.appendChild(frag, item);
+        continue;
+      }
+      // 配列内の primitive は static として展開 (動的差し替えは <For> を使う想定)。
+      r.appendChild(frag, r.createText(toText(item)));
+    }
+    return frag;
+  }
+
+  if (peeked != null && r.isNode(peeked)) return peeked;
+
+  if (peeked instanceof Signal) {
+    const text = r.createText(toText(peeked.value));
+    effect(() => {
+      r.setText(text, toText(peeked.value));
+    });
+    return text;
+  }
+
+  // primitive 値 or unknown → dynamic text。peek した値を初期 text にすることで
+  // hydration の cursor 先頭から既存 SSR text content と value 一致しやすい。
+  const text = r.createText(toText(peeked));
+  effect(() => {
+    let v = thunk();
+    if (v instanceof Signal) v = v.value;
+    r.setText(text, toText(v));
+  });
+  return text;
 }
 
 // Component に渡す props を Proxy でラップする。getter アクセス時に transform 由来
