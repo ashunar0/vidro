@@ -12,6 +12,7 @@ import { hydrate } from "../src/hydrate";
 import { renderToString } from "../src/render-to-string";
 import { ErrorBoundary } from "../src/error-boundary";
 import { Show } from "../src/show";
+import { Switch, Match } from "../src/switch";
 
 const ssrInto = (fn: () => Node): HTMLDivElement => {
   const html = renderToString(fn);
@@ -176,6 +177,36 @@ describe("hydrate", () => {
     // 今回は SSR markup の確認だけ行う (server で active 無し → anchor のみ)。
     const html = renderToString(App);
     expect(html).toBe("<!--show-->");
+  });
+
+  test("Switch: 単一 Match true で hydrate (B-3c-3)", () => {
+    // 注: B-3c-3 では複数 Match や fallback ありケースは inactive children も
+    // eager 評価されて cursor mismatch する。完全対応は B-4 (children getter 化)。
+    // ここでは「Match 1 個 + when 静的 true」のシンプルケースのみ確認する。
+    const App = () =>
+      Switch({
+        children: [Match({ when: true, children: h("p", null, _$text("A")) })],
+      });
+    const container = ssrInto(App);
+    expect(container.innerHTML).toBe("<p>A</p><!--switch-->");
+    const pBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    expect(container.firstChild).toBe(pBefore);
+    expect(container.textContent).toBe("A");
+    expect(container.lastChild?.nodeType).toBe(Node.COMMENT_NODE);
+  });
+
+  test("Switch: 全 Match false + fallback 無し で anchor のみ SSR (B-3c-3)", () => {
+    // children Node が h() で評価されて cursor を消費する点は Show と同じく
+    // fallback 無しでも複数 Match では mismatch しうる。SSR markup の確認のみ。
+    const App = () =>
+      Switch({
+        children: [Match({ when: false, children: h("p", null, _$text("X")) })],
+      });
+    const html = renderToString(App);
+    expect(html).toBe("<!--switch-->");
   });
 
   test("ErrorBoundary 内 throw → hydrate で fallback に切り替わる (B-3c-1)", () => {
