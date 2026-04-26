@@ -11,6 +11,7 @@ import { signal } from "../src/signal";
 import { hydrate } from "../src/hydrate";
 import { renderToString } from "../src/render-to-string";
 import { ErrorBoundary } from "../src/error-boundary";
+import { Show } from "../src/show";
 
 const ssrInto = (fn: () => Node): HTMLDivElement => {
   const html = renderToString(fn);
@@ -145,6 +146,36 @@ describe("hydrate", () => {
     expect(clicks).toBe(1);
     // anchor も維持
     expect(container.lastChild?.nodeType).toBe(Node.COMMENT_NODE);
+  });
+
+  test("Show: when 静的 true で children を hydrate (B-3c-2)", () => {
+    // 注: B-3c-2 では `<Show fallback={<X />}>{<Y />}</Show>` のような fallback あり
+    // ケースは hydrate cursor mismatch する (children/fallback 両方 eager 評価され
+    // SSR markup には active 1 つしか出ないため)。完全対応は B-4 (children getter 化)。
+    // ここではシンプルケース (fallback 無し + when 静的 true) のみ確認する。
+    const App = () => Show({ when: true, children: h("p", null, _$text("visible")) });
+    const container = ssrInto(App);
+    expect(container.innerHTML).toBe("<p>visible</p><!--show-->");
+    const pBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    expect(container.firstChild).toBe(pBefore);
+    expect(container.textContent).toBe("visible");
+    expect(container.lastChild?.nodeType).toBe(Node.COMMENT_NODE);
+  });
+
+  test("Show: when 静的 false + fallback 無し で anchor のみ hydrate (B-3c-2)", () => {
+    const App = () => Show({ when: false, children: h("p", null, _$text("hidden")) });
+    // 注: children Node は h() 評価で作られるが server fragment には入らない (active が
+    // 無いため)。client hydrate 時も h() 評価で children Node が作られるが、これは
+    // cursor を消費する。children = h("p", null, _$text("hidden")) → createText("hidden")
+    // + createElement("p") の cursor 消費が必要だが target には無いので mismatch する。
+    // → B-4 で children getter 化されると初めてこのケースが動く。
+    //
+    // 今回は SSR markup の確認だけ行う (server で active 無し → anchor のみ)。
+    const html = renderToString(App);
+    expect(html).toBe("<!--show-->");
   });
 
   test("ErrorBoundary 内 throw → hydrate で fallback に切り替わる (B-3c-1)", () => {
