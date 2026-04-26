@@ -13,6 +13,7 @@ import { renderToString } from "../src/render-to-string";
 import { ErrorBoundary } from "../src/error-boundary";
 import { Show } from "../src/show";
 import { Switch, Match } from "../src/switch";
+import { For } from "../src/for";
 
 const ssrInto = (fn: () => Node): HTMLDivElement => {
   const html = renderToString(fn);
@@ -207,6 +208,56 @@ describe("hydrate", () => {
       });
     const html = renderToString(App);
     expect(html).toBe("<!--switch-->");
+  });
+
+  test("For: list 非空 + fallback 無し で hydrate (B-3c-4)", () => {
+    // For の children は元々関数 (item, index) => Node なので、Show / Switch と
+    // 違って inactive children の eager 評価問題がない。fallback だけが eager
+    // 評価される (B-4 持ち越し)。
+    const items = ["a", "b", "c"];
+    const App = () =>
+      For({
+        each: items,
+        children: (item) => h("li", null, _$text(item)),
+      });
+    const container = document.createElement("ul");
+    container.innerHTML = renderToString(App);
+    expect(container.innerHTML).toBe("<li>a</li><li>b</li><li>c</li><!--for-->");
+    const liA = container.children[0];
+
+    hydrate(App, container);
+
+    // 同一 Node 再利用 (DOM 再生成なし)
+    expect(container.children[0]).toBe(liA);
+    expect(container.textContent).toBe("abc");
+    expect(container.lastChild?.nodeType).toBe(Node.COMMENT_NODE);
+  });
+
+  test("For: 空リスト + fallback あり で hydrate (B-3c-4)", () => {
+    const App = () =>
+      For({
+        each: [] as string[],
+        fallback: h("p", null, _$text("empty")),
+        children: (item) => h("li", null, _$text(item)),
+      });
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(App);
+    expect(container.innerHTML).toBe("<p>empty</p><!--for-->");
+    const pBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    expect(container.firstChild).toBe(pBefore);
+    expect(container.textContent).toBe("empty");
+  });
+
+  test("For: 空リスト + fallback 無し は anchor のみ SSR (B-3c-4)", () => {
+    const App = () =>
+      For({
+        each: [] as string[],
+        children: (item) => h("li", null, _$text(item)),
+      });
+    expect(renderToString(App)).toBe("<!--for-->");
   });
 
   test("ErrorBoundary 内 throw → hydrate で fallback に切り替わる (B-3c-1)", () => {
