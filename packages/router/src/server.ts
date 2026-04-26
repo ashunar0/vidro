@@ -214,7 +214,7 @@ export async function preloadRouteComponents(
   const match = matchRoute(pathname, compiled);
 
   // leaf: match.route があればそれ、無ければ not-found.tsx、どちらも無ければ null
-  const leafLoader = match.route ? match.route.load : compiled.notFound;
+  const leafLoader = match.route ? match.route.load : compiled.notFound?.load;
 
   const [route, layouts, errors] = await Promise.all([
     leafLoader

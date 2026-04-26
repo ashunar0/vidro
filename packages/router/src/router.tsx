@@ -70,6 +70,10 @@ type RouterProps = {
   routes: RouteRecord;
   /** server-side pre-render mode。渡されると Router は sync fold して Node を返す。 */
   ssr?: SSRProps;
+  /** hydrate 経路用 (B-3b)。`import.meta.glob(..., { eager: true })` の結果を渡すと、
+   *  client mode の **初回** render を sync fold して既存 markup を消費する。
+   *  以降の navigation は従来通り async load + swap。 */
+  eagerModules?: Record<string, unknown>;
 };
 
 /**
@@ -81,6 +85,11 @@ type RouterProps = {
  * 群 + 各 layer の loader + pathname に match する全 error.tsx を lazy load。各 load
  * は Promise.all で並列実行 (Remix 式 data fetching、設計書 3.7)。
  *
+ * client mode + hydrate (`eagerModules` あり): 初回 render は bootstrap data +
+ * 事前解決済 modules を使って **sync fold**。HydrationRenderer の cursor を
+ * SSR markup と整合させて消費する。effect / popstate は従来通り張られるが、
+ * 初回は skip される (2 回目以降の navigation 専用)。
+ *
  * server mode (`ssr` prop あり): 呼び側が preloadRouteComponents で解決済み modules を
  * 注入するので effect を張らず、sync fold で Node tree を返す。renderToString から
  * 呼ぶのが前提で、navigation も popstate subscribe も発生しない (ADR 0017)。
@@ -88,26 +97,11 @@ type RouterProps = {
  * render は fold 構造: leaf + 各 layout を個別に `ErrorBoundary` で wrap しながら
  * 深い → 浅い順に `{ data, children: prev }` で畳む。layer ごとの ErrorBoundary
  * fallback は「その layer より外側の error.tsx」で切り替わる。
- *
- * error 処理 (ADR 0010、層別伝播版):
- * - **loader error** (async): 並列実行後に各 layer の error を検査、最も外側 (浅い
- *   index) を採用。その layer の位置を「その layer より外側の error.tsx」で置換、
- *   error layer より外側の layouts は正常 render、内側 (layouts + leaf) は mount
- *   しない。leaf loader error は最寄り (自分を含む深い側) の error.tsx を使う。
- * - **render error** (sync): leaf + 各 layout を `ErrorBoundary` で wrap。layer
- *   単位で catch され、fallback はそれぞれ「自 layer より外側の error.tsx」を呼び出す
- *   (leaf は最寄り)。layout render error でも外側 layouts は維持される。
- * - **error.tsx の選び分け**: `selectErrorMod(layerPathPrefix)`。leaf (null) なら
- *   最寄り (match.errors[0])、layout なら `pathPrefix < layerPathPrefix` を満たす
- *   最深。match.errors は深い → 浅い順なので `find` 相当の線形走査で良い。
- * - **error.tsx なし**: 素朴な default ("Error: <message>") を表示。
- * - **reset()**: 内部 reloadCounter を increment して effect を再実行。server mode
- *   では reset は no-op (次回 navigation は client が行う)。
  */
 export function Router(props: RouterProps): Node {
   const compiled = compileRoutes(props.routes);
 
-  // server mode: sync fold → 直接 Node を返す。DOM / window 系に触らない。
+  // server mode: sync fold → 直接 fragment を返す。DOM / window 系に触らない。
   if (props.ssr) {
     return renderServerSide(compiled, props.ssr);
   }
@@ -123,26 +117,65 @@ export function Router(props: RouterProps): Node {
   window.addEventListener("popstate", onPopState);
   onCleanup(() => window.removeEventListener("popstate", onPopState));
 
-  // Show と同じ anchor パターン: DocumentFragment に Comment アンカーを仕込んで
-  // append 時に親 DOM に散らす。anchor の前 (insertBefore) に現在の route node を置く。
-  const anchor = r.createComment("router");
-  const fragment = r.createFragment();
-  r.appendChild(fragment, anchor);
-
-  // 前回 mount した DOM Node 群。swap で一斉に剥がすため配列で保持する。DocumentFragment
-  // を swap の引数で受け取ったケース (最外側が ErrorBoundary の fragment など) に備え、
-  // insertBefore 前に fragment の子 Node 一覧を吸い出して記録する (fragment は
-  // insertBefore 時点で空になるため、後で removeChild できない)。
-  let currentNodes: Node[] = [];
-  // route 切替時の stale resolve 対策: token が一致した resolve のみ DOM に反映。
-  let loadToken = 0;
-
   // reset() で effect を再実行するための trigger。currentPathname の同値 set だと
   // signal が notify しないので、別軸で reload trigger を持つ。
   const reloadCounter = signal(0);
   const reset = (): void => {
     reloadCounter.value += 1;
   };
+
+  // ---- 初回 render (sync fold or fallback empty fragment) ----
+  // hydrate 経路: eagerModules + bootstrapData が両方あれば、server と同じ
+  // foldRouteTree を sync で呼んで初回 markup を消費する。HydrationRenderer
+  // の cursor は post-order 消費なので、(node, anchor) の順で作る。
+  //
+  // 通常 mount 経路: 初回 render は空 fragment を返し、effect 内の async load
+  // で初めて DOM を組む (従来挙動)。
+  const initialMatch = matchRoute(currentPathname.value, compiled);
+  const canSyncBootstrap =
+    !!props.eagerModules && !!bootstrapData && bootstrapData.pathname === currentPathname.value;
+
+  let initialNode: Node | null = null;
+  if (canSyncBootstrap) {
+    const eager = props.eagerModules!;
+    const boot = bootstrapData!;
+    const resolved = resolveModulesSync(initialMatch, eager, compiled);
+    if (resolved) {
+      // bootstrap data を消費 (mount 経路と同じ「1 回だけ使う」セマンティクス)
+      bootstrapData = null;
+      const loaderResults = boot.layers.map((l) => ({
+        data: l.data,
+        error: l.error ? hydrateError(l.error) : undefined,
+      }));
+      initialNode = foldRouteTree({
+        match: initialMatch,
+        componentMods: resolved.layouts.concat(resolved.route ? [resolved.route] : []),
+        loaderResults,
+        errorMods: resolved.errors,
+        reset,
+      });
+    }
+  }
+
+  const anchor = r.createComment("router");
+  const fragment = r.createFragment();
+  if (initialNode) r.appendChild(fragment, initialNode);
+  r.appendChild(fragment, anchor);
+
+  // 前回 swap 時の DOM Node 群。次の swap で removeChild するため記録。
+  let currentNodes: Node[] = initialNode
+    ? initialNode.nodeType === Node.DOCUMENT_FRAGMENT_NODE
+      ? Array.from(initialNode.childNodes)
+      : [initialNode]
+    : [];
+
+  // hydrate 経路で sync 初期化を行ったので、effect 初回は skip して 2 回目以降
+  // (= navigation) のみ async load を回す。skipNext を 1 つ立てておけば、effect
+  // 初回 invocation で early return。pathname / reloadCounter は依然 dependency
+  // として登録されるので、後続の変化はちゃんと拾われる。
+  let skipNextEffect = canSyncBootstrap && initialNode !== null;
+  // route 切替時の stale resolve 対策: token が一致した resolve のみ DOM に反映。
+  let loadToken = 0;
 
   function swap(next: Node): void {
     for (const node of currentNodes) {
@@ -197,10 +230,14 @@ export function Router(props: RouterProps): Node {
     // `void` は「副作用として読むだけ」の意図表明 (lint の no-unused-expressions 回避)。
     void reloadCounter.value;
     const pathname = currentPathname.value;
+    if (skipNextEffect) {
+      skipNextEffect = false;
+      return;
+    }
     const match = matchRoute(pathname, compiled);
     const token = ++loadToken;
 
-    const leafLoader = match.route ? match.route.load : compiled.notFound;
+    const leafLoader = match.route ? match.route.load : compiled.notFound?.load;
     if (!leafLoader) {
       // not-found.tsx なし、かつ route match なし → 素朴にテキスト
       swap(r.createText("404 Not Found") as unknown as Node);
@@ -255,19 +292,22 @@ export function Router(props: RouterProps): Node {
   return fragment;
 }
 
-// ---- server-mode entry (ADR 0017) ----
+// ---- server-mode entry (ADR 0017 / 0020) ----
 // `preloadRouteComponents` + `gatherRouteData` で事前解決した材料を使って、
 // client mode と同じ foldRouteTree で sync に tree を組む。effect / popstate /
-// fetch / DocumentFragment は一切使わない (renderToString 用)。
+// fetch / DocumentFragment-as-mount-target は使わないが、**anchor (Comment) は
+// client mode と同 shape で吐く** (ADR 0020)。client が hydrate 経由で
+// 同じ cursor 順で消費できるようにするため。
 //
 // leaf module は `ssr.resolvedModules.route` に pre-load 済み (matched route or
 // not-found.tsx どちらか)。null の場合は「route 無し & not-found.tsx も無し」と
-// 解釈して client mode と同じ 404 text を返す。
+// 解釈して client mode と同じ 404 text を返す (anchor 無し)。
 function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
+  const r = getRenderer();
   const match = matchRoute(ssr.bootstrapData.pathname, compiled);
 
   if (!ssr.resolvedModules.route) {
-    return getRenderer().createText("404 Not Found") as unknown as Node;
+    return r.createText("404 Not Found") as unknown as Node;
   }
 
   // loader 結果を client mode と同じ shape に整える (hydrateError で Error に復元)
@@ -276,7 +316,7 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
     error: l.error ? hydrateError(l.error) : undefined,
   }));
 
-  return foldRouteTree({
+  const node = foldRouteTree({
     match,
     componentMods: ssr.resolvedModules.layouts.concat([ssr.resolvedModules.route]),
     loaderResults,
@@ -285,6 +325,12 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
       // server では reset 発火不可。client hydration で再発火する前提。
     },
   });
+
+  // client と同 shape: fragment.children = [route_node, anchor]
+  const fragment = r.createFragment();
+  r.appendChild(fragment, node);
+  r.appendChild(fragment, r.createComment("router"));
+  return fragment;
 }
 
 // ---- fold logic (client / server 共通) ----
@@ -410,4 +456,44 @@ function hydrateError(raw: unknown): Error {
     return err;
   }
   return new Error(String(raw));
+}
+
+// ---- eager modules → ResolvedModules (B-3b 暫定) ----
+// hydrate 経路で sync 初期化するために、`import.meta.glob({ eager: true })` の
+// 結果から match に必要な modules を sync で取り出す。
+// - leaf: matched route があればその filePath、無ければ not-found.tsx
+// - layouts / errors: それぞれの filePath で lookup
+// 何か 1 つでも lookup に失敗したら null を返し、Router 側は async load 経路に
+// fallback する (= 普通の mount と同じ初回挙動)。
+function resolveModulesSync(
+  match: MatchResult,
+  eager: Record<string, unknown>,
+  compiled: CompiledRoutes,
+): ResolvedModules | null {
+  let routeMod: RouteModule | null = null;
+  if (match.route) {
+    const m = eager[match.route.filePath];
+    if (!m) return null;
+    routeMod = m as RouteModule;
+  } else if (compiled.notFound) {
+    const m = eager[compiled.notFound.filePath];
+    if (!m) return null;
+    routeMod = m as RouteModule;
+  }
+
+  const layouts: RouteModule[] = [];
+  for (const l of match.layouts) {
+    const m = eager[l.filePath];
+    if (!m) return null;
+    layouts.push(m as RouteModule);
+  }
+
+  const errors: Array<ErrorModule | null> = [];
+  for (const e of match.errors) {
+    const m = eager[e.filePath];
+    // error.tsx は個別 null 許容 (foldRouteTree が next 候補に skip する)
+    errors.push(m ? (m as ErrorModule) : null);
+  }
+
+  return { route: routeMod, layouts, errors };
 }

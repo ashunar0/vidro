@@ -25,6 +25,9 @@ export type ServerModuleLoader = () => Promise<ServerModule>;
 export type RouteRecord = Record<string, () => Promise<unknown>>;
 
 export type RouteEntry = {
+  /** import.meta.glob の key (例: "./routes/users/[id]/index.tsx")。eager glob 経由で
+   *  sync lookup するときの参照キー (Step B-3b)。 */
+  filePath: string;
   /** URL パターン文字列 (例: "/users/:id") */
   path: string;
   /** マッチ判定用の RegExp */
@@ -36,6 +39,8 @@ export type RouteEntry = {
 };
 
 export type LayoutEntry = {
+  /** import.meta.glob の key (eager lookup 用、B-3b) */
+  filePath: string;
   /** layout が適用される path prefix (例: "/users", root layout は "") */
   pathPrefix: string;
   /** pathname がこれにマッチしたら apply する RegExp */
@@ -56,6 +61,8 @@ export type ServerEntry = {
 };
 
 export type ErrorEntry = {
+  /** import.meta.glob の key (eager lookup 用、B-3b) */
+  filePath: string;
   /** error.tsx が cover する path prefix (例: "/users"、root error は "") */
   pathPrefix: string;
   /** pathname がこれにマッチしたら適用候補になる RegExp */
@@ -66,12 +73,17 @@ export type ErrorEntry = {
   load: RouteLoader;
 };
 
+export type NotFoundEntry = {
+  filePath: string;
+  load: RouteLoader;
+};
+
 export type CompiledRoutes = {
   routes: RouteEntry[];
   layouts: LayoutEntry[];
   servers: ServerEntry[];
   errors: ErrorEntry[];
-  notFound?: RouteLoader;
+  notFound?: NotFoundEntry;
 };
 
 export type MatchResult = {
@@ -109,17 +121,18 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
   // layout.server.ts は layout と 1:1 で紐付くので、pathPrefix -> loader の Map に
   // 一旦貯めて、layouts を組み立て終わってから lookup する (2-pass)。
   const layoutServers = new Map<string, ServerModuleLoader>();
-  let notFound: RouteLoader | undefined;
+  let notFound: NotFoundEntry | undefined;
 
   for (const [filePath, rawLoad] of Object.entries(modules)) {
     if (isNotFoundFile(filePath)) {
-      notFound = rawLoad as RouteLoader;
+      notFound = { filePath, load: rawLoad as RouteLoader };
       continue;
     }
     if (filePath.endsWith("/layout.tsx")) {
       const pathPrefix = filePathToLayoutPath(filePath);
       const { pattern, paramNames } = layoutPathToPattern(pathPrefix);
       layouts.push({
+        filePath,
         pathPrefix,
         pattern,
         paramNames,
@@ -132,7 +145,7 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
       const pathPrefix = filePathToErrorPath(filePath);
       // error.tsx は layout と同じ prefix-match (sub tree 全体に効く) で挙動が一致。
       const { pattern, paramNames } = layoutPathToPattern(pathPrefix);
-      errors.push({ pathPrefix, pattern, paramNames, load: rawLoad as RouteLoader });
+      errors.push({ filePath, pathPrefix, pattern, paramNames, load: rawLoad as RouteLoader });
       continue;
     }
     // layout.server.ts は server.ts にも endsWith で match するので先に判定。
@@ -150,7 +163,7 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
 
     const path = filePathToRoutePath(filePath);
     const { pattern, paramNames } = pathToPattern(path);
-    routes.push({ path, pattern, paramNames, load: rawLoad as RouteLoader });
+    routes.push({ filePath, path, pattern, paramNames, load: rawLoad as RouteLoader });
   }
 
   // layouts に layout.server.ts を重ね合わせ。pathPrefix が一致する layout の

@@ -35,7 +35,8 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe('<div class="root"><h1>Home</h1></div>');
+    // anchor (`<!--router-->`) は B-3b で client/server 共通化された marker。
+    expect(html).toBe('<div class="root"><h1>Home</h1></div><!--router-->');
   });
 
   test("nested route: /about が about/index.tsx を render", async () => {
@@ -58,7 +59,7 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe("<h1>About us</h1>");
+    expect(html).toBe("<h1>About us</h1><!--router-->");
   });
 
   test("loader data が leaf の props.data として届く", async () => {
@@ -85,7 +86,7 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe("<p>Hello zundamon</p>");
+    expect(html).toBe("<p>Hello zundamon</p><!--router-->");
   });
 
   test("loader error → 最寄り error.tsx で置換される", async () => {
@@ -118,7 +119,7 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe('<div class="error">failed: boom</div>');
+    expect(html).toBe('<div class="error">failed: boom</div><!--router-->');
   });
 
   test("render error → ErrorBoundary で fallback に置換", async () => {
@@ -149,7 +150,7 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe('<div class="error">caught: render crash</div>');
+    expect(html).toBe('<div class="error">caught: render crash</div><!--router-->');
   });
 
   test("404: route マッチ無し & not-found.tsx 無し → 素朴な text", async () => {
@@ -169,6 +170,7 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
+    // 404 経路は anchor 無し (resolvedModules.route が null のため early return)
     expect(html).toBe("404 Not Found");
   });
 
@@ -196,6 +198,6 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe('<p class="nf">No such page</p>');
+    expect(html).toBe('<p class="nf">No such page</p><!--router-->');
   });
 });
