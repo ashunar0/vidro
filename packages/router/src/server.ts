@@ -19,7 +19,7 @@
 // ら Phase A 動作に degrade (空 `<div id="app">` + bootstrap data のみ) して、
 // client render に逃がす (toy runtime のセーフネット)。
 
-import { renderToString } from "@vidro/core/server";
+import { renderToStringAsync, type BootstrapValue } from "@vidro/core/server";
 import {
   compileRoutes,
   matchRoute,
@@ -104,11 +104,14 @@ async function handleNavigation(
   }
   const html = await indexRes.text();
 
-  // SSR markup を build。renderToString が throw したら Phase A degrade
+  // SSR markup を build。bootstrapKey 付き createResource を server 側で
+  // resolve してから markup に焼くため renderToStringAsync (2-pass) を使う
+  // (ADR 0030 B-5c)。renderToStringAsync が throw したら Phase A degrade
   // (空 `<div id="app">` のまま) で client render に逃がす。
   let appHTML = "";
+  let resources: Record<string, BootstrapValue> = {};
   try {
-    appHTML = renderToString(() =>
+    const result = await renderToStringAsync(() =>
       Router({
         routes: manifest,
         ssr: {
@@ -117,12 +120,17 @@ async function handleNavigation(
         },
       }),
     );
+    appHTML = result.html;
+    resources = result.resources;
   } catch (err) {
-    console.error("[vidro] renderToString failed, degrading to client render:", err);
+    console.error("[vidro] renderToStringAsync failed, degrading to client render:", err);
   }
 
   const withApp = injectAppHTML(html, appHTML);
-  const injected = injectBootstrapData(withApp, data);
+  // resources は空オブジェクトの時は省略 (payload 節約)。client 側 Resource は
+  // hit なし → 即時 fetch fallback で動くので省略しても安全。
+  const bootstrap = Object.keys(resources).length > 0 ? { ...data, resources } : data;
+  const injected = injectBootstrapData(withApp, bootstrap);
 
   return new Response(injected, {
     status: 200,

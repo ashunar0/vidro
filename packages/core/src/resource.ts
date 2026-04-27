@@ -1,6 +1,13 @@
 import { Signal } from "./signal";
 import { batch } from "./batch";
 import { getCurrentSuspense, type SuspenseScope } from "./suspense-scope";
+import { getRenderer } from "./renderer";
+import { readVidroData } from "./bootstrap";
+import {
+  getCurrentResourceScope,
+  type BootstrapValue,
+  type SerializedError,
+} from "./resource-scope";
 
 /**
  * 非同期 fetcher の結果を 3 axis (data / loading / error) で reactive に公開する
@@ -17,9 +24,23 @@ import { getCurrentSuspense, type SuspenseScope } from "./suspense-scope";
  * pending 中は scope の count に register する。Suspense より **外** で構築された
  * resource は scope null = どの Suspense にも関与しない (Solid 互換の意味論)。
  *
- * 本 primitive は **client only**。SSR で resource を resolve して bootstrap data
- * 経由で hydrate cache 命中させる仕組みは B-5c で別途設計する。
+ * SSR 経路 (ADR 0030、B-5c): `bootstrapKey` option を渡すと:
+ *   - server mode (renderToStringAsync 内): 1-pass で fetcher を ResourceScope に
+ *     register、loading=true で markup。caller が Promise.allSettled で resolve →
+ *     2-pass で hit を引き当てて resolved 値で markup
+ *   - client mode: `__vidro_data.resources[key]` に hit があれば loading=false
+ *     スタート (Suspense register しない、fetcher 呼ばない) = blink 解消。
+ *     hit なしなら従来通り即時 fetch
+ *   - bootstrapKey 未指定: client only で従来動作 (B-5b 互換)
  */
+type ResourceOptions = {
+  /**
+   * SSR resolve / hydrate cache 命中用の一意 key。指定なら server で resolve →
+   * client で初期値引き当て。重複 key は dev で warn (first-write-wins)。
+   */
+  bootstrapKey?: string;
+};
+
 class Resource<T> {
   #data: Signal<T | undefined>;
   #loading: Signal<boolean>;
@@ -34,12 +55,44 @@ class Resource<T> {
   // scope に register 中の場合は unregister 関数を保持。null なら未 register。
   #unregister: (() => void) | null = null;
 
-  constructor(fetcher: () => Promise<T>) {
+  constructor(fetcher: () => Promise<T>, options?: ResourceOptions) {
     this.#fetcher = fetcher;
     this.#data = new Signal<T | undefined>(undefined);
     this.#loading = new Signal<boolean>(false);
     this.#error = new Signal<unknown>(undefined);
     this.#suspense = getCurrentSuspense();
+
+    const renderer = getRenderer();
+
+    if (renderer.isServer) {
+      // --- server mode (ADR 0030 B-5c) ---
+      if (options?.bootstrapKey !== undefined) {
+        const scope = getCurrentResourceScope();
+        const hit = scope?.getHit(options.bootstrapKey);
+        if (hit !== undefined) {
+          // 2-pass: caller (renderToStringAsync) が事前に resolve した値を引き当てる
+          this.#applyBootstrapHit(hit);
+          return;
+        }
+        // 1-pass: scope に fetcher を register、resolve は caller がやる
+        scope?.registerFetcher(options.bootstrapKey, fetcher as () => Promise<unknown>);
+      }
+      // server では fetcher を即発火しない (Promise を返せない)。loading=true で
+      // markup を作る。bootstrapKey なしは B-5b と同じ動作 (loading=true 表示)。
+      this.#loading.value = true;
+      return;
+    }
+
+    // --- client mode ---
+    if (options?.bootstrapKey !== undefined) {
+      const hit = readResourceBootstrap(options.bootstrapKey);
+      if (hit !== undefined) {
+        // bootstrap-hit: loading=false スタート、Suspense register せず、fetcher
+        // 呼ばず。markup と client state が一致 → blink 消滅
+        this.#applyBootstrapHit(hit);
+        return;
+      }
+    }
     this.refetch();
   }
 
@@ -95,11 +148,48 @@ class Resource<T> {
       },
     );
   }
+
+  // bootstrap-hit (server 2-pass / client hit) 共通の状態反映。loading=false で
+  // 確定済みとして扱い、Suspense register もしない (initial signal value 扱い)。
+  #applyBootstrapHit(hit: BootstrapValue): void {
+    if ("error" in hit && hit.error) {
+      this.#error.value = hydrateBootstrapError(hit.error);
+      this.#loading.value = false;
+      return;
+    }
+    this.#data.value = (hit as { data?: T }).data;
+    this.#loading.value = false;
+  }
 }
 
 /** factory 形式の生成 API。class は internal、`export type { Resource }` で型のみ公開。 */
-export function createResource<T>(fetcher: () => Promise<T>): Resource<T> {
-  return new Resource(fetcher);
+export function createResource<T>(
+  fetcher: () => Promise<T>,
+  options?: ResourceOptions,
+): Resource<T> {
+  return new Resource(fetcher, options);
 }
 
 export type { Resource };
+
+// --- bootstrap helpers ---
+
+/**
+ * `__vidro_data.resources[key]` から bootstrap value を取り出す。client only。
+ * router の readBootstrapData() と同じ shared cache (`readVidroData`) 経由なので、
+ * Router と読み出し順序の心配なし (ADR 0030 3b-α)。
+ */
+function readResourceBootstrap(key: string): BootstrapValue | undefined {
+  const data = readVidroData();
+  if (!data) return undefined;
+  const resources = data.resources as Record<string, BootstrapValue> | undefined;
+  return resources?.[key];
+}
+
+/** SerializedError → Error。router の hydrateError と同形 (ADR 0030 5-a)。 */
+function hydrateBootstrapError(raw: SerializedError): Error {
+  const err = new Error(raw.message);
+  if (raw.name) err.name = raw.name;
+  if (raw.stack) err.stack = raw.stack;
+  return err;
+}

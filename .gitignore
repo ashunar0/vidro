@@ -13,6 +13,8 @@ dist-ssr
 dist-server
 *.local
 
+.wrangler
+
 # Playwright MCP snapshots (developer-local artifact)
 .playwright-mcp/
 

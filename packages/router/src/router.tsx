@@ -1,4 +1,4 @@
-import { effect, ErrorBoundary, getRenderer, onCleanup, signal } from "@vidro/core";
+import { effect, ErrorBoundary, getRenderer, onCleanup, readVidroData, signal } from "@vidro/core";
 import {
   compileRoutes,
   matchRoute,
@@ -19,22 +19,16 @@ type BootstrapData = { pathname: string; params: Record<string, string>; layers:
 let bootstrapData: BootstrapData | null = readBootstrapData();
 
 function readBootstrapData(): BootstrapData | null {
-  if (typeof document === "undefined") return null;
-  const el = document.getElementById("__vidro_data");
-  if (!el || !el.textContent) return null;
-  try {
-    const parsed = JSON.parse(el.textContent) as {
-      params: Record<string, string>;
-      layers: BootstrapLayer[];
-    };
-    const pathname = window.location.pathname;
-    // consume: 同じデータを 2 度使わないよう DOM からも剥がす。
-    el.remove();
-    return { pathname, params: parsed.params, layers: parsed.layers };
-  } catch {
-    el.remove();
-    return null;
-  }
+  // ADR 0030 3b-α: `__vidro_data` は core の readVidroData() で 1 回だけ parse +
+  // remove + cache される shared util 経由で読む。Resource 側 (resources field)
+  // と読み出し順序の心配なし。
+  const data = readVidroData();
+  if (!data) return null;
+  const params = data.params as Record<string, string> | undefined;
+  const layers = data.layers as BootstrapLayer[] | undefined;
+  if (!params || !layers) return null;
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+  return { pathname, params, layers };
 }
 
 // ---- SSR (Phase B) 用型 ----

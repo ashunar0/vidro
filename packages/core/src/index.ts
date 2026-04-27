@@ -24,3 +24,4 @@ export { hydrate } from "./hydrate";
 export { createResource } from "./resource";
 export type { Resource } from "./resource";
 export { Suspense } from "./suspense";
+export { readVidroData } from "./bootstrap";
