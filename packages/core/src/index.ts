@@ -21,3 +21,5 @@ export { ErrorBoundary } from "./error-boundary";
 export { setRenderer, getRenderer } from "./renderer";
 export type { Renderer } from "./renderer";
 export { hydrate } from "./hydrate";
+export { createResource } from "./resource";
+export type { Resource } from "./resource";
