@@ -1,5 +1,6 @@
 import { Signal } from "./signal";
 import { batch } from "./batch";
+import { getCurrentSuspense, type SuspenseScope } from "./suspense-scope";
 
 /**
  * 非同期 fetcher の結果を 3 axis (data / loading / error) で reactive に公開する
@@ -12,6 +13,10 @@ import { batch } from "./batch";
  * race condition は内部 token 方式で対策: 古い fetch が遅延 resolve しても、
  * 最新 token と一致しないので state に反映されない。
  *
+ * Suspense 連携 (ADR 0029、B-5b): constructor 時に nearest SuspenseScope を捕捉し、
+ * pending 中は scope の count に register する。Suspense より **外** で構築された
+ * resource は scope null = どの Suspense にも関与しない (Solid 互換の意味論)。
+ *
  * 本 primitive は **client only**。SSR で resource を resolve して bootstrap data
  * 経由で hydrate cache 命中させる仕組みは B-5c で別途設計する。
  */
@@ -23,12 +28,18 @@ class Resource<T> {
   // refetch のたびに increment。Promise の then/catch で自分の token と一致確認、
   // 一致しなければ古い fetch なので state を更新しない (router の loadToken と同パターン)。
   #token = 0;
+  // 構築時の SuspenseScope (Suspense より外で作られたら null)。一度捕捉したら
+  // resource の lifetime を通じて固定 (Solid 互換)。
+  #suspense: SuspenseScope | null;
+  // scope に register 中の場合は unregister 関数を保持。null なら未 register。
+  #unregister: (() => void) | null = null;
 
   constructor(fetcher: () => Promise<T>) {
     this.#fetcher = fetcher;
     this.#data = new Signal<T | undefined>(undefined);
     this.#loading = new Signal<boolean>(false);
     this.#error = new Signal<unknown>(undefined);
+    this.#suspense = getCurrentSuspense();
     this.refetch();
   }
 
@@ -55,6 +66,11 @@ class Resource<T> {
       this.#loading.value = true;
       this.#error.value = undefined;
     });
+    // Suspense scope に register。既に register 済 (前回の refetch で resolve 前に
+    // 再 refetch されたケース) なら count を維持し、次の resolve/reject で 1 回 unregister。
+    if (this.#suspense && !this.#unregister) {
+      this.#unregister = this.#suspense.register();
+    }
     this.#fetcher().then(
       (data) => {
         if (token !== this.#token) return;
@@ -63,6 +79,8 @@ class Resource<T> {
           this.#data.value = data;
           this.#loading.value = false;
         });
+        this.#unregister?.();
+        this.#unregister = null;
       },
       (err) => {
         if (token !== this.#token) return;
@@ -72,6 +90,8 @@ class Resource<T> {
           this.#error.value = err;
           this.#loading.value = false;
         });
+        this.#unregister?.();
+        this.#unregister = null;
       },
     );
   }
