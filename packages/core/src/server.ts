@@ -6,6 +6,7 @@ export {
   renderToStringAsync,
   renderToReadableStream,
   VIDRO_STREAMING_RUNTIME,
+  VIDRO_BOOT_TRIGGER,
 } from "./render-to-string";
 export type { RenderToStringAsyncResult } from "./render-to-string";
 export type { BootstrapValue, SerializedError } from "./resource-scope";

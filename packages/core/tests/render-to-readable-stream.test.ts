@@ -22,7 +22,11 @@ import { describe, expect, test } from "vite-plus/test";
 import { h, _$text, _$dynamicChild } from "../src/jsx";
 import { resource } from "../src/resource";
 import { Suspense } from "../src/suspense";
-import { renderToReadableStream, VIDRO_STREAMING_RUNTIME } from "../src/render-to-string";
+import {
+  renderToReadableStream,
+  VIDRO_STREAMING_RUNTIME,
+  VIDRO_BOOT_TRIGGER,
+} from "../src/render-to-string";
 
 async function collect(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader();
@@ -116,6 +120,15 @@ describe("renderToReadableStream", () => {
 
     // root scope は空なので root partial patch は出ない (= __vidroAddResources は 1 回だけ)
     expect(html.match(/__vidroAddResources/g)?.length).toBe(1);
+
+    // ADR 0036: boot trigger は shell 直後 (= boundary chunks より前) に出る。
+    // VIDRO_BOOT_TRIGGER 全体の出現位置を見る (内部文字列 "__vidroBoot" の代用は
+    // trigger 内容の rename に弱いので避ける)。
+    const bootTriggerIdx = html.indexOf(VIDRO_BOOT_TRIGGER);
+    expect(bootTriggerIdx).toBeGreaterThanOrEqual(0);
+    const boundaryStartIdx = html.indexOf("<!--vb-vb0-start-->");
+    expect(boundaryStartIdx).toBeLessThan(bootTriggerIdx);
+    expect(bootTriggerIdx).toBeLessThan(fillIdx);
   });
 
   test("out-of-order: 速い boundary が遅い boundary より先に emit される (ADR 0033)", async () => {
@@ -162,6 +175,28 @@ describe("renderToReadableStream", () => {
     expect(fastFillIdx).toBeGreaterThanOrEqual(0);
     // out-of-order: vb1 (fast) が vb0 (slow) より先に emit される
     expect(fastFillIdx).toBeLessThan(slowFillIdx);
+  });
+
+  test("ADR 0036: VIDRO_BOOT_TRIGGER は registry idiom (__vidroBoot 即発火 or pending flag)", () => {
+    // bundle が先着 → __vidroBoot を即呼ぶ、未着 → __vidroBootPending=true で flag。
+    // 短い classic <script> (type="module" 不可: 即時実行が必要)。
+    expect(VIDRO_BOOT_TRIGGER).toContain("__vidroBoot");
+    expect(VIDRO_BOOT_TRIGGER).toContain("__vidroBootPending");
+    expect(VIDRO_BOOT_TRIGGER.startsWith("<script>")).toBe(true);
+    expect(VIDRO_BOOT_TRIGGER.endsWith("</script>")).toBe(true);
+    // module ではなく classic script (= 即時実行、type 属性なし)
+    expect(VIDRO_BOOT_TRIGGER).not.toContain('type="module"');
+  });
+
+  test("ADR 0036: boundary 無し (shell のみ) でも boot trigger は emit される", async () => {
+    const stream = renderToReadableStream(() => h("p", null, _$text("hello")));
+    const html = await collect(stream);
+    expect(html).toContain("<p>hello</p>");
+    expect(html).toContain("__vidroBoot");
+    // shell より後ろ
+    const shellIdx = html.indexOf("<p>hello</p>");
+    const bootIdx = html.indexOf("__vidroBoot");
+    expect(shellIdx).toBeLessThan(bootIdx);
   });
 
   test("VIDRO_STREAMING_RUNTIME に __vidroFill / __vidroAddResources の定義が含まれる", () => {

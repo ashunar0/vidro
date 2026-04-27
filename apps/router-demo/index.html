@@ -16,6 +16,13 @@
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <!--
+      ADR 0036: bundle を `async` で並列 download。`type="module"` の default
+      は defer (= DOMContentLoaded 待ち) だが、async を付けると parse-blocking
+      なしで load 完了次第 register する経路に。shell flush 直後の boot trigger
+      (core/render-to-string.ts VIDRO_BOOT_TRIGGER) と組み合わせて、shell が
+      DOM に乗った瞬間 hydrate を起動できるようにする。
+    -->
+    <script type="module" async src="/src/main.tsx"></script>
   </body>
 </html>

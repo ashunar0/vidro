@@ -186,6 +186,16 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         });
         emit(shellHtml);
 
+        // ADR 0036: shell flush 直後 (= 後着 boundary chunks より前) に boot
+        // trigger を 1 回 enqueue。bundle (= app の main entry を `<script
+        // type="module" async>` で head から先読み) が既に load 済みなら即
+        // `__vidroBoot()` を呼んで shell hydrate を起動、まだなら
+        // `__vidroBootPending` flag を立てる (= bundle の load 完了時に
+        // main.tsx 側でフラグを見て即発火)。ADR 0035 の `__vidroPendingHydrate`
+        // と同じ registry idiom で、defer (= DOMContentLoaded 待ち) の壁を
+        // 取り除き TTI を縮める。
+        emit(VIDRO_BOOT_TRIGGER);
+
         // 2. boundary 並列 flush + root scope flush (ADR 0033 out-of-order)
         //    各 boundary に対して独立に Promise.allSettled。resolve した順で chunk
         //    を emit する。controller.enqueue は sync なので serialize される。
@@ -335,6 +345,26 @@ var pend=window.__vidroPendingHydrate[id];
 if(pend){delete window.__vidroPendingHydrate[id];pend();}
 };
 `.replace(/\n/g, "");
+
+/**
+ * shell flush 直後に 1 回 emit する boot trigger script (ADR 0036)。
+ *
+ * shell の DOM が乗った瞬間に発火させたい hydrate 起動を、registry 経由で起こす:
+ * - bundle (= app entry を `<head>` async で読んだもの) が `window.__vidroBoot`
+ *   を既に登録済 → trigger が `__vidroBoot()` を即時呼び出し → shell hydrate
+ *   が後着 boundary より早く走り出す
+ * - bundle が遅着 → `__vidroBootPending=true` を flag → bundle の load 完了時に
+ *   `main.tsx` 側 (本リポジトリでは `apps/router-demo/src/main.tsx`) が flag を
+ *   見て即発火
+ *
+ * この trigger は VIDRO_STREAMING_RUNTIME と違って caller (router/server.ts)
+ * が `<head>` に inject するのではなく、core の `renderToReadableStream` 自身が
+ * shell-pass 完了直後に 1 回だけ stream に流す。boundary chunks よりも前に並ぶ
+ * 順序が API レベルで保証されることが TTI 改善の本質 (ADR 0036)。
+ *
+ * 内容は最小: classic (non-module) inline script、size ~80B、minify 不要。
+ */
+export const VIDRO_BOOT_TRIGGER = `<script>window.__vidroBoot?window.__vidroBoot():(window.__vidroBootPending=true);</script>`;
 
 /** `<script>...</script>` 内に JSON を inline する用の escape (XSS 対策、`</script>` 閉じ防止)。 */
 function escapeJsonForScript(value: unknown): string {
