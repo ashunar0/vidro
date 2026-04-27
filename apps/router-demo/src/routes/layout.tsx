@@ -16,6 +16,7 @@ export default function RootLayout({ children }: LayoutProps) {
         <Link href="/users/1">User 1</Link>
         <Link href="/users/5">User 5</Link>
         <Link href="/users/999">User 999 (err)</Link>
+        <Link href="/streaming-demo">Streaming demo</Link>
         <Link href="/broken-loader">Broken loader</Link>
         <Link href="/broken-render">Broken render</Link>
         <Link href="/does-not-exist">404</Link>

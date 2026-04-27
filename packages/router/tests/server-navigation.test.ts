@@ -44,15 +44,17 @@ describe("createServerHandler — navigation HTML (Phase C streaming SSR)", () =
     // bootstrap data script + inline runtime が `</head>` 前に inject されてる
     expect(body).toContain('<script type="application/json" id="__vidro_data">');
     expect(body).toContain("__vidroFill");
-    expect(body).toContain("__vidroSetResources");
+    expect(body).toContain("__vidroAddResources");
 
     // shell html が #app 内に流れる (B-3b の `<!--router-->` + B-3c-1 の error-boundary anchors)
     expect(body).toContain(
       '<div id="app"><div class="root"><h1>Home</h1><!--error-boundary--></div><!--error-boundary--><!--router-->',
     );
 
-    // resources patch script (Suspense / bootstrapKey resource なしなので空 object)
-    expect(body).toContain("__vidroSetResources({})");
+    // root pseudo-boundary patch (ADR 0033 論点 9): Suspense / bootstrapKey resource
+    // どちらも無いので、ランタイム inline 以外で __vidroAddResources(...) は呼ばれない
+    // (空 object の no-op patch は ADR 0033 で省略する仕様)
+    expect(body).not.toContain("__vidroAddResources({");
 
     // shell suffix: 元 index.html の </div> 以降が維持される
     expect(body).toContain('</div><script type="module" src="/src/main.tsx"></script></body>');

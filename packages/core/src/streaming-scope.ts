@@ -1,30 +1,36 @@
-// Phase C-1+C-2 streaming SSR の boundary registry (ADR 0031)。
+// Phase C streaming SSR の boundary registry (ADR 0031 + ADR 0033)。
 //
 // renderToReadableStream が shell-pass を実行する間、Suspense は
 // `getCurrentStream()` が non-null かを見て boundary 化するか既存動作 (children
-// 直吐き) かを分岐する。boundary 化したら id を採番 + childrenFactory を本 scope
-// に push、後で renderToReadableStream が tail で再 render に使う。
+// 直吐き) かを分岐する。boundary 化したら id を採番 + per-boundary ResourceScope
+// を立てつつ、scope と childrenFactory を本 ctx に push する。後で
+// renderToReadableStream は各 boundary の scope.fetchers を独立に Promise.allSettled
+// で待ち、resolve 順に template + fill chunk を emit する (out-of-order)。
 //
 // suspense-scope / resource-scope と同パターンの module-level state。
 
+import type { ResourceScope } from "./resource-scope";
+
 export type Boundary = {
-  /** shell の `<div data-vidro-boundary="${id}">` と tail の `<template id="vidro-tpl-${id}">` を結ぶ識別子 */
+  /** shell の `<!--vb-${id}-start--> ... <!--vb-${id}-end-->` marker pair と tail の `<template id="vidro-tpl-${id}">` を結ぶ識別子 */
   id: string;
+  /** boundary 内 resource の fetcher を集める per-boundary scope (ADR 0033)。boundary-pass で hits 入りで再構築する hydration cache 元にもなる。 */
+  scope: ResourceScope;
   /** tail で resolved scope のもとに再評価する Suspense の children (元 props.children をそのまま握る) */
   childrenFactory: () => unknown;
 };
 
 export class StreamingContext {
   #counter = 0;
-  /** 登録順 = shell 内の出現順。tail は本配列を順に flush する。 */
+  /** 登録順 = shell 内の出現順。out-of-order では emit 順とは無関係 (resolve 順に descend する) が、debug / 安定性目的で順序保持。 */
   readonly boundaries: Boundary[] = [];
 
   allocBoundaryId(): string {
     return `vb${this.#counter++}`;
   }
 
-  registerBoundary(id: string, childrenFactory: () => unknown): void {
-    this.boundaries.push({ id, childrenFactory });
+  registerBoundary(id: string, scope: ResourceScope, childrenFactory: () => unknown): void {
+    this.boundaries.push({ id, scope, childrenFactory });
   }
 }
 

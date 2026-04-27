@@ -4,6 +4,7 @@ import { untrack } from "./observer";
 import { getRenderer } from "./renderer";
 import { SuspenseScope, runWithSuspenseScope } from "./suspense-scope";
 import { getCurrentStream } from "./streaming-scope";
+import { ResourceScope, runWithResourceScope } from "./resource-scope";
 
 type SuspenseProps = {
   /** pending 中に表示する UI を返す関数。最初に pending が観測された時点で 1 回だけ評価する。 */
@@ -44,20 +45,29 @@ export function Suspense(props: SuspenseProps): Node {
   if (renderer.isServer) {
     const stream = getCurrentStream();
     if (stream) {
-      // streaming SSR (Phase C-2、ADR 0031): children を 1 度評価して fetcher
-      // を集めるが markup は捨て、shell には fallback markup を出す。boundary
-      // 範囲を `<!--vb-${id}-start--> ... <!--vb-${id}-end-->` で囲み、tail で
+      // streaming SSR (Phase C-2 + ADR 0033 out-of-order): children を 1 度評価
+      // して per-boundary ResourceScope に fetcher を集めるが markup は捨て、
+      // shell には fallback markup を出す。boundary 範囲は
+      // `<!--vb-${id}-start--> ... <!--vb-${id}-end-->` で囲み、tail で
       // `__vidroFill` が start/end 間の node を template content と差し替える。
       // anchor `<!--suspense-->` は client mode と整合させて hydrate cursor を
       // 揃えるためそのまま末尾に置く (start/end は __vidroFill が remove する)。
+      //
+      // per-boundary scope (ADR 0033): children 評価を runWithResourceScope で
+      // wrap することで、内部 resource の fetcher は flat collectScope ではなく
+      // boundary 専用 scope に分離 register される。renderToReadableStream は
+      // この scope ごとに独立 Promise.allSettled で待ち、resolve 順 emit する。
       const id = stream.allocBoundaryId();
+      const boundaryScope = new ResourceScope();
       const innerScope = new SuspenseScope();
       runWithSuspenseScope(innerScope, () => {
-        props.children();
+        runWithResourceScope(boundaryScope, () => {
+          props.children();
+        });
       });
       const fallbackScope = new SuspenseScope();
       const fallbackNode = runWithSuspenseScope(fallbackScope, () => props.fallback());
-      stream.registerBoundary(id, props.children);
+      stream.registerBoundary(id, boundaryScope, props.children);
       const fragment = renderer.createFragment();
       renderer.appendChild(fragment, renderer.createComment(`vb-${id}-start`));
       renderer.appendChild(fragment, fallbackNode);

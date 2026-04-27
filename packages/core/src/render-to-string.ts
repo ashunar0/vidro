@@ -13,9 +13,11 @@
 // `bootstrapKey` 付き resource を server で resolve してから markup を作る
 // 2-pass async 版。詳細は関数 doc。
 //
-// renderToReadableStream(fn): ReadableStream<Uint8Array> — ADR 0031 Step C-1+C-2 で追加。
-// shell + tail streaming SSR。shell 即時 flush + 全 resource 解決後に boundary を
-// 後追い fill。詳細は関数 doc。
+// renderToReadableStream(fn): ReadableStream<Uint8Array> — ADR 0031 Step C-1+C-2 で導入、
+// ADR 0033 で out-of-order full streaming に拡張。shell 即時 flush + 各 Suspense
+// boundary を **resolve 順** に独立 enqueue する (= 速い boundary が遅い boundary
+// に律速されない)。per-boundary ResourceScope で fetcher を分離し、boundary 単位
+// で並列 Promise.allSettled。詳細は関数 doc。
 
 import { setRenderer, getRenderer, type Renderer } from "./renderer";
 import { runWithMountScope, discardMountQueue } from "./mount-queue";
@@ -130,34 +132,33 @@ function serializeBootstrapError(reason: unknown): SerializedError {
 // --- Phase C streaming SSR ---
 
 /**
- * shell 即時 flush + 全 resource resolve 後に各 Suspense boundary を
- * `<template>` + `__vidroFill` で後追い埋めする streaming SSR API (ADR 0031)。
+ * shell 即時 flush + 各 Suspense boundary を **resolve 順** に独立 emit する
+ * out-of-order streaming SSR API (ADR 0031 + ADR 0033)。
  *
  * 流れ:
  *   1. shell-pass: StreamingContext を active にして renderToString。Suspense は
- *      `getCurrentStream()` を見て boundary 化 — children を 1 回評価して
- *      ResourceScope に fetcher を集めつつ、shell には `<div data-vidro-boundary>`
- *      で fallback markup を吐く + childrenFactory を ctx.boundaries に push
- *   2. controller.enqueue(inline runtime) — shell の先頭で 1 回 emit
- *   3. controller.enqueue(shell HTML)
- *   4. resolve all: ResourceScope.fetchers を Promise.allSettled で待ち、hits を組む
- *   5. controller.enqueue(`__vidroSetResources(...)`) — `<script id="__vidro_data">`
- *      を caller (router) が body に inject 済み前提。本 patch script で
- *      resources field を書き加える
- *   6. boundary-pass: 各 boundary について streaming context を **解除** し、
- *      hits 入り ResourceScope で childrenFactory を renderToString。`<template
- *      id="vidro-tpl-${id}">${childrenHtml}</template><script>__vidroFill("${id}")
- *      </script>` を順次 enqueue
- *   7. controller.close()
+ *      `getCurrentStream()` を見て boundary 化 — per-boundary ResourceScope を
+ *      立てて children を 1 回評価し fetcher 収集、shell には marker + fallback
+ *      markup + suspense anchor を吐く。boundary {id, scope, childrenFactory} を
+ *      ctx に push
+ *   2. emit(shellHtml) — shell を即 flush (TTFB / FCP に効く)
+ *   3. boundary 並列 flush (ADR 0033 out-of-order):
+ *      各 boundary について `Promise.allSettled(boundary.scope.fetchers)` を独立
+ *      kick。resolve したら hits を組み、boundary-pass で hits 入り ResourceScope
+ *      で childrenFactory を renderToString → 1 chunk
+ *      (`<script>__vidroAddResources(...)</script>` + `<template>...</template>` +
+ *      `<script>__vidroFill("${id}")</script>`) にまとめて emit。controller.enqueue
+ *      は sync なので Promise の resolve 順 = stream chunk 順
+ *   4. 全 boundary flush 完了で controller.close()
  *
  * caller (router/server.ts) は本 stream を shell prefix (`<head>` + `<body>` +
  * `<div id="app">`) と shell suffix (`</div></body></html>`) で挟んで Response
  * body にする。bootstrap data の `<script id="__vidro_data">` は caller が
- * inject (router 部分のみ、resources は本 stream の patch script で後出し)。
+ * inject (router 部分のみ、resources は本 stream の partial patch で後出し累積)。
  *
  * ネスト Suspense は内側 boundary-pass で streaming context が解除されるので、
- * 既存 (renderToStringAsync 互換) 動作で children 直吐きになる。完全な
- * out-of-order streaming は将来案件 (project_pending_rewrites)。
+ * 既存 (renderToStringAsync 互換) 動作で children 直吐きになる。内側を独立 chunk
+ * 化する true full out-of-order は将来案件 (project_pending_rewrites)。
  */
 export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
@@ -165,62 +166,113 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
       const enc = new TextEncoder();
       const emit = (chunk: string) => controller.enqueue(enc.encode(chunk));
 
-      // 1. shell-pass: fetcher 集め + shell markup
-      // `__vidroFill` / `__vidroSetResources` は caller が `<head>` に inject 済み
-      // 前提。core は #app の中身に当たる stream chunks (shell + resources patch +
-      // boundary fills) のみを担当する責務分離。
+      // 1. shell-pass: per-boundary scope に fetcher を集めつつ shell markup を作る
+      //    `__vidroFill` / `__vidroAddResources` は caller が `<head>` に inject
+      //    済み前提。core は #app の中身に当たる stream chunks (shell + 各
+      //    boundary chunk) のみを担当する責務分離。
+      //
+      //    rootScope (ADR 0033 論点 9): Suspense **外** で declare された
+      //    bootstrapKey 付き resource を吸収する root pseudo-boundary scope。
+      //    Suspense 内側では runWithResourceScope の push/pop で boundaryScope
+      //    に切り替わるので、Suspense 外の resource だけが rootScope に残る。
       const stream = new StreamingContext();
-      const collectScope = new ResourceScope();
+      const rootScope = new ResourceScope();
       let shellHtml = "";
       runWithStream(stream, () => {
-        runWithResourceScope(collectScope, () => {
+        runWithResourceScope(rootScope, () => {
           shellHtml = renderToString(fn);
         });
       });
       emit(shellHtml);
 
-      // 2. resolve all fetchers
-      const entries = Array.from(collectScope.fetchers.entries());
-      const settled = await Promise.allSettled(entries.map(([, fetcher]) => fetcher()));
-      const hits = new Map<string, BootstrapValue>();
-      for (let i = 0; i < entries.length; i++) {
-        const key = entries[i]![0];
-        const result = settled[i]!;
-        if (result.status === "fulfilled") {
-          hits.set(key, { data: result.value });
-        } else {
-          hits.set(key, { error: serializeBootstrapError(result.reason) });
-        }
-      }
-
-      // 3. resources patch script (`__vidro_data` の resources field を書き換える)。
-      //    hits が空でも emit しておく — Resource.constructor が hit lookup する時に
-      //    `resources` field 自体は存在してた方が安全 (undefined check の差は無いが
-      //    将来 reactive_source 拡張で per-key push があれば一貫性ある)
-      const resources: Record<string, BootstrapValue> = {};
-      for (const [k, v] of hits) resources[k] = v;
-      const resourcesJson = escapeJsonForScript(resources);
-      emit(`<script>__vidroSetResources(${resourcesJson})</script>`);
-
-      // 4. boundary-pass: 各 boundary を再 render → template + fill script
-      //    streaming context は **解除** (内側 Suspense は既存動作 = children 直吐き)。
-      //    hits 入り ResourceScope を active にすれば、内側 resource は
-      //    bootstrap-hit branch で markup に焼かれる。
-      const renderScope = new ResourceScope(hits);
-      for (const b of stream.boundaries) {
-        let childrenHtml = "";
-        runWithResourceScope(renderScope, () => {
-          childrenHtml = renderToString(b.childrenFactory as () => Node);
-        });
-        emit(
-          `<template id="vidro-tpl-${b.id}">${childrenHtml}</template>` +
-            `<script>__vidroFill("${b.id}")</script>`,
-        );
-      }
+      // 2. boundary 並列 flush + root scope flush (ADR 0033 out-of-order)
+      //    各 boundary に対して独立に Promise.allSettled。resolve した順で chunk
+      //    を emit する。controller.enqueue は sync なので serialize される。
+      //    rootScope は template/fill を持たないので __vidroAddResources のみ。
+      //    Promise.allSettled で全完了を待ってから controller.close() する。
+      await Promise.allSettled([
+        flushRoot(rootScope, emit),
+        ...stream.boundaries.map((b) => flushBoundary(b.id, b.scope, b.childrenFactory, emit)),
+      ]);
 
       controller.close();
     },
   });
+}
+
+/**
+ * Suspense 外で declare された bootstrapKey 付き resource (= rootScope の
+ * fetcher) を解決して、`__vidroAddResources(...)` partial patch だけ emit する。
+ * template / fill は無し (root に DOM 配置を持たない)。fetcher 0 個なら何も
+ * emit しないで早期 return (空 patch を出す意味は無い、ADR 0033 論点 9)。
+ */
+async function flushRoot(scope: ResourceScope, emit: (chunk: string) => void): Promise<void> {
+  const entries = Array.from(scope.fetchers.entries());
+  if (entries.length === 0) return;
+  const settled = await Promise.allSettled(entries.map(([, fetcher]) => fetcher()));
+  const hits: Record<string, BootstrapValue> = {};
+  for (let i = 0; i < entries.length; i++) {
+    const key = entries[i]![0];
+    const result = settled[i]!;
+    hits[key] =
+      result.status === "fulfilled"
+        ? { data: result.value }
+        : { error: serializeBootstrapError(result.reason) };
+  }
+  emit(`<script>__vidroAddResources(${escapeJsonForScript(hits)})</script>`);
+}
+
+/**
+ * 1 boundary 分の resolve + render + emit。out-of-order の核。
+ *
+ *   1. boundary scope の全 fetcher を Promise.allSettled
+ *   2. hits を組む (data / error 両対応、SerializedError 経由)
+ *   3. boundary-pass: streaming context **解除済み** state で childrenFactory を
+ *      hits 入り ResourceScope で renderToString。内側 Suspense は children 直吐き
+ *   4. partial bootstrap patch + template + fill script を 1 chunk で emit
+ *
+ * boundary 単位の throw (例: childrenFactory 内 sync throw) は呼び出し元の
+ * Promise.allSettled が拾うので、stream 全体は止めない (= fallback がそのまま
+ * 残る、ADR 0033 論点 6)。
+ */
+async function flushBoundary(
+  id: string,
+  scope: ResourceScope,
+  childrenFactory: () => unknown,
+  emit: (chunk: string) => void,
+): Promise<void> {
+  const entries = Array.from(scope.fetchers.entries());
+  const settled = await Promise.allSettled(entries.map(([, fetcher]) => fetcher()));
+  const hits = new Map<string, BootstrapValue>();
+  for (let i = 0; i < entries.length; i++) {
+    const key = entries[i]![0];
+    const result = settled[i]!;
+    if (result.status === "fulfilled") {
+      hits.set(key, { data: result.value });
+    } else {
+      hits.set(key, { error: serializeBootstrapError(result.reason) });
+    }
+  }
+
+  // boundary-pass: hits 入り scope で再 render。streaming context は本 task の
+  // call stack 上では立っていない (start(controller) 内の runWithStream は既に
+  // try/finally で抜けて null に戻っている) ので、内側 Suspense は children 直吐き。
+  const renderScope = new ResourceScope(hits);
+  let childrenHtml = "";
+  runWithResourceScope(renderScope, () => {
+    childrenHtml = renderToString(childrenFactory as () => Node);
+  });
+
+  // partial bootstrap patch (この boundary 分だけ key 単位 merge) + template + fill。
+  // 1 emit にまとめるのは、3 個別 enqueue でも順序保証は同じだが、Workers の
+  // chunk 境界を boundary 単位で揃えたい (debug / トレース性) ため。
+  const partial: Record<string, BootstrapValue> = {};
+  for (const [k, v] of hits) partial[k] = v;
+  emit(
+    `<script>__vidroAddResources(${escapeJsonForScript(partial)})</script>` +
+      `<template id="vidro-tpl-${id}">${childrenHtml}</template>` +
+      `<script>__vidroFill("${id}")</script>`,
+  );
 }
 
 /**
@@ -232,13 +284,15 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
  * と差し替える。start/end marker / template も remove して DOM 構造を綺麗にする
  * (hydrate cursor を fallback ではなく resolved children に合わせるため)。
  *
- * `__vidroSetResources(r)`: `<script id="__vidro_data">` の textContent (JSON) に
- * resources field を書き加える。Resource constructor は readVidroData() 経由で
- * 1 回 parse + cache するので、この patch は **hydrate より前** に走る必要がある
- * — streaming order (`__vidroSetResources` → boundary fills → DOMContentLoaded →
- * hydrate) で自然に成立する。
+ * `__vidroAddResources(r)` (ADR 0033): `<script id="__vidro_data">` の resources
+ * field に r を **key 単位で merge** する (Object.assign セマンティクス)。
+ * out-of-order streaming では各 boundary chunk と一緒に該当 boundary 分の
+ * resource だけが partial で送られてくるため、累積マージが必要。Resource
+ * constructor は readVidroData() 経由で 1 回 parse + cache するので、この patch
+ * は **hydrate より前** に走る必要がある — streaming order (各 boundary chunk →
+ * DOMContentLoaded → hydrate) で自然に成立する。
  *
- * minify はあえてしない (size < 600B、可読性優先)。production では bundler が
+ * minify はあえてしない (size < 700B、可読性優先)。production では bundler が
  * dead code elimination で消すか、別途 minify する余地あり。
  */
 export const VIDRO_STREAMING_RUNTIME = `
@@ -254,10 +308,10 @@ s.parentNode.removeChild(s);
 e.parentNode.removeChild(e);
 t.parentNode&&t.parentNode.removeChild(t);
 };
-window.__vidroSetResources=function(r){
+window.__vidroAddResources=function(r){
 var s=document.getElementById("__vidro_data");
 if(!s)return;
-try{var d=JSON.parse(s.textContent);d.resources=r;s.textContent=JSON.stringify(d);}catch(e){}
+try{var d=JSON.parse(s.textContent);if(!d.resources)d.resources={};for(var k in r)d.resources[k]=r[k];s.textContent=JSON.stringify(d);}catch(e){}
 };
 `.replace(/\n/g, "");
 
