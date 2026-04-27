@@ -163,11 +163,29 @@ export function Router(props: RouterProps): Node {
   r.appendChild(fragment, anchor);
 
   // 前回 swap 時の DOM Node 群。次の swap で removeChild するため記録。
-  let currentNodes: Node[] = initialNode
-    ? initialNode.nodeType === Node.DOCUMENT_FRAGMENT_NODE
-      ? Array.from(initialNode.childNodes)
-      : [initialNode]
-    : [];
+  //
+  // hydrate 経路 (anchor.parentNode が non-null = 既に target 内に居る) では
+  // HydrationRenderer の appendChild が「target 内の既存 Node を fragment に
+  // 動かさない」設計 (ADR 0021)。そのため initialNode (fragment) は anchor
+  // しか含まず、SSR markup は target 直下の anchor 直前に並んでいる。
+  // anchor の previousSibling を辿って currentNodes を再構築する。
+  //
+  // mount 経路 (anchor.parentNode が null) では従来通り、initialNode の
+  // childNodes (fragment は後で外側に append される際に空になるので、先に
+  // 取り出しておく) または initialNode 単体を currentNodes とする。
+  let currentNodes: Node[] = [];
+  if (anchor.parentNode) {
+    let n = (anchor as Node).previousSibling;
+    while (n) {
+      currentNodes.unshift(n);
+      n = n.previousSibling;
+    }
+  } else if (initialNode) {
+    currentNodes =
+      initialNode.nodeType === Node.DOCUMENT_FRAGMENT_NODE
+        ? Array.from(initialNode.childNodes)
+        : [initialNode];
+  }
 
   // hydrate 経路で sync 初期化を行ったので、effect 初回は skip して 2 回目以降
   // (= navigation) のみ async load を回す。skipNext を 1 つ立てておけば、effect
