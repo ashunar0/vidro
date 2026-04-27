@@ -1,5 +1,6 @@
 import { effect } from "./effect";
 import { onCleanup } from "./owner";
+import { readReactiveSource, type ReactiveSource } from "./reactive-source";
 import { getRenderer } from "./renderer";
 
 // Match が返す内部 descriptor の識別。Switch が children を走査する際、
@@ -8,14 +9,21 @@ const MATCH_SYMBOL = Symbol("vidro.match");
 
 type MatchDescriptor = {
   readonly [MATCH_SYMBOL]: true;
-  /** Switch の effect 内から呼ぶ。props を毎回 proxy 経由で読むため関数で包む。 */
+  /**
+   * Switch の effect 内から呼ぶ。3 形式 (T / Signal<T> / () => T) を毎回 resolve するので、
+   * Signal / 関数 なら effect の observer に subscribe される。
+   */
   readonly readWhen: () => unknown;
   /** active になった時のみ Switch 側で呼んで Node を取得 (ADR 0025、B-4 getter 化)。 */
   readonly readChild: () => Node | null;
 };
 
 type MatchProps = {
-  when: unknown;
+  /**
+   * 真偽値、Signal<unknown>、`() => unknown` の 3 形式を受ける (ADR 0039)。
+   * Signal / 関数なら Switch の effect 内で auto subscribe される。
+   */
+  when: ReactiveSource<unknown>;
   // 公開型は Node または `() => Node` の union。TS 的には JSX `<Match>{<Y/>}</Match>` の
   // children は Node、手書きで `() => node` を渡すなら関数型。runtime では transform
   // が JSX child を `() => Node` に thunk 化する (callOrUse helper で吸収)。
@@ -39,7 +47,7 @@ function callOrUse(c: unknown): Node | null {
 export function Match(props: MatchProps): Node {
   const descriptor: MatchDescriptor = {
     [MATCH_SYMBOL]: true,
-    readWhen: () => props.when,
+    readWhen: () => readReactiveSource(props.when),
     readChild: () => callOrUse(props.children),
   };
   return descriptor as unknown as Node;
@@ -72,9 +80,8 @@ export function Switch(props: SwitchProps): Node {
   if (renderer.isServer) {
     let active: Node | null = null;
     for (const m of matches) {
-      const w = m.readWhen();
-      const v = typeof w === "function" ? (w as () => unknown)() : w;
-      if (v) {
+      // readWhen は ReactiveSource を resolve 済みの値を返す (Match 内部で readReactiveSource 経由)
+      if (m.readWhen()) {
         active = m.readChild();
         break;
       }
@@ -89,9 +96,7 @@ export function Switch(props: SwitchProps): Node {
   // --- client mode (mount / hydrate 共通、renderer 経由) ---
   let initialActiveIndex = -1;
   for (let i = 0; i < matches.length; i++) {
-    const w = matches[i]!.readWhen();
-    const v = typeof w === "function" ? (w as () => unknown)() : w;
-    if (v) {
+    if (matches[i]!.readWhen()) {
       initialActiveIndex = i;
       break;
     }

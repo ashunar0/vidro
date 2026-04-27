@@ -25,3 +25,5 @@ export { resource } from "./resource";
 export type { Resource } from "./resource";
 export { Suspense } from "./suspense";
 export { readVidroData } from "./bootstrap";
+export { readReactiveSource } from "./reactive-source";
+export type { ReactiveSource } from "./reactive-source";

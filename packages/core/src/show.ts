@@ -1,9 +1,14 @@
 import { effect } from "./effect";
 import { onCleanup } from "./owner";
+import { readReactiveSource, type ReactiveSource } from "./reactive-source";
 import { getRenderer } from "./renderer";
 
 type ShowProps = {
-  when: unknown;
+  /**
+   * 真偽値、Signal<unknown>、`() => unknown` の 3 形式を受ける (ADR 0039)。
+   * Signal / 関数なら effect 内で auto subscribe され、変化に追従する。
+   */
+  when: ReactiveSource<unknown>;
   // 公開型は Node または `() => Node` の union。TS 的には JSX `<Show>{<Y/>}</Show>` の
   // children は Node (JSX.Element = Node)、手書きで `() => node` を渡すなら関数型。
   // runtime では transform が JSX child を `() => Node` に thunk 化するため、内部は
@@ -46,8 +51,7 @@ export function Show(props: ShowProps): Node {
 
   // server mode: when を sync 評価 → active getter のみ呼んで fragment に組み立て。
   if (renderer.isServer) {
-    const whenValue =
-      typeof props.when === "function" ? (props.when as () => unknown)() : props.when;
+    const whenValue = readReactiveSource(props.when);
     const active = whenValue ? callOrUse(props.children) : callOrUse(props.fallback);
     const fragment = renderer.createFragment();
     if (active !== null) renderer.appendChild(fragment, active);
@@ -57,8 +61,7 @@ export function Show(props: ShowProps): Node {
 
   // --- client mode (mount / hydrate 共通、renderer 経由) ---
   // initial state を effect の前に sync 評価。active getter 1 つだけ呼ぶ。
-  const initialWhen =
-    typeof props.when === "function" ? (props.when as () => unknown)() : (props.when as unknown);
+  const initialWhen = readReactiveSource(props.when);
   const initialActive = initialWhen ? callOrUse(props.children) : callOrUse(props.fallback);
 
   const anchor = renderer.createComment("show");
@@ -76,8 +79,7 @@ export function Show(props: ShowProps): Node {
   // dependency (when) は effect body 内で読まれるため subscribe される。
   let initialEffect = true;
   effect(() => {
-    const whenValue =
-      typeof props.when === "function" ? (props.when as () => unknown)() : props.when;
+    const whenValue = readReactiveSource(props.when);
     const nextOnChildren = !!whenValue;
 
     if (initialEffect) {

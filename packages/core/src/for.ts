@@ -1,9 +1,14 @@
 import { effect } from "./effect";
 import { onCleanup, Owner } from "./owner";
+import { readReactiveSource, type ReactiveSource } from "./reactive-source";
 import { getRenderer } from "./renderer";
 
 type ForProps<T> = {
-  each: T[];
+  /**
+   * 配列、Signal<T[]>、`() => T[]` の 3 形式を受ける (ADR 0039 reactive-source)。
+   * Signal / 関数なら effect 内で auto subscribe され、変化に追従する。
+   */
+  each: ReactiveSource<T[]>;
   children: (item: T, index: number) => Node;
   // 公開型は Node または `() => Node`。JSX `<For fallback={<X />}>` も手書き
   // `fallback: () => node` も許容。runtime で transform は JSXElement attribute を
@@ -43,7 +48,7 @@ export function For<T>(props: ForProps<T>): Node {
   // server mode: each を sync 評価 → 各 item を children() で Node 化 + anchor。
   // 空リストなら fallback getter を呼ぶ、それも無ければ anchor のみ。
   if (renderer.isServer) {
-    const list = props.each;
+    const list = readReactiveSource(props.each);
     const fragment = renderer.createFragment();
     if (list.length === 0) {
       const fb = callOrUseFallback(props.fallback);
@@ -68,7 +73,7 @@ export function For<T>(props: ForProps<T>): Node {
   let fallbackNode: Node | null = null;
 
   const fragment = renderer.createFragment();
-  const initialList = props.each;
+  const initialList = readReactiveSource(props.each);
   if (initialList.length === 0) {
     const fb = callOrUseFallback(props.fallback);
     if (fb) {
@@ -93,9 +98,9 @@ export function For<T>(props: ForProps<T>): Node {
   // signal の変化で 2 回目以降 invocation が本来の reconciliation logic に入る。
   let initialEffect = true;
   effect(() => {
-    // props.each は proxy 経由で毎回評価 (A 方式 transform で wrap された `{list}` が
-    // ここで展開され、signal の変化に追従する)
-    const list = props.each;
+    // readReactiveSource で 3 形式 (T[] / Signal<T[]> / () => T[]) を吸収。
+    // Signal / 関数なら effect の observer に subscribe され、変化に追従する。
+    const list = readReactiveSource(props.each);
     if (initialEffect) {
       initialEffect = false;
       return;
