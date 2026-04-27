@@ -3,6 +3,7 @@ import { Owner, getCurrentOwner, onCleanup } from "./owner";
 import { untrack } from "./observer";
 import { getRenderer } from "./renderer";
 import { SuspenseScope, runWithSuspenseScope } from "./suspense-scope";
+import { getCurrentStream } from "./streaming-scope";
 
 type SuspenseProps = {
   /** pending 中に表示する UI を返す関数。最初に pending が観測された時点で 1 回だけ評価する。 */
@@ -41,6 +42,30 @@ export function Suspense(props: SuspenseProps): Node {
   // 切替えず children をそのまま吐く。anchor は client / hydrate と同 shape の
   // `<!--suspense-->` を fragment 末尾に置く (ADR 0021 系列の規約)。
   if (renderer.isServer) {
+    const stream = getCurrentStream();
+    if (stream) {
+      // streaming SSR (Phase C-2、ADR 0031): children を 1 度評価して fetcher
+      // を集めるが markup は捨て、shell には fallback markup を出す。boundary
+      // 範囲を `<!--vb-${id}-start--> ... <!--vb-${id}-end-->` で囲み、tail で
+      // `__vidroFill` が start/end 間の node を template content と差し替える。
+      // anchor `<!--suspense-->` は client mode と整合させて hydrate cursor を
+      // 揃えるためそのまま末尾に置く (start/end は __vidroFill が remove する)。
+      const id = stream.allocBoundaryId();
+      const innerScope = new SuspenseScope();
+      runWithSuspenseScope(innerScope, () => {
+        props.children();
+      });
+      const fallbackScope = new SuspenseScope();
+      const fallbackNode = runWithSuspenseScope(fallbackScope, () => props.fallback());
+      stream.registerBoundary(id, props.children);
+      const fragment = renderer.createFragment();
+      renderer.appendChild(fragment, renderer.createComment(`vb-${id}-start`));
+      renderer.appendChild(fragment, fallbackNode);
+      renderer.appendChild(fragment, renderer.createComment(`vb-${id}-end`));
+      renderer.appendChild(fragment, renderer.createComment("suspense"));
+      return fragment;
+    }
+    // 既存 (renderToStringAsync 用 or streaming context 解除済み boundary-pass)
     const scope = new SuspenseScope();
     const node = runWithSuspenseScope(scope, () => props.children());
     const fragment = renderer.createFragment();

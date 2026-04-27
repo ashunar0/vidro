@@ -1,6 +1,10 @@
 // @vitest-environment node
-// Phase B Step B-2c: createServerHandler の navigation 分岐で renderToString
-// した markup が `<div id="app">` の中に inject されることの確認 (ADR 0018)。
+// Phase B-2c → Phase C streaming SSR (ADR 0018, 0031): createServerHandler の
+// navigation response が streaming 形式 (shell + tail) で組み立てられることの確認。
+//   - shell prefix の <head> に bootstrap script + inline runtime が inject される
+//   - shell html (Router render 結果) が #app 内に流れる
+//   - resources patch script が boundary fill の前に出る
+//   - shell suffix (#app 閉じ + 既存 body 末尾) が維持される
 import { describe, expect, test } from "vite-plus/test";
 import { h } from "@vidro/core";
 import { createServerHandler } from "../src/server";
@@ -17,8 +21,8 @@ const fakeAssets = (html: string) => ({
   },
 });
 
-describe("createServerHandler — navigation HTML (Step B-2c)", () => {
-  test('layout + index が SSR されて <div id="app"> 内に inject される', async () => {
+describe("createServerHandler — navigation HTML (Phase C streaming SSR)", () => {
+  test("layout + index が #app 内 shell として streaming response に流れる", async () => {
     const manifest: RouteRecord = {
       "/routes/index.tsx": () => Promise.resolve({ default: () => h("h1", null, "Home") }),
       "/routes/layout.tsx": () =>
@@ -36,15 +40,21 @@ describe("createServerHandler — navigation HTML (Step B-2c)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     const body = await res.text();
-    // SSR markup が <div id="app"> 内に入ってる
-    // - B-3b: `<!--router-->` anchor
-    // - B-3c-1: 各 ErrorBoundary が `<!--error-boundary-->` anchor を吐く (leaf + root layout)
-    expect(body).toContain(
-      '<div id="app"><div class="root"><h1>Home</h1><!--error-boundary--></div><!--error-boundary--><!--router--></div>',
-    );
-    // bootstrap data script は B-3 hydration 用に残ってる
+
+    // bootstrap data script + inline runtime が `</head>` 前に inject されてる
     expect(body).toContain('<script type="application/json" id="__vidro_data">');
-    // index.html の他の要素は維持される
-    expect(body).toContain('<script type="module" src="/src/main.tsx"></script>');
+    expect(body).toContain("__vidroFill");
+    expect(body).toContain("__vidroSetResources");
+
+    // shell html が #app 内に流れる (B-3b の `<!--router-->` + B-3c-1 の error-boundary anchors)
+    expect(body).toContain(
+      '<div id="app"><div class="root"><h1>Home</h1><!--error-boundary--></div><!--error-boundary--><!--router-->',
+    );
+
+    // resources patch script (Suspense / bootstrapKey resource なしなので空 object)
+    expect(body).toContain("__vidroSetResources({})");
+
+    // shell suffix: 元 index.html の </div> 以降が維持される
+    expect(body).toContain('</div><script type="module" src="/src/main.tsx"></script></body>');
   });
 });
