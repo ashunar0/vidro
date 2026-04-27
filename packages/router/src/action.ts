@@ -144,18 +144,44 @@ export const _getSubmissionMutator = (key: string): SubmissionMutator | undefine
   _registry.get(key);
 
 /**
- * test 用: registry 全エントリの state を初期化 (entries 自体は残す = 既存の
- * subscriber を切らない)。`beforeEach` で「使ったキーを列挙して reset」する
- * 形だと将来テストが増えた時に静かに leak する (review fix #5) ため、全 entry を
- * 一括 reset する経路を用意。production code では使わない。
+ * registry 全エントリの state (value / error / pending / input) を一括 flush する
+ * 内部 helper。Map entry 自体は残す = 既存の subscriber (effect 等) を切らない。
+ * 同じロジックを `_clearAllSubmissionState` (production = navigation flush, ADR 0041)
+ * と `_resetRegistryForTest` (test) の両者で共有する。
  */
-export function _resetRegistryForTest(): void {
+function flushAllRegistryState(): void {
   _registry.forEach((m) => {
     m._value.value = undefined;
     m._error.value = undefined;
     m._pending.value = false;
     m._input.value = undefined;
   });
+}
+
+/**
+ * navigation 単位 (ADR 0041) で全 submission state を flush する production API。
+ * Router client mode が `currentPathname` の変化を effect で subscribe して呼ぶ。
+ *
+ * 永続性の意味論:
+ *   - 同 path 内の loader 自動 revalidate (= component swap) では呼ばれない
+ *     → "Added: ..." 等の result は維持される (= ADR 0038 / Remix UX)
+ *   - 別 path への navigate / popstate で呼ばれる → 古い submission state が消える
+ *     (= Remix の useActionData の挙動と整合)
+ *
+ * registry entry 自体は削除しないので、再度同 key で `submission()` が呼ばれた時に
+ * 同じ signal identity を共有し続け、subscriber が orphaned にならない。
+ */
+export function _clearAllSubmissionState(): void {
+  flushAllRegistryState();
+}
+
+/**
+ * test 用: 同上。`beforeEach` で「使ったキーを列挙して reset」する形だと将来
+ * テストが増えた時に静かに leak する (review fix #5) ため、全 entry を一括 reset
+ * する経路を用意。production では `_clearAllSubmissionState` を使う。
+ */
+export function _resetRegistryForTest(): void {
+  flushAllRegistryState();
 }
 
 /**

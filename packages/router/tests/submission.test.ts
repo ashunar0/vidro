@@ -17,6 +17,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
 import {
+  _clearAllSubmissionState,
   _getSubmissionMutator,
   _registerDispatcher,
   _resetRegistryForTest,
@@ -432,6 +433,50 @@ describe("submission factory (ADR 0038 Phase 3 R-mid-1, per-key)", () => {
     } finally {
       unregister();
     }
+  });
+
+  // ---- ADR 0041: navigation 単位 flush (production 経路の helper) ----
+
+  test("_clearAllSubmissionState: 全 key の全 field を flush する", () => {
+    const a = submission("nav-a");
+    const b = submission("nav-b");
+    _getSubmissionMutator("nav-a")!.setResult({ ok: "a" });
+    _getSubmissionMutator("nav-a")!.setInput({ title: "ax" });
+    _getSubmissionMutator("nav-b")!.setError({ name: "ValidationError", message: "boom" });
+    _getSubmissionMutator("nav-b")!.setPending(true);
+
+    _clearAllSubmissionState();
+
+    expect(a.value.value).toBeUndefined();
+    expect(a.error.value).toBeUndefined();
+    expect(a.input.value).toBeUndefined();
+    expect(a.pending.value).toBe(false);
+    expect(b.value.value).toBeUndefined();
+    expect(b.error.value).toBeUndefined();
+    expect(b.input.value).toBeUndefined();
+    expect(b.pending.value).toBe(false);
+  });
+
+  test("_clearAllSubmissionState: signal identity を保持 (= 再 submission(key) で同 signal)", () => {
+    const first = submission("nav-id");
+    _getSubmissionMutator("nav-id")!.setResult({ ok: 1 });
+    const valueSignalBefore = first.value;
+    const inputSignalBefore = first.input;
+
+    _clearAllSubmissionState();
+
+    const second = submission("nav-id");
+    // 同じ signal インスタンスを共有 (registry Map entry は削除されていない)
+    expect(second.value).toBe(valueSignalBefore);
+    expect(second.input).toBe(inputSignalBefore);
+    // ただし値は flush 済み
+    expect(second.value.value).toBeUndefined();
+  });
+
+  test("_clearAllSubmissionState: 空 registry でも安全 (no-op)", () => {
+    // この test 単独では beforeEach で registry が flush 済 + entry 0 個になりうる
+    // 状況を想定。entry 0 個でも throw しないこと。
+    expect(() => _clearAllSubmissionState()).not.toThrow();
   });
 
   test("_registerDispatcher の戻り値 unregister: 後勝ち上書きで stale unregister は no-op", async () => {

@@ -7,7 +7,12 @@ import {
   type RouteRecord,
 } from "./route-tree";
 import { currentParams, currentPathname, navigate } from "./navigation";
-import { _getSubmissionMutator, _registerDispatcher, type SubmissionError } from "./action";
+import {
+  _clearAllSubmissionState,
+  _getSubmissionMutator,
+  _registerDispatcher,
+  type SubmissionError,
+} from "./action";
 
 // ADR 0038: Router 内 dispatch の mutator 引数 shape (action.ts と整合)。
 // ADR 0040 (Phase 4 step 1): setInput を form 経路でも呼ぶため interface に追加。
@@ -172,6 +177,25 @@ export function Router(props: RouterProps): Node {
   });
   onCleanup(unregisterDispatcher);
 
+  // ---- navigation 単位 submission state flush (ADR 0041) ----
+  // currentPathname が変わった瞬間に registry の全 entry の field を空に戻す。
+  // - 初回 invocation (= mount 直後 / hydrate) は skip。「ページに来た瞬間に
+  //   既存の submission を消す」のは意図しない (= 例えば form post 直後の SSR で
+  //   bootstrapData 経由で result を表示するケース)
+  // - 同 path への navigate (signal 同値 set) は notify されないので skip
+  // - reloadCounter 経由の loader revalidate は別 signal なので dep に入らず skip
+  //   = "Added: ..." 等の result が同 path 内で消えない (= ADR 0038 維持)
+  // - 別 path navigate / popstate / submit redirect → flush
+  let skipFirstClear = true;
+  effect(() => {
+    void currentPathname.value;
+    if (skipFirstClear) {
+      skipFirstClear = false;
+      return;
+    }
+    _clearAllSubmissionState();
+  });
+
   // ---- 初回 render (sync fold or fallback empty fragment) ----
   // hydrate 経路: eagerModules + bootstrapData が両方あれば、server と同じ
   // foldRouteTree を sync で呼んで初回 markup を消費する。HydrationRenderer
@@ -318,6 +342,12 @@ export function Router(props: RouterProps): Node {
   ): Promise<void> {
     if (mutator.isPending()) return; // 同 instance の連打 guard
 
+    // ADR 0041: in-flight 中に別 path へ navigate されたら、_clearAllSubmissionState
+    // で flush 済の registry に書き戻さない (= 古い結果が新 page に漏れる stale-write
+    // 防止)。loadToken パターンと同思想で、navigation の境界を超えたら結果を捨てる。
+    const originPathname = currentPathname.value;
+    const stillOnOriginPath = (): boolean => currentPathname.value === originPathname;
+
     mutator.setPending(true);
 
     type ActionResponse = {
@@ -329,13 +359,15 @@ export function Router(props: RouterProps): Node {
     try {
       const res = await fetchFn();
 
+      // 別 path へ navigate 済 → 結果を捨てる。pending=false 化は flush が肩代わり済。
+      if (!stillOnOriginPath()) return;
+
       if (res.redirected) {
         // server-side `Response.redirect(...)` は default redirect=follow で追従済み。
-        // navigate() で client navigation に流す。pending=false は finally で必ず set。
-        // 注意: ここでは `mutator.setResult()` / `setError()` は呼ばない。submission の
-        // value/error は前回の値が残ったまま。registry は module scope で永続なので、
-        // redirect 先 (or 戻ってきた同 path) の next render で古い "Added: ..." が見える
-        // 可能性がある。toy 段階では受容、navigation 単位の clear は別 ADR (Phase 5)。
+        // navigate() で client navigation に流すと、その currentPathname 変化で
+        // _clearAllSubmissionState() が走るので、redirect 先で古い "Added: ..." が
+        // 残ることはない (= ADR 0041 の bonus fix)。同 path への redirect だけは
+        // signal が同値 set で notify されず flush しない既知の限界 (ADR 0041 残課題)。
         const target = new URL(res.url);
         navigate(target.pathname + target.search);
         return;
@@ -351,6 +383,9 @@ export function Router(props: RouterProps): Node {
       }
 
       const body = (await res.json()) as ActionResponse;
+
+      // body parse の await 後にもう一度 path 変化を確認 (= レアだが二重 await の安全網)
+      if (!stillOnOriginPath()) return;
 
       if (body.error) {
         mutator.setError(body.error);
@@ -372,12 +407,19 @@ export function Router(props: RouterProps): Node {
         }
       }
     } catch (err) {
+      // navigate 後に reject (= AbortError 等) しても registry に書き戻さない。
+      if (!stillOnOriginPath()) return;
       mutator.setError({
         name: "NetworkError",
         message: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      mutator.setPending(false);
+      // 別 path 済なら pending は flush 済 (= false)。ここで setPending すると
+      // navigate 先で同 key を再 submit 中の pending=true を上書きする可能性があるので
+      // skip する。同 path に居る場合のみ pending を解除。
+      if (stillOnOriginPath()) {
+        mutator.setPending(false);
+      }
     }
   }
 
