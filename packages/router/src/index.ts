@@ -5,7 +5,7 @@
 export { Router } from "./router";
 export type { ResolvedModules, SSRProps } from "./router";
 export { Link } from "./link";
-export { navigate } from "./navigation";
+export { navigate, currentPathname, currentParams } from "./navigation";
 // compileRoutes / matchRoute は DOM に触らない純粋関数で、@vidro/plugin
 // の serverBoundary() が server 側で match を行うために使う。
 export { compileRoutes, matchRoute } from "./route-tree";

@@ -1,4 +1,4 @@
-import type { PageProps } from "@vidro/router";
+import { currentParams, type PageProps } from "@vidro/router";
 import { createResource, Suspense } from "@vidro/core";
 import type { loader } from "./server";
 
@@ -25,7 +25,7 @@ export default function UserPage({ data, params }: PageProps<typeof loader>) {
       <hr />
       <h3>Posts (createResource + Suspense, B-5c)</h3>
       <Suspense fallback={() => <p data-testid="posts-fallback">loading posts...</p>}>
-        {() => <UserPosts userId={params.id} />}
+        {() => <UserPosts />}
       </Suspense>
     </section>
   );
@@ -33,10 +33,12 @@ export default function UserPage({ data, params }: PageProps<typeof loader>) {
 
 type Post = { id: number; title: string };
 
-// createResource を Suspense の children 内で構築。bootstrapKey 一意化のため
-// `posts:${userId}` を渡す。server 2-pass で resolve → bootstrap data 同居 →
-// client constructor が hit を引き当てて loading=false スタート (B-5c)
-function UserPosts({ userId }: { userId: string }) {
+// prop drill (`userId={params.id}`) ではなく currentParams 経由で id を直読み。
+// 深い子孫から params を引ける動作確認 (副菜 B)。bootstrapKey は構築時の id で
+// 確定するので、navigation で id 変わるなら resource は再構築される (Suspense
+// children が新規評価される) のが前提。
+function UserPosts() {
+  const userId = currentParams.value.id ?? "";
   const posts = createResource<Post[]>(
     () =>
       fetch(`https://jsonplaceholder.typicode.com/users/${userId}/posts`).then(

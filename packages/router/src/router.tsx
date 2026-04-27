@@ -6,7 +6,7 @@ import {
   type MatchResult,
   type RouteRecord,
 } from "./route-tree";
-import { currentPathname } from "./navigation";
+import { currentParams, currentPathname } from "./navigation";
 
 // ---- bootstrap data (Phase A SSR data injection) ----
 // server (createServerHandler) が navigation response の index.html に
@@ -137,6 +137,10 @@ export function Router(props: RouterProps): Node {
     if (resolved) {
       // bootstrap data を消費 (mount 経路と同じ「1 回だけ使う」セマンティクス)
       bootstrapData = null;
+      // hydrate sync 初期化: 子孫が currentParams を読めるよう先に同期。server で
+      // 解決済みの boot.params を使う (initialMatch.params と同じだが、SSR と
+      // markup 整合のため server 経路と同じ値を採用)。
+      currentParams.value = boot.params;
       const loaderResults = boot.layers.map((l) => ({
         data: l.data,
         error: l.error ? hydrateError(l.error) : undefined,
@@ -273,6 +277,10 @@ export function Router(props: RouterProps): Node {
     void Promise.all([loadComponents, loadLoaderResults, loadErrorMods])
       .then(([rawMods, loaderResults, errorMods]) => {
         if (token !== loadToken) return;
+        // 子孫が currentParams を読めるよう、fold 前に新 route の params に同期。
+        // foldRouteTree 内で評価される component の effect / JSX が新 params を
+        // 見るタイミングを fold 開始前に揃える。
+        currentParams.value = match.params;
         const componentMods = rawMods as RouteModule[];
         const node = foldRouteTree({
           match,
@@ -325,7 +333,9 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
   // 妥協、production 化時に context/AsyncLocalStorage 経由に書き換え予定 —
   // project_pending_rewrites に記録)。
   const previousPathname = currentPathname.value;
+  const previousParams = currentParams.value;
   currentPathname.value = ssr.bootstrapData.pathname;
+  currentParams.value = match.params;
 
   try {
     if (!ssr.resolvedModules.route) {
@@ -355,6 +365,7 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
     return fragment;
   } finally {
     currentPathname.value = previousPathname;
+    currentParams.value = previousParams;
   }
 }
 
