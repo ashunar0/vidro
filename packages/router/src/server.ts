@@ -94,25 +94,27 @@ async function handleLoaderEndpoint(url: URL, compiled: CompiledFromRoutes): Pro
 }
 
 /**
- * POST handler — Phase 3 R-min (ADR 0037、Remix-style action)。
+ * POST handler — Phase 3 R-min (ADR 0037) + R-mid-3 (ADR 0042 nested action)。
  *
- *   1. pathname から match を計算、match.server.action を解決
- *   2. action が無い (= server.ts に export 不在 / route match 不在) → 405
- *   3. action throw → SerializedError JSON で 500 (client 側 submission.error に流す)
- *   4. action 戻り値が `Response` → そのまま return (= `Response.redirect()` 経由の
- *      navigation や任意 status code の制御を server side で完結させる)
- *   5. plain value 戻り値 → loader を 自動 revalidate して
- *      `{ actionResult, loaderData: {params, layers} }` を JSON で返却
+ * action 解決順序 (path 完全一致のみ、deepest-first fallback はしない):
+ *   1. leaf の `server.ts` (= match.server.load) に `action` export → これを呼ぶ
+ *   2. 1 が無ければ、`pathPrefix === url.pathname` の layout の `layout.server.ts`
+ *      に `action` export → これを呼ぶ (ADR 0042、layout が path の owner)
+ *   3. どちらも無ければ 405 NoActionError
  *
- * loader 自動 revalidate: action 後に同 path の loader 群を再実行し、その結果を
- * response に同梱する (Remix の "POST/Redirect/GET" pattern を JSON 経路で代替)。
- * client 側 router は受け取った loaderData を bootstrap data として上書きしつつ
- * reload trigger を発火し、effect 経路で foldRouteTree 再実行 → swap する。
+ * その他の挙動 (R-min から不変):
+ *   - action throw → SerializedError JSON で 500 (client 側 submission.error に流す)
+ *   - action 戻り値が `Response` → そのまま return (= `Response.redirect()` 経由の
+ *     navigation や任意 status code の制御を server side で完結させる)
+ *   - plain value 戻り値 → loader を 自動 revalidate して
+ *     `{ actionResult, loaderData: {params, layers} }` を JSON で返却
+ *
+ * loader 自動 revalidate は `gatherRouteData` が全 layer 並列実行するので、
+ * leaf action でも layout action でも同じく全 layer revalidate される。
  *
  * R-min は form 経路 (multipart / x-www-form-urlencoded) のみ前提だが、本 handler
  * 自体は content-type を見ない (= action 内で `request.formData()` を呼ぶ user
- * code に委譲)。programmatic な JSON encoding は R-mid で `useSubmit({json})` と
- * 一緒に正式対応。
+ * code に委譲)。programmatic な JSON encoding は R-mid-1 (ADR 0038) で対応済。
  */
 async function handleAction(
   url: URL,
@@ -120,34 +122,51 @@ async function handleAction(
   compiled: CompiledFromRoutes,
 ): Promise<Response> {
   const match = matchRoute(url.pathname, compiled);
-  if (!match.server) {
+
+  // 1. leaf の server.ts → action を試す
+  // 2. 無ければ「pathPrefix が url.pathname と完全一致する layout.server.ts」を
+  //    候補に加える (ADR 0042)。loader 不在の layout も想定するため、load 自体は
+  //    まず試して action フィールドの有無で判定する。
+  //
+  //    「完全一致」は動的 segment 対応必須: `pathPrefix = "/users/:id"` は実 URL
+  //    `"/users/123"` にマッチさせる。LayoutEntry.pattern は **prefix-match** 用
+  //    (= 子 path も拾う) なのでそのままは使えない。専用の完全一致比較を行う。
+  const candidates: ServerModuleLoader[] = [];
+  if (match.server) candidates.push(match.server.load);
+  for (const layout of match.layouts) {
+    if (layout.serverLoad && layoutPathMatchesExact(layout.pathPrefix, url.pathname)) {
+      candidates.push(layout.serverLoad);
+    }
+  }
+
+  let actionFn: NonNullable<ServerModule["action"]> | null = null;
+  for (const load of candidates) {
+    let mod: ServerModule;
+    try {
+      mod = (await load()) as ServerModule;
+    } catch (err) {
+      // 単一候補の load 失敗は即 500。複数候補がある場合に一方だけ failed しても
+      // user の期待は「該当 module の問題」なので素直に 500 で返す。
+      return jsonResponse(500, { error: serializeError(err) });
+    }
+    if (mod.action) {
+      actionFn = mod.action;
+      break;
+    }
+  }
+
+  if (!actionFn) {
     return jsonResponse(405, {
       error: {
         name: "NoActionError",
-        message: `no server module for route ${url.pathname}`,
-      },
-    });
-  }
-
-  let serverMod: ServerModule;
-  try {
-    serverMod = (await match.server.load()) as ServerModule;
-  } catch (err) {
-    return jsonResponse(500, { error: serializeError(err) });
-  }
-
-  if (!serverMod.action) {
-    return jsonResponse(405, {
-      error: {
-        name: "NoActionError",
-        message: `no action exported for route ${url.pathname}`,
+        message: `no action for route ${url.pathname}`,
       },
     });
   }
 
   let result: unknown;
   try {
-    result = await serverMod.action({ request, params: match.params });
+    result = await actionFn({ request, params: match.params });
   } catch (err) {
     return jsonResponse(500, { error: serializeError(err) });
   }
@@ -319,6 +338,19 @@ function serializeError(err: unknown): SerializedError {
     return { name: err.name, message: err.message, stack: err.stack };
   }
   return { name: "Error", message: String(err) };
+}
+
+/**
+ * ADR 0042 の layout action 解決用、`pathPrefix` と pathname の **完全一致**比較。
+ * 動的 segment (例: `/users/:id`) は実 URL の対応 segment 1 個と任意マッチさせる。
+ *
+ * - `pathPrefix === ""` (root layout) は pathname が "/" の場合のみ true
+ * - その他は `:name` を `[^/]+` に置換した完全一致 RegExp で test
+ */
+function layoutPathMatchesExact(prefix: string, pathname: string): boolean {
+  if (prefix === "") return pathname === "/";
+  const source = "^" + prefix.replace(/:([^/]+)/g, "[^/]+") + "$";
+  return new RegExp(source).test(pathname);
 }
 
 function jsonResponse(status: number, body: unknown): Response {

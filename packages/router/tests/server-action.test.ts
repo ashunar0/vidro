@@ -117,6 +117,155 @@ describe("createServerHandler — POST handler (ADR 0037 Phase 3 R-min)", () => 
     expect(res.status).toBe(405);
     const body = (await res.json()) as { error: { name: string; message: string } };
     expect(body.error.name).toBe("NoActionError");
-    expect(body.error.message).toContain("no server module");
+    expect(body.error.message).toContain("no action");
+  });
+
+  // ---- ADR 0042: nested action (layout.server.ts に action を export) ----
+
+  test("ADR 0042: leaf に server.ts なし、layout.server.ts に action あり → layout action が呼ばれる", async () => {
+    const manifest: RouteRecord = {
+      "/routes/users/index.tsx": noopRoute,
+      "/routes/users/layout.tsx": noopRoute,
+      "/routes/users/layout.server.ts": () =>
+        Promise.resolve({
+          loader: async () => ({ users: ["a", "b"] }),
+          action: async () => ({ ok: "from-layout" }),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/users", { method: "POST", body: new FormData() }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      actionResult: { ok: string };
+      loaderData: { layers: Array<{ data?: unknown }> };
+    };
+    expect(body.actionResult).toEqual({ ok: "from-layout" });
+    // loader 自動 revalidate も layout の loader を回している
+    expect(body.loaderData.layers[0]?.data).toEqual({ users: ["a", "b"] });
+  });
+
+  test("ADR 0042: leaf 優先 — leaf と layout の両方に action がある場合は leaf が呼ばれる", async () => {
+    const manifest: RouteRecord = {
+      "/routes/users/index.tsx": noopRoute,
+      "/routes/users/layout.tsx": noopRoute,
+      "/routes/users/layout.server.ts": () =>
+        Promise.resolve({
+          action: async () => ({ from: "layout" }),
+        }),
+      "/routes/users/server.ts": () =>
+        Promise.resolve({
+          action: async () => ({ from: "leaf" }),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/users", { method: "POST", body: new FormData() }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { actionResult: { from: string } };
+    expect(body.actionResult.from).toBe("leaf");
+  });
+
+  test("ADR 0042: deepest-first fallback はしない — 親 layout の action は呼ばれない", async () => {
+    // /users/[id] へ POST。leaf (server.ts) なし、/users/[id] に layout もなし
+    // (= 同 path layout なし)、/users layout には action ありだが、これは異なる
+    // pathPrefix なので **呼ばれない**。
+    const manifest: RouteRecord = {
+      "/routes/users/[id]/index.tsx": noopRoute,
+      "/routes/users/layout.tsx": noopRoute,
+      "/routes/users/layout.server.ts": () =>
+        Promise.resolve({
+          action: async () => ({ from: "parent-layout" }),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/users/123", { method: "POST", body: new FormData() }),
+    );
+
+    expect(res.status).toBe(405);
+    const body = (await res.json()) as { error: { name: string; message: string } };
+    expect(body.error.name).toBe("NoActionError");
+  });
+
+  test("ADR 0042: 動的 segment の layout (例: /users/[id]/layout.server.ts) も完全一致でマッチする", async () => {
+    // /users/[id]/layout.server.ts に action を置き、/users/123 への POST で
+    // 当該 layout action にフォールバックすることを確認。pathPrefix は "/users/:id"
+    // で格納されるため、文字列 strict-equal だと永久に 405 になる回帰を防ぐ。
+    const manifest: RouteRecord = {
+      "/routes/users/[id]/index.tsx": noopRoute,
+      "/routes/users/[id]/layout.tsx": noopRoute,
+      "/routes/users/[id]/layout.server.ts": () =>
+        Promise.resolve({
+          action: async ({ params }: { params: { id: string } }) => ({
+            ok: "from-id-layout",
+            id: params.id,
+          }),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/users/123", { method: "POST", body: new FormData() }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { actionResult: { ok: string; id: string } };
+    expect(body.actionResult).toEqual({ ok: "from-id-layout", id: "123" });
+  });
+
+  test("ADR 0042: root layout (pathPrefix '') の action は POST '/' 時のみ呼ばれる", async () => {
+    const manifest: RouteRecord = {
+      "/routes/index.tsx": noopRoute,
+      "/routes/layout.tsx": noopRoute,
+      "/routes/layout.server.ts": () =>
+        Promise.resolve({
+          action: async () => ({ ok: "from-root-layout" }),
+        }),
+      "/routes/users/index.tsx": noopRoute,
+    };
+    const handler = createServerHandler({ manifest });
+
+    // POST `/` → root layout action が呼ばれる
+    const resRoot = await handler(
+      new Request("http://localhost/", { method: "POST", body: new FormData() }),
+    );
+    expect(resRoot.status).toBe(200);
+    const bodyRoot = (await resRoot.json()) as { actionResult: { ok: string } };
+    expect(bodyRoot.actionResult.ok).toBe("from-root-layout");
+
+    // POST `/users` → root layout の action は完全一致しないので 405
+    // (= 子 path に root layout の action が leak しないことの保証)
+    const resUsers = await handler(
+      new Request("http://localhost/users", { method: "POST", body: new FormData() }),
+    );
+    expect(resUsers.status).toBe(405);
+  });
+
+  test("ADR 0042: layout.server.ts が action 不在 (loader のみ) なら 405", async () => {
+    const manifest: RouteRecord = {
+      "/routes/users/layout.tsx": noopRoute,
+      "/routes/users/layout.server.ts": () =>
+        Promise.resolve({
+          loader: async () => ({ users: [] }),
+          // action 不在
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/users", { method: "POST", body: new FormData() }),
+    );
+
+    expect(res.status).toBe(405);
+    const body = (await res.json()) as { error: { name: string; message: string } };
+    expect(body.error.name).toBe("NoActionError");
   });
 });
