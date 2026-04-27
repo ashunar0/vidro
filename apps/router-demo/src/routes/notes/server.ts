@@ -16,16 +16,29 @@ export async function loader(_args: LoaderArgs<"/notes">) {
   return { notes: notes.slice() };
 }
 
-// ADR 0037 Phase 3 R-min の動作確認 action。form の `title` field を読んで
-// in-memory list に push、戻り値で submission.value に乗せる。`title` 空は
-// throw して submission.error に流す経路を確認できる。
+// ADR 0038 Phase 3 R-mid-1 の動作確認 action。intent 分岐 (R-mid-2) もここで demo:
+// `<input type="hidden" name="intent" value="create|delete">` を読んで分岐する。
+// framework 側の改修は不要 (= runtime のみで分岐)。
 export async function action({ request }: ActionArgs<"/notes">) {
   const fd = await request.formData();
-  const title = String(fd.get("title") ?? "").trim();
-  if (!title) {
-    throw new Error("title is required");
+  const intent = String(fd.get("intent") ?? "");
+
+  if (intent === "create") {
+    const title = String(fd.get("title") ?? "").trim();
+    if (!title) throw new Error("title is required");
+    const note: Note = { id: nextId++, title };
+    notes.push(note);
+    return { intent: "create" as const, addedNote: note };
   }
-  const note: Note = { id: nextId++, title };
-  notes.push(note);
-  return { ok: true, addedNote: note };
+
+  if (intent === "delete") {
+    const id = Number(fd.get("id") ?? "");
+    if (!Number.isFinite(id)) throw new Error("id is required");
+    const idx = notes.findIndex((n) => n.id === id);
+    if (idx < 0) throw new Error(`note not found: ${id}`);
+    const [removed] = notes.splice(idx, 1);
+    return { intent: "delete" as const, removedNote: removed };
+  }
+
+  throw new Error(`unknown intent: ${intent}`);
 }

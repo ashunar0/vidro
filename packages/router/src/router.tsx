@@ -7,13 +7,15 @@ import {
   type RouteRecord,
 } from "./route-tree";
 import { currentParams, currentPathname, navigate } from "./navigation";
-import {
-  _isSubmissionPending,
-  _setSubmissionError,
-  _setSubmissionPending,
-  _setSubmissionResult,
-  type SubmissionError,
-} from "./action";
+import { _getSubmissionMutator, _registerDispatcher, type SubmissionError } from "./action";
+
+// ADR 0038: Router 内 dispatch の mutator 引数 shape (action.ts と整合)。
+type SubmissionMutator = {
+  setResult: (r: unknown) => void;
+  setError: (e: SubmissionError) => void;
+  setPending: (v: boolean) => void;
+  isPending: () => boolean;
+};
 
 // ---- bootstrap data (Phase A SSR data injection) ----
 // server (createServerHandler) が navigation response の index.html に
@@ -125,22 +127,48 @@ export function Router(props: RouterProps): Node {
     reloadCounter.value += 1;
   };
 
-  // ---- form submit delegation (ADR 0037 Phase 3 R-min) ----
+  // ---- form submit delegation (ADR 0038 Phase 3 R-mid-1) ----
   // method="post" の form を Web 標準のまま hijack して action 経路に流す。
   // event bubble の capture phase で拾うと nested form / event.stopPropagation
-  // による取りこぼしを回避できる。R-min は global state 1 個 (= submission()
-  // factory が global signal を返す) なので、form と submission の binding API
-  // は最小化。複数 form の per-form state は R-mid 以降。
+  // による取りこぼしを回避できる。
+  //
+  // R-mid-1 では `<form {...sub.bind()}>` の `data-vidro-sub` attribute がある
+  // form だけ hijack 対象。attribute 不在の form は browser default 動作 (= 通常
+  // POST navigation) に委ねる。これにより JSX 上で「Vidro が拾うか否か」が明示。
   const onSubmit = (e: SubmitEvent): void => {
     const target = e.target;
     if (!(target instanceof HTMLFormElement)) return;
-    // method="post" 以外 (default GET 等) は intercept しない (Web 標準動作)
     if (target.method.toLowerCase() !== "post") return;
+    const subId = target.dataset.vidroSub;
+    if (!subId) return; // attribute 不在 = hijack せず default 動作
+    const mutator = _getSubmissionMutator(subId);
+    if (!mutator) return;
+    // 注意: mutator 不在は「`bind()` を spread した form があるが `submission(key)` が
+    // 一度も呼ばれていない」状態。理論上は SSR で form の HTML が出てる + client が
+    // hydrate 完了する前に submit イベントが firing した極小窓だけ。silently fall through
+    // して browser default の full-page POST に委ねる (= server action は動くので致命傷
+    // にはならない)。preventDefault しないのは意図的。
     e.preventDefault();
-    void handleFormSubmit(target);
+    void handleFormSubmit(target, mutator);
   };
   window.addEventListener("submit", onSubmit, true);
   onCleanup(() => window.removeEventListener("submit", onSubmit, true));
+
+  // ---- dispatcher 登録 (programmatic submit 用、ADR 0038 大論点 4) ----
+  // submission.submit() が呼ぶ経路。form delegation と同じ dispatchSubmit を
+  // 共有して、loader 自動 revalidate / redirect / error handling のロジックを
+  // 1 経路に統一する。Router unmount 時に unregister。
+  const unregisterDispatcher = _registerDispatcher({
+    dispatch: (path, mutator, fetchInit) =>
+      dispatchSubmit(path, mutator, () =>
+        fetch(path, {
+          method: "POST",
+          body: fetchInit.body,
+          headers: { ...fetchInit.headers, Accept: "application/json" },
+        }),
+      ),
+  });
+  onCleanup(unregisterDispatcher);
 
   // ---- 初回 render (sync fold or fallback empty fragment) ----
   // hydrate 経路: eagerModules + bootstrapData が両方あれば、server と同じ
@@ -240,32 +268,45 @@ export function Router(props: RouterProps): Node {
   // `__vidro_data` を使って fetch を skip する。pathname 一致を確認したうえで
   // consume し、以降は HTTP 経路に戻る。
   /**
-   * form submit (ADR 0037) の core。POST fetch → response 分岐:
-   *   1. redirected (= server が `Response.redirect()` を返した) → navigate で
-   *      新 path に遷移、submission state は pending を解除して終了
-   *   2. JSON `{actionResult, loaderData}` → submission.value に格納 + bootstrap
-   *      data を新 loaderData で **上書き** + reset() で reloadCounter++ 発火 →
-   *      effect 経路の fetchLoaders は bootstrap consume 経路に乗って /__loader
-   *      を再 fetch しない (= 1 往復で済む)
-   *   3. JSON `{error}` → submission.error に格納
-   *   4. fetch 失敗 (network error) → submission.error に NetworkError 形式で格納
-   *
-   * R-min は form (multipart / x-www-form-urlencoded) のみ。programmatic な
-   * useSubmit({json}) は R-mid。
+   * form submit (ADR 0038 R-mid-1) は dispatchSubmit に流す薄い wrapper。
+   * form の action 属性 || current pathname を POST 先に決め、FormData 化した
+   * body を fetch に渡す。response 分岐は dispatchSubmit 共通経路で処理。
    */
-  async function handleFormSubmit(form: HTMLFormElement): Promise<void> {
-    // 連打 / 多重 submit の guard (review fix #1)。R-min は global state 1 個な
-    // ので、in-flight の最中に bootstrapData 上書き + reset() を再発火させると
-    // 前 submit の effect 経路と競合 (= 古い loaderData が新 effect に取られる
-    // / 新 loaderData が古い effect で消費される) ため、最初の 1 回だけ通す。
-    // R-mid で per-form binding が入ったら per-form pending guard に格上げ。
-    if (_isSubmissionPending()) return;
-
-    // form の action 属性が空なら current pathname に POST (Remix 互換 / Web 標準動作)
+  async function handleFormSubmit(
+    form: HTMLFormElement,
+    mutator: SubmissionMutator,
+  ): Promise<void> {
     const path = form.getAttribute("action") || currentPathname.value;
     const fd = new FormData(form);
+    await dispatchSubmit(path, mutator, () =>
+      fetch(path, { method: "POST", body: fd, headers: { Accept: "application/json" } }),
+    );
+  }
 
-    _setSubmissionPending(true);
+  /**
+   * form 経由 / programmatic submit 共通の dispatch core (ADR 0038)。
+   * 連打 guard は per-instance (mutator.isPending) で行う:
+   *   - 同 instance の in-flight 中は無視 (= 連打弾き)
+   *   - 別 instance なら並列実行可
+   *
+   * response 分岐:
+   *   1. redirected → navigate で新 path に遷移、pending 解除のみ
+   *   2. JSON `{actionResult, loaderData}` → mutator.setResult + bootstrapData 上書き
+   *      + reset() で loader 自動 revalidate (1 往復)
+   *   3. JSON `{error}` → mutator.setError
+   *   4. non-JSON / fetch 失敗 → NetworkError 化して mutator.setError
+   *
+   * `path !== currentPathname.value` の場合は bootstrapData 上書きをせず
+   * navigate(path) で正規 navigation に流す (R-min review fix #3 と同じ理由)。
+   */
+  async function dispatchSubmit(
+    path: string,
+    mutator: SubmissionMutator,
+    fetchFn: () => Promise<Response>,
+  ): Promise<void> {
+    if (mutator.isPending()) return; // 同 instance の連打 guard
+
+    mutator.setPending(true);
 
     type ActionResponse = {
       actionResult?: unknown;
@@ -274,31 +315,23 @@ export function Router(props: RouterProps): Node {
     };
 
     try {
-      const res = await fetch(path, {
-        method: "POST",
-        body: fd,
-        headers: { Accept: "application/json" },
-      });
+      const res = await fetchFn();
 
-      // server-side `Response.redirect(...)` は fetch の default redirect=follow で
-      // GET 化されつつ追従済み。res.redirected で検出して client navigation に流す。
-      // pending=false は finally で必ず実行されるので明示 set は不要 (review fix #2)。
-      // ただし navigate() 後の new path での loader fetch 中は pending 表示が消える
-      // 空白期間がある (= UX trade-off、R-mid で navigate 中の pending state を
-      // 別 signal で持つ拡張案件)。
       if (res.redirected) {
+        // server-side `Response.redirect(...)` は default redirect=follow で追従済み。
+        // navigate() で client navigation に流す。pending=false は finally で必ず set。
+        // 注意: ここでは `mutator.setResult()` / `setError()` は呼ばない。submission の
+        // value/error は前回の値が残ったまま。registry は module scope で永続なので、
+        // redirect 先 (or 戻ってきた同 path) の next render で古い "Added: ..." が見える
+        // 可能性がある。toy 段階では受容、navigation 単位の clear は別 ADR (Phase 5)。
         const target = new URL(res.url);
         navigate(target.pathname + target.search);
         return;
       }
 
-      // res.json() の前に content-type check (review fix #4)。Workers の raw HTML
-      // error page 等の non-JSON 500 は SyntaxError → catch → NetworkError 化が
-      // 起きうる。明示的に判定して NetworkError として扱う方が consumer 側の
-      // submission.error.message が読みやすい。
       const ctype = res.headers.get("content-type") ?? "";
       if (!ctype.includes("application/json")) {
-        _setSubmissionError({
+        mutator.setError({
           name: "NetworkError",
           message: `non-JSON response (status ${res.status})`,
         });
@@ -308,26 +341,12 @@ export function Router(props: RouterProps): Node {
       const body = (await res.json()) as ActionResponse;
 
       if (body.error) {
-        _setSubmissionError(body.error);
+        mutator.setError(body.error);
         return;
       }
 
-      _setSubmissionResult(body.actionResult);
+      mutator.setResult(body.actionResult);
 
-      // loader 自動 revalidate: response に同梱された新 loaderData を bootstrap
-      // data として上書きしつつ reset() で reload trigger。effect が再発火して
-      // fetchLoaders → bootstrap consume → swap の経路に乗る。
-      //
-      // ただし bootstrap consume の skip 条件は `bootstrapData.pathname === pathname`
-      // で `pathname = currentPathname.value`。form の `action="/other"` のように
-      // current pathname と異なる path を POST した場合、bootstrapData 上書きを
-      // しても effect の current pathname での fetchLoaders は skip されず通常
-      // /__loader 経路に流れる + 別 path 用に上書きした bootstrapData が次回の
-      // /other navigation を skip させる悪さもしうる (review fix #3)。
-      //
-      // → form action と current pathname が一致するときだけ bootstrap 上書き
-      //    経路を使う。別 path のときは navigate(path) で正規 navigation に
-      //    流す (= /__loader fetch 1 回追加だが正確さ優先)。
       if (body.loaderData) {
         if (path === currentPathname.value) {
           bootstrapData = {
@@ -341,12 +360,12 @@ export function Router(props: RouterProps): Node {
         }
       }
     } catch (err) {
-      _setSubmissionError({
+      mutator.setError({
         name: "NetworkError",
         message: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      _setSubmissionPending(false);
+      mutator.setPending(false);
     }
   }
 
