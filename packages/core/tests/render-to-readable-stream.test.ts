@@ -1,5 +1,6 @@
 // @vitest-environment node
-// ADR 0031 Phase C-1+C-2 + ADR 0033 out-of-order full streaming:
+// ADR 0031 Phase C-1+C-2 + ADR 0033 out-of-order full streaming + ADR 0034
+// review fixes (window resources / shell error / cross-boundary key warn):
 // renderToReadableStream の shell + per-boundary partial patch streaming SSR。
 //   - boundary なし (Suspense 使わず、bootstrapKey 無し) は shell のみ (root
 //     pseudo-boundary が空なら __vidroAddResources も emit しない)
@@ -9,6 +10,10 @@
 //     boundary chunk (partial patch + <template> + __vidroFill script)、
 //     内側 children は resolved 値で markup
 //   - reject も SerializedError 形式で patch に乗る
+//   - ADR 0034: shell-pass throw → controller.error → stream errored
+//   - ADR 0034: cross-boundary 重複 bootstrapKey で console.warn
+//   - ADR 0034: __vidroAddResources は window.__vidroResources object 経由 (DOM
+//     textContent 書き換えではない)
 //
 // stream は ReadableStream<Uint8Array> なので、reader.read() で chunk を順に
 // 取り出して連結 + decode して 1 つの string にして検証する。
@@ -164,5 +169,65 @@ describe("renderToReadableStream", () => {
     expect(VIDRO_STREAMING_RUNTIME).toContain("__vidroAddResources");
     // ADR 0033 で rename した旧名は残っていない
     expect(VIDRO_STREAMING_RUNTIME).not.toContain("__vidroSetResources");
+    // ADR 0034: window.__vidroResources object 経由 (DOM textContent 書き換えなし)
+    expect(VIDRO_STREAMING_RUNTIME).toContain("window.__vidroResources");
+    // 旧実装の getElementById("__vidro_data") 経路は残っていない (__vidroAddResources 内)
+    // __vidroFill は別途 getElementById を使うので、__vidro_data 文字列だけで判定
+    expect(VIDRO_STREAMING_RUNTIME).not.toContain('getElementById("__vidro_data")');
+  });
+
+  test("ADR 0034 Issue 2: shell-pass throw は controller.error → stream errored になる", async () => {
+    const stream = renderToReadableStream(() => {
+      throw new Error("shell boom");
+    });
+    const reader = stream.getReader();
+    // start() の reject = stream.error なので reader.read() が reject する
+    await expect(reader.read()).rejects.toThrow("shell boom");
+  });
+
+  test("ADR 0034 Issue 3: cross-boundary 重複 bootstrapKey で console.warn", async () => {
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      const stream = renderToReadableStream(() =>
+        h(
+          "div",
+          null,
+          // boundary A: bootstrapKey "shared"
+          Suspense({
+            fallback: () => h("p", null, _$text("a-fb")),
+            children: () => {
+              const r = resource(() => Promise.resolve("a"), { bootstrapKey: "shared" });
+              return h(
+                "p",
+                null,
+                _$dynamicChild(() => r.value ?? ""),
+              );
+            },
+          }),
+          // boundary B: 同じ bootstrapKey "shared" → cross-boundary 重複
+          Suspense({
+            fallback: () => h("p", null, _$text("b-fb")),
+            children: () => {
+              const r = resource(() => Promise.resolve("b"), { bootstrapKey: "shared" });
+              return h(
+                "p",
+                null,
+                _$dynamicChild(() => r.value ?? ""),
+              );
+            },
+          }),
+        ),
+      );
+      await collect(stream);
+    } finally {
+      console.warn = origWarn;
+    }
+    const dup = warnings.filter((w) => w.includes('duplicate bootstrapKey "shared"'));
+    expect(dup.length).toBeGreaterThanOrEqual(1);
+    expect(dup[0]).toContain("across Suspense boundaries");
   });
 });

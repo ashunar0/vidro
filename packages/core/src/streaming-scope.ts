@@ -24,6 +24,10 @@ export class StreamingContext {
   #counter = 0;
   /** 登録順 = shell 内の出現順。out-of-order では emit 順とは無関係 (resolve 順に descend する) が、debug / 安定性目的で順序保持。 */
   readonly boundaries: Boundary[] = [];
+  // ADR 0034 Issue 3: cross-boundary 重複 bootstrapKey の dev warn 用。同 key を
+  // 異なる boundary scope で見たら warn (1 key 1 回だけ、warn 連投回避)。
+  readonly #seenKeys = new Set<string>();
+  readonly #warnedKeys = new Set<string>();
 
   allocBoundaryId(): string {
     return `vb${this.#counter++}`;
@@ -31,6 +35,32 @@ export class StreamingContext {
 
   registerBoundary(id: string, scope: ResourceScope, childrenFactory: () => unknown): void {
     this.boundaries.push({ id, scope, childrenFactory });
+  }
+
+  /**
+   * boundary scope の fetcher key を全 boundary で track して、cross-boundary
+   * 重複を dev warn する (ADR 0034 Issue 3)。Suspense streaming branch から
+   * children 評価直後 (= scope.fetchers 確定時) に呼ぶ前提。
+   *
+   * 同一 scope 内の重複 key は ResourceScope.registerFetcher が first-write-wins
+   * + warn する。本機構は scope を **またいだ** 重複の検出に責務分離されている。
+   * client 側 `__vidroAddResources` の Object.assign で後勝ちするので resolve 順
+   * (= emit 順) で値が決まる非決定的動作になるため、dev で気付けるようにする。
+   */
+  trackBoundaryKeys(scope: ResourceScope): void {
+    for (const key of scope.fetchers.keys()) {
+      if (this.#seenKeys.has(key)) {
+        if (!this.#warnedKeys.has(key)) {
+          console.warn(
+            `[vidro] duplicate bootstrapKey "${key}" across Suspense boundaries — ` +
+              `non-deterministic merge order in client (later boundary wins by resolve speed)`,
+          );
+          this.#warnedKeys.add(key);
+        }
+      } else {
+        this.#seenKeys.add(key);
+      }
+    }
   }
 }
 

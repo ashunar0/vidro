@@ -9,6 +9,13 @@
 //
 // 順序非依存: どの module が最初に readVidroData() を呼んでも、cache 経由で
 // 同じ JSON を共有する。
+//
+// streaming SSR (ADR 0034): `window.__vidroResources` から resources を merge
+// する。streaming chunk の `__vidroAddResources` は DOM textContent ではなく
+// window object に貯めるよう変更したので (ADR 0033 review fix Issue 1)、
+// `<script id="__vidro_data">` の el.remove() lifecycle と独立に accumulate
+// される。cache 確定後に届いた chunk も window object には残る (将来段階
+// hydration 化時の late-arriving lookup の足場)。
 
 let cache: Record<string, unknown> | null | undefined = undefined;
 
@@ -16,6 +23,11 @@ let cache: Record<string, unknown> | null | undefined = undefined;
  * `__vidro_data` JSON を返す。初回呼び出しで `getElementById + JSON.parse + remove
  * + cache`、以降は cache から返す。SSR 経由の navigation でない (script tag 自体
  * 無い、parse 失敗等) 場合は null。
+ *
+ * `window.__vidroResources` (streaming SSR の partial patch、ADR 0034) があれば
+ * `parsed.resources` に shallow merge してから cache 確定。`<script id="__vidro_data">`
+ * 自体に resources が無い navigation でも、streaming 経由で resources が乗ったら
+ * `parsed.resources` を作って入れる。
  */
 export function readVidroData(): Record<string, unknown> | null {
   if (cache !== undefined) return cache;
@@ -28,15 +40,25 @@ export function readVidroData(): Record<string, unknown> | null {
     cache = null;
     return null;
   }
+  let parsed: Record<string, unknown>;
   try {
-    cache = JSON.parse(el.textContent) as Record<string, unknown>;
-    el.remove();
-    return cache;
+    parsed = JSON.parse(el.textContent) as Record<string, unknown>;
   } catch {
     el.remove();
     cache = null;
     return null;
   }
+  el.remove();
+  // ADR 0034: streaming SSR の per-boundary partial patch (`__vidroAddResources`)
+  // は window object に貯まる。ここで shallow merge して cache に閉じ込める。
+  const streamResources = (globalThis as { __vidroResources?: Record<string, unknown> })
+    .__vidroResources;
+  if (streamResources) {
+    const existing = (parsed.resources as Record<string, unknown> | undefined) ?? {};
+    parsed.resources = { ...existing, ...streamResources };
+  }
+  cache = parsed;
+  return parsed;
 }
 
 /**

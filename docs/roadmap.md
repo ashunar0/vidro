@@ -112,6 +112,8 @@ Phase 4 (data / form) より先にここを固めることで、`resource` primi
 - [x] **Phase C-3**: out-of-order full streaming (per-boundary `ResourceScope` +
       resolve 順 emit、`__vidroSetResources` → `__vidroAddResources` partial
       merge / ADR 0033)
+- [x] **Phase C-3 review fixes**: window resources 化 (race 根治) / shell-pass
+      `controller.error` 明示 / cross-boundary key dev warn (ADR 0034)
 - [ ] **Phase C 残**: 段階 hydration (boundary 単位で順次 hydrate)
 - [ ] **Phase C 残**: true full out-of-order (内側 nested Suspense も独立 chunk 化)
 - [ ] **Phase C 残**: shell-pass error → Phase A degrade 復活

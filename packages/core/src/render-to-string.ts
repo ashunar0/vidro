@@ -166,36 +166,48 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
       const enc = new TextEncoder();
       const emit = (chunk: string) => controller.enqueue(enc.encode(chunk));
 
-      // 1. shell-pass: per-boundary scope に fetcher を集めつつ shell markup を作る
-      //    `__vidroFill` / `__vidroAddResources` は caller が `<head>` に inject
-      //    済み前提。core は #app の中身に当たる stream chunks (shell + 各
-      //    boundary chunk) のみを担当する責務分離。
-      //
-      //    rootScope (ADR 0033 論点 9): Suspense **外** で declare された
-      //    bootstrapKey 付き resource を吸収する root pseudo-boundary scope。
-      //    Suspense 内側では runWithResourceScope の push/pop で boundaryScope
-      //    に切り替わるので、Suspense 外の resource だけが rootScope に残る。
-      const stream = new StreamingContext();
-      const rootScope = new ResourceScope();
-      let shellHtml = "";
-      runWithStream(stream, () => {
-        runWithResourceScope(rootScope, () => {
-          shellHtml = renderToString(fn);
+      try {
+        // 1. shell-pass: per-boundary scope に fetcher を集めつつ shell markup を作る
+        //    `__vidroFill` / `__vidroAddResources` は caller が `<head>` に inject
+        //    済み前提。core は #app の中身に当たる stream chunks (shell + 各
+        //    boundary chunk) のみを担当する責務分離。
+        //
+        //    rootScope (ADR 0033 論点 9): Suspense **外** で declare された
+        //    bootstrapKey 付き resource を吸収する root pseudo-boundary scope。
+        //    Suspense 内側では runWithResourceScope の push/pop で boundaryScope
+        //    に切り替わるので、Suspense 外の resource だけが rootScope に残る。
+        const stream = new StreamingContext();
+        const rootScope = new ResourceScope();
+        let shellHtml = "";
+        runWithStream(stream, () => {
+          runWithResourceScope(rootScope, () => {
+            shellHtml = renderToString(fn);
+          });
         });
-      });
-      emit(shellHtml);
+        emit(shellHtml);
 
-      // 2. boundary 並列 flush + root scope flush (ADR 0033 out-of-order)
-      //    各 boundary に対して独立に Promise.allSettled。resolve した順で chunk
-      //    を emit する。controller.enqueue は sync なので serialize される。
-      //    rootScope は template/fill を持たないので __vidroAddResources のみ。
-      //    Promise.allSettled で全完了を待ってから controller.close() する。
-      await Promise.allSettled([
-        flushRoot(rootScope, emit),
-        ...stream.boundaries.map((b) => flushBoundary(b.id, b.scope, b.childrenFactory, emit)),
-      ]);
+        // 2. boundary 並列 flush + root scope flush (ADR 0033 out-of-order)
+        //    各 boundary に対して独立に Promise.allSettled。resolve した順で chunk
+        //    を emit する。controller.enqueue は sync なので serialize される。
+        //    rootScope は template/fill を持たないので __vidroAddResources のみ。
+        //    Promise.allSettled で全完了を待ってから controller.close() する。
+        await Promise.allSettled([
+          flushRoot(rootScope, emit),
+          ...stream.boundaries.map((b) => flushBoundary(b.id, b.scope, b.childrenFactory, emit)),
+        ]);
 
-      controller.close();
+        controller.close();
+      } catch (err) {
+        // ADR 0034 Issue 2: shell-pass throw (= renderToString が同期 throw、
+        // または runWithResourceScope の push/pop 中の例外) を明示的に
+        // controller.error に流す。WhatWG 仕様では start() reject = stream
+        // errored 状態になるので動作は同じだが、明示する方が consumer 側
+        // (router の composeResponseStream) に意図が伝わりやすい + stack trace
+        // 情報も失われない。boundary-pass 内の throw は Promise.allSettled が
+        // 拾うので本 catch には到達しない (= fallback がそのまま残る、ADR 0033
+        // 論点 6)。
+        controller.error(err);
+      }
     },
   });
 }
@@ -284,13 +296,15 @@ async function flushBoundary(
  * と差し替える。start/end marker / template も remove して DOM 構造を綺麗にする
  * (hydrate cursor を fallback ではなく resolved children に合わせるため)。
  *
- * `__vidroAddResources(r)` (ADR 0033): `<script id="__vidro_data">` の resources
- * field に r を **key 単位で merge** する (Object.assign セマンティクス)。
- * out-of-order streaming では各 boundary chunk と一緒に該当 boundary 分の
- * resource だけが partial で送られてくるため、累積マージが必要。Resource
- * constructor は readVidroData() 経由で 1 回 parse + cache するので、この patch
- * は **hydrate より前** に走る必要がある — streaming order (各 boundary chunk →
- * DOMContentLoaded → hydrate) で自然に成立する。
+ * `__vidroAddResources(r)` (ADR 0033 + ADR 0034): per-boundary partial bootstrap
+ * を **`window.__vidroResources` object に key 単位 merge** する。
+ * `bootstrap.ts` の `readVidroData()` は cache 確定時にこの window object を
+ * `parsed.resources` に shallow merge する設計 (ADR 0034 Issue 1 fix)。
+ *
+ * 旧仕様 (ADR 0033 初版) は `<script id="__vidro_data">` の textContent を
+ * 直接書き換えていたが、`readVidroData()` が `el.remove()` した後に届く partial
+ * patch が silent drop される race があった (将来段階 hydration で確実に踏む
+ * 地雷)。ADR 0034 で window object 経由に変更してこれを根治。
  *
  * minify はあえてしない (size < 700B、可読性優先)。production では bundler が
  * dead code elimination で消すか、別途 minify する余地あり。
@@ -308,11 +322,8 @@ s.parentNode.removeChild(s);
 e.parentNode.removeChild(e);
 t.parentNode&&t.parentNode.removeChild(t);
 };
-window.__vidroAddResources=function(r){
-var s=document.getElementById("__vidro_data");
-if(!s)return;
-try{var d=JSON.parse(s.textContent);if(!d.resources)d.resources={};for(var k in r)d.resources[k]=r[k];s.textContent=JSON.stringify(d);}catch(e){}
-};
+window.__vidroResources=window.__vidroResources||{};
+window.__vidroAddResources=function(r){for(var k in r)window.__vidroResources[k]=r[k];};
 `.replace(/\n/g, "");
 
 /** `<script>...</script>` 内に JSON を inline する用の escape (XSS 対策、`</script>` 閉じ防止)。 */
