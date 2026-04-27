@@ -10,7 +10,7 @@
 //   6. owner.dispose で evaluate 中に残ったリソースを解放、renderer を defensive reset
 //
 // renderToStringAsync(fn): Promise<{html, resources}> — ADR 0030 Step B-5c で追加。
-// `bootstrapKey` 付き createResource を server で resolve してから markup を作る
+// `bootstrapKey` 付き resource を server で resolve してから markup を作る
 // 2-pass async 版。詳細は関数 doc。
 //
 // renderToReadableStream(fn): ReadableStream<Uint8Array> — ADR 0031 Step C-1+C-2 で追加。
@@ -58,7 +58,7 @@ export type RenderToStringAsyncResult = {
 };
 
 /**
- * server で `bootstrapKey` 付き createResource を resolve してから markup を作る
+ * server で `bootstrapKey` 付き resource を resolve してから markup を作る
  * 2-pass async 版 (ADR 0030 Step B-5c)。
  *
  *   1-pass: 空 ResourceScope で renderToString → Resource constructor が
@@ -204,7 +204,7 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
 
       // 4. boundary-pass: 各 boundary を再 render → template + fill script
       //    streaming context は **解除** (内側 Suspense は既存動作 = children 直吐き)。
-      //    hits 入り ResourceScope を active にすれば、内側 createResource は
+      //    hits 入り ResourceScope を active にすれば、内側 resource は
       //    bootstrap-hit branch で markup に焼かれる。
       const renderScope = new ResourceScope(hits);
       for (const b of stream.boundaries) {

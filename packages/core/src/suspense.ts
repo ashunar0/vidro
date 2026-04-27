@@ -15,12 +15,12 @@ type SuspenseProps = {
 
 /**
  * Suspense 境界 primitive (ADR 0029、B-5b)。children 内で構築された
- * `createResource` が pending の間は fallback を表示し、すべて resolve したら
+ * `resource` が pending の間は fallback を表示し、すべて resolve したら
  * children に切替える。
  *
  * 機構:
  *   1. SuspenseScope を作成、children() を runWithSuspenseScope で wrap して評価
- *   2. children 内で `createResource(...)` が呼ばれると getCurrentSuspense() で
+ *   2. children 内で `resource(...)` が呼ばれると getCurrentSuspense() で
  *      scope を捕捉し、scope.register() で count 加算
  *   3. resolve / reject で unregister、count が 0 になったら pending=false
  *   4. effect で scope.pending を購読、変化で fallback ↔ children を DOM 切替
@@ -78,7 +78,7 @@ export function Suspense(props: SuspenseProps): Node {
   const scope = new SuspenseScope();
   const parentOwner = getCurrentOwner();
 
-  // children を Owner 内で評価。runWithSuspenseScope で wrap して、内部 createResource
+  // children を Owner 内で評価。runWithSuspenseScope で wrap して、内部 resource
   // が scope を捕捉できるようにする。children Owner は dispose せず保持し、resolve
   // 時にそのまま再表示する (連続性を持つ)。
   const childrenOwner = new Owner(parentOwner);

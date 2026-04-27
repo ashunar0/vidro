@@ -1,4 +1,4 @@
-// server-side で renderToStringAsync が createResource の bootstrap-hit / fetcher
+// server-side で renderToStringAsync が resource の bootstrap-hit / fetcher
 // register を仲介するための scope (ADR 0030、B-5c)。
 //
 // 流れ:

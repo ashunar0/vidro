@@ -11,7 +11,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { h, _$text, _$dynamicChild } from "../src/jsx";
-import { createResource } from "../src/resource";
+import { resource } from "../src/resource";
 import { Suspense } from "../src/suspense";
 import { renderToReadableStream, VIDRO_STREAMING_RUNTIME } from "../src/render-to-string";
 
@@ -41,7 +41,7 @@ describe("renderToReadableStream", () => {
 
   test("bootstrapKey 付き resource: resources patch に resolved 値が乗る", async () => {
     const stream = renderToReadableStream(() => {
-      const r = createResource(() => Promise.resolve({ name: "Asahi" }), {
+      const r = resource(() => Promise.resolve({ name: "Asahi" }), {
         bootstrapKey: "user:1",
       });
       // Suspense なしで使うと shell-pass で loading=true 表示、resources patch
@@ -59,7 +59,7 @@ describe("renderToReadableStream", () => {
 
   test("reject は SerializedError 形式で resources patch に乗る", async () => {
     const stream = renderToReadableStream(() => {
-      createResource(() => Promise.reject(new Error("boom")), { bootstrapKey: "broken" });
+      resource(() => Promise.reject(new Error("boom")), { bootstrapKey: "broken" });
       return h("p", null, _$text("shell"));
     });
     const html = await collect(stream);
@@ -74,7 +74,7 @@ describe("renderToReadableStream", () => {
       Suspense({
         fallback: () => h("p", { id: "fb" }, _$text("loading...")),
         children: () => {
-          const r = createResource(() => Promise.resolve("hi"), { bootstrapKey: "x" });
+          const r = resource(() => Promise.resolve("hi"), { bootstrapKey: "x" });
           return h(
             "p",
             { id: "ok" },

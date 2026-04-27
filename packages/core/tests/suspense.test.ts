@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "vite-plus/test";
 import { h, _$text, _$dynamicChild, mount } from "../src/jsx";
-import { createResource } from "../src/resource";
+import { resource } from "../src/resource";
 import { Suspense } from "../src/suspense";
 
 const flush = async (): Promise<void> => {
@@ -30,7 +30,7 @@ describe("Suspense", () => {
       Suspense({
         fallback: () => h("p", null, _$text("loading")),
         children: () => {
-          const data = createResource(() => promise);
+          const data = resource(() => promise);
           return h(
             "p",
             null,
@@ -58,13 +58,13 @@ describe("Suspense", () => {
       Suspense({
         fallback: () => h("p", null, _$text("loading")),
         children: () => {
-          const a = createResource(
+          const a = resource(
             () =>
               new Promise<string>((res) => {
                 r1 = res;
               }),
           );
-          const b = createResource(
+          const b = resource(
             () =>
               new Promise<string>((res) => {
                 r2 = res;
@@ -99,7 +99,7 @@ describe("Suspense", () => {
       Suspense({
         fallback: () => h("p", null, _$text("loading")),
         children: () => {
-          const data = createResource(() => Promise.reject(new Error("boom")));
+          const data = resource(() => Promise.reject(new Error("boom")));
           return h(
             "p",
             null,
@@ -129,7 +129,7 @@ describe("Suspense", () => {
 
     const App = () => {
       // Suspense より外で構築 → getCurrentSuspense() は null → register しない
-      const data = createResource(() => promise);
+      const data = resource(() => promise);
       return Suspense({
         fallback: () => h("p", null, _$text("loading")),
         children: () =>
@@ -161,7 +161,7 @@ describe("Suspense", () => {
       Suspense({
         fallback: () => h("p", null, _$text("outer-loading")),
         children: () => {
-          const a = createResource(
+          const a = resource(
             () =>
               new Promise<string>((res) => {
                 r1 = res;
@@ -178,7 +178,7 @@ describe("Suspense", () => {
             Suspense({
               fallback: () => h("span", null, _$text("inner-loading")),
               children: () => {
-                const b = createResource(
+                const b = resource(
                   () =>
                     new Promise<string>((res) => {
                       r2 = res;

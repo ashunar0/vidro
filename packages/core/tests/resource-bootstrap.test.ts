@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-// ADR 0030 Step B-5c: createResource の bootstrap-hit branch (client 側)。
+// ADR 0030 Step B-5c: resource の bootstrap-hit branch (client 側)。
 //   - bootstrap data に hit → loading=false スタート、fetcher 呼ばれない
 //   - error 形式の hit → error が hydrate される
 //   - hit なし or bootstrapKey 未指定 → 従来動作 (即時 fetch)
 //   - Suspense register されない (count に影響しない)
 
 import { describe, expect, test, beforeEach } from "vite-plus/test";
-import { createResource } from "../src/resource";
+import { resource } from "../src/resource";
 import { Suspense } from "../src/suspense";
 import { h, _$text, _$dynamicChild, mount } from "../src/jsx";
 import { __resetVidroDataCache } from "../src/bootstrap";
@@ -25,12 +25,12 @@ beforeEach(() => {
   for (const el of Array.from(document.querySelectorAll("#__vidro_data"))) el.remove();
 });
 
-describe("createResource bootstrap-hit (client)", () => {
+describe("resource bootstrap-hit (client)", () => {
   test("hit データあり: loading=false スタート + fetcher 呼ばれない", () => {
     setBootstrap({ resources: { "user:1": { data: { name: "Asahi" } } } });
 
     let fetcherCalls = 0;
-    const r = createResource(
+    const r = resource(
       () => {
         fetcherCalls++;
         return Promise.resolve({ name: "fallback" });
@@ -52,7 +52,7 @@ describe("createResource bootstrap-hit (client)", () => {
     });
 
     let fetcherCalls = 0;
-    const r = createResource(
+    const r = resource(
       () => {
         fetcherCalls++;
         return Promise.resolve("ok");
@@ -72,7 +72,7 @@ describe("createResource bootstrap-hit (client)", () => {
     setBootstrap({ resources: { "other:1": { data: 99 } } });
 
     let fetcherCalls = 0;
-    const r = createResource(
+    const r = resource(
       () => {
         fetcherCalls++;
         return Promise.resolve(42);
@@ -89,7 +89,7 @@ describe("createResource bootstrap-hit (client)", () => {
     setBootstrap({ resources: { "user:1": { data: { name: "ignored" } } } });
 
     let fetcherCalls = 0;
-    const r = createResource(() => {
+    const r = resource(() => {
       fetcherCalls++;
       return Promise.resolve(1);
     });
@@ -105,7 +105,7 @@ describe("createResource bootstrap-hit (client)", () => {
       Suspense({
         fallback: () => h("p", null, _$text("loading")),
         children: () => {
-          const r = createResource(() => Promise.resolve("fallback"), {
+          const r = resource(() => Promise.resolve("fallback"), {
             bootstrapKey: "u:1",
           });
           return h(

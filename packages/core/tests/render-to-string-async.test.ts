@@ -8,14 +8,14 @@
 
 import { describe, expect, test, vi } from "vite-plus/test";
 import { h, _$text, _$dynamicChild } from "../src/jsx";
-import { createResource } from "../src/resource";
+import { resource } from "../src/resource";
 import { Suspense } from "../src/suspense";
 import { renderToStringAsync } from "../src/render-to-string";
 
 describe("renderToStringAsync", () => {
   test("bootstrapKey 付き resource: resolve 後の値で markup", async () => {
     const { html, resources } = await renderToStringAsync(() => {
-      const r = createResource(() => Promise.resolve({ name: "Asahi" }), {
+      const r = resource(() => Promise.resolve({ name: "Asahi" }), {
         bootstrapKey: "user:1",
       });
       return h(
@@ -31,7 +31,7 @@ describe("renderToStringAsync", () => {
 
   test("reject は SerializedError 形式で resources に入る + markup は user の error 表示", async () => {
     const { html, resources } = await renderToStringAsync(() => {
-      const r = createResource(() => Promise.reject(new Error("boom")), {
+      const r = resource(() => Promise.reject(new Error("boom")), {
         bootstrapKey: "broken",
       });
       return h(
@@ -49,7 +49,7 @@ describe("renderToStringAsync", () => {
 
   test("bootstrapKey なし resource は scope register されず loading=true で markup", async () => {
     const { html, resources } = await renderToStringAsync(() => {
-      const r = createResource(() => Promise.resolve("hello"));
+      const r = resource(() => Promise.resolve("hello"));
       return h(
         "p",
         null,
@@ -66,14 +66,14 @@ describe("renderToStringAsync", () => {
     let count = 0;
 
     const { html, resources } = await renderToStringAsync(() => {
-      const a = createResource(
+      const a = resource(
         () => {
           count++;
           return Promise.resolve("first");
         },
         { bootstrapKey: "k" },
       );
-      const b = createResource(
+      const b = resource(
         () => {
           count++;
           return Promise.resolve("second");
@@ -104,7 +104,7 @@ describe("renderToStringAsync", () => {
       Suspense({
         fallback: () => h("p", null, _$text("loading")),
         children: () => {
-          const r = createResource(() => Promise.resolve("hi"), { bootstrapKey: "x" });
+          const r = resource(() => Promise.resolve("hi"), { bootstrapKey: "x" });
           return h(
             "p",
             null,

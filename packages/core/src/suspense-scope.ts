@@ -1,9 +1,9 @@
 import { Signal } from "./signal";
 
 /**
- * Suspense primitive と createResource を繋ぐ集約 scope (ADR 0029、B-5b)。
+ * Suspense primitive と resource を繋ぐ集約 scope (ADR 0029、B-5b)。
  * Suspense は children() を `runWithSuspenseScope` で wrap して評価し、その間に
- * 構築された `createResource` は constructor で `getCurrentSuspense()` を
+ * 構築された `resource` は constructor で `getCurrentSuspense()` を
  * 捕捉して自分を scope に register する。scope は in-flight な resource 数を
  * count signal で集約し、`pending` (count > 0) を effect で購読することで
  * Suspense の fallback ↔ children 切替が自然に reactive 化する。
@@ -19,14 +19,20 @@ export class SuspenseScope {
    * resource 1 件分を pending として count に加算。返り値は 1 回限りの
    * unregister 関数で、resolve / reject 時に呼ぶと count を decrement する。
    * 二重呼びはガードで no-op。
+   *
+   * count の読みは `peek()` 経由 (track 外) で取り、setter にだけ書く。
+   * register/unregister の呼び元 (例: Resource constructor 内の source-tracking
+   * effect) が currentObserver で active なとき、`this.#count.value` の getter で
+   * 当該 effect が #count を dep に拾ってしまうと、unregister 時の `value -= 1`
+   * setter で **意図せず effect が再実行される** ため (ADR 0032 で発覚)。
    */
   register(): () => void {
-    this.#count.value += 1;
+    this.#count.value = this.#count.peek() + 1;
     let unregistered = false;
     return () => {
       if (unregistered) return;
       unregistered = true;
-      this.#count.value -= 1;
+      this.#count.value = this.#count.peek() - 1;
     };
   }
 
@@ -41,7 +47,7 @@ export class SuspenseScope {
 let currentSuspense: SuspenseScope | null = null;
 
 /**
- * scope を active にして fn を評価。fn の内側で構築された createResource は
+ * scope を active にして fn を評価。fn の内側で構築された resource は
  * `getCurrentSuspense()` 経由で scope を捕捉する。Owner.run と同じく try/finally
  * で previous scope に戻す (nested Suspense 対応)。
  */

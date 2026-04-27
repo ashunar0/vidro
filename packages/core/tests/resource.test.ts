@@ -1,4 +1,4 @@
-// SSR Phase B Step B-5a: createResource の挙動検証。
+// SSR Phase B Step B-5a: resource の挙動検証。
 //   - constructor で即時 fetch、loading=true から始まる
 //   - resolve 経路: data 反映 + loading=false (batch で 1 effect)
 //   - reject 経路: error 反映 + loading=false、data は前回値保持
@@ -8,7 +8,7 @@
 // jsdom 不要 (DOM API 触らない primitive)、@vitest-environment node で十分。
 
 import { describe, expect, test } from "vite-plus/test";
-import { createResource } from "../src/resource";
+import { resource } from "../src/resource";
 import { effect } from "../src/effect";
 
 // microtask flush。Promise.resolve / reject の then は microtask queue で実行される
@@ -19,16 +19,16 @@ const flush = async (): Promise<void> => {
   await Promise.resolve();
 };
 
-describe("createResource", () => {
+describe("resource", () => {
   test("構築直後は loading=true / value=undefined / error=undefined", () => {
-    const r = createResource(() => Promise.resolve(42));
+    const r = resource(() => Promise.resolve(42));
     expect(r.loading).toBe(true);
     expect(r.value).toBeUndefined();
     expect(r.error).toBeUndefined();
   });
 
   test("resolve 後: value 反映 + loading=false", async () => {
-    const r = createResource(() => Promise.resolve(42));
+    const r = resource(() => Promise.resolve(42));
     await flush();
     expect(r.loading).toBe(false);
     expect(r.value).toBe(42);
@@ -37,7 +37,7 @@ describe("createResource", () => {
 
   test("reject 後: error 反映 + loading=false、value は前回値を保持", async () => {
     let n = 0;
-    const r = createResource(() =>
+    const r = resource(() =>
       ++n === 1 ? Promise.resolve(100) : Promise.reject(new Error("boom")),
     );
     await flush();
@@ -54,7 +54,7 @@ describe("createResource", () => {
 
   test("refetch: 再実行で loading=true → 新 value", async () => {
     let n = 0;
-    const r = createResource(() => Promise.resolve(++n));
+    const r = resource(() => Promise.resolve(++n));
     await flush();
     expect(r.value).toBe(1);
 
@@ -78,7 +78,7 @@ describe("createResource", () => {
       }),
     ];
     let i = 0;
-    const r = createResource(() => promises[i++]!);
+    const r = resource(() => promises[i++]!);
 
     // 1 つ目 (constructor 起動分) はまだ pending。即 refetch で 2 つ目を起動。
     r.refetch();
@@ -95,7 +95,7 @@ describe("createResource", () => {
   });
 
   test("effect 経由で .value / .loading が reactive 追従する", async () => {
-    const r = createResource(() => Promise.resolve("hello"));
+    const r = resource(() => Promise.resolve("hello"));
     let captured: string | undefined;
     let loadingHistory: boolean[] = [];
     effect(() => {

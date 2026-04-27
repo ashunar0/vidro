@@ -1,10 +1,12 @@
 import { currentParams, type PageProps } from "@vidro/router";
-import { createResource, Suspense } from "@vidro/core";
+import { resource, Suspense } from "@vidro/core";
 import type { loader } from "./server";
 
-// 既存 loader 経由 SSR に加え、B-5c 動作確認の createResource + Suspense ブロックを
-// 同居させる。bootstrapKey 付きで構築すると server 2-pass で resolve され、
-// markup には posts のタイトルが焼かれた状態で配信される (blink なし)。
+// 既存 loader 経由 SSR に加え、B-5c + ADR 0032 reactive source 動作確認の
+// resource + Suspense ブロックを同居させる。bootstrapKey 付きで構築すると
+// server 2-pass で resolve され、markup には posts のタイトルが焼かれた状態
+// で配信される (blink なし)。/users/1 → /users/5 navigation では reactive
+// source が currentParams 変化を検知して fetcher(id) を auto refetch。
 export default function UserPage({ data, params }: PageProps<typeof loader>) {
   return (
     <section>
@@ -23,7 +25,7 @@ export default function UserPage({ data, params }: PageProps<typeof loader>) {
         <code>typeof loader</code> 経由で型貫通)
       </p>
       <hr />
-      <h3>Posts (createResource + Suspense, B-5c)</h3>
+      <h3>Posts (resource + Suspense + reactive source、ADR 0032)</h3>
       <Suspense fallback={() => <p data-testid="posts-fallback">loading posts...</p>}>
         {() => <UserPosts />}
       </Suspense>
@@ -33,18 +35,19 @@ export default function UserPage({ data, params }: PageProps<typeof loader>) {
 
 type Post = { id: number; title: string };
 
-// prop drill (`userId={params.id}`) ではなく currentParams 経由で id を直読み。
-// 深い子孫から params を引ける動作確認 (副菜 B)。bootstrapKey は構築時の id で
-// 確定するので、navigation で id 変わるなら resource は再構築される (Suspense
-// children が新規評価される) のが前提。
+// reactive source で currentParams.id 変化を検知 → navigation で id 変わると
+// 自動 refetch される。bootstrapKey は constructor 時 (= 初回 hydrate 時) の id
+// で固定 — SSR で焼いた hit を引き当てるだけ。以降の navigation は普通の
+// client fetch 経路 (Suspense の fallback ↔ children swap が走る)。
 function UserPosts() {
-  const userId = currentParams.value.id ?? "";
-  const posts = createResource<Post[]>(
-    () =>
-      fetch(`https://jsonplaceholder.typicode.com/users/${userId}/posts`).then(
+  const initialId = currentParams.value.id ?? "";
+  const posts = resource(
+    () => currentParams.value.id ?? null,
+    (id) =>
+      fetch(`https://jsonplaceholder.typicode.com/users/${id}/posts`).then(
         (r) => r.json() as Promise<Post[]>,
       ),
-    { bootstrapKey: `posts:${userId}` },
+    { bootstrapKey: `posts:${initialId}` },
   );
   return (
     <p data-testid="posts-info">
