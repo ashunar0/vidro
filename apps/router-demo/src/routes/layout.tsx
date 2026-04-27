@@ -10,7 +10,9 @@ export default function RootLayout({ children }: LayoutProps) {
       <nav style="display: flex; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid #ccc;">
         <Link href="/">Home</Link>
         <Link href="/about">About</Link>
-        <Link href="/users">Users</Link>
+        <Link href="/users" match="prefix">
+          Users
+        </Link>
         <Link href="/users/1">User 1</Link>
         <Link href="/users/5">User 5</Link>
         <Link href="/users/999">User 999 (err)</Link>

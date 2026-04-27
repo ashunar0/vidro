@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>vidro router demo</title>
+    <style>
+      /* aria-current="page" の Link を強調表示。Vidro Link は class ではなく
+         aria-current で active 表現する (a11y standard、命名衝突回避)。 */
+      nav a[aria-current="page"] {
+        font-weight: bold;
+        text-decoration: underline;
+        color: #06c;
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>

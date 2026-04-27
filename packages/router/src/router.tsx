@@ -318,31 +318,44 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
   const r = getRenderer();
   const match = matchRoute(ssr.bootstrapData.pathname, compiled);
 
-  if (!ssr.resolvedModules.route) {
-    return r.createText("404 Not Found") as unknown as Node;
+  // Link 等が currentPathname を読んで active state を判定するため、SSR 中だけ
+  // request pathname に切替える。server には window がないため signal の初期値は
+  // "/" のままで、Link が誤判定する (Home が常に active 等)。finally で元に戻す
+  // のは Workers 並行 request 間の global state 干渉を最小化するため (toy 段階の
+  // 妥協、production 化時に context/AsyncLocalStorage 経由に書き換え予定 —
+  // project_pending_rewrites に記録)。
+  const previousPathname = currentPathname.value;
+  currentPathname.value = ssr.bootstrapData.pathname;
+
+  try {
+    if (!ssr.resolvedModules.route) {
+      return r.createText("404 Not Found") as unknown as Node;
+    }
+
+    // loader 結果を client mode と同じ shape に整える (hydrateError で Error に復元)
+    const loaderResults = ssr.bootstrapData.layers.map((l) => ({
+      data: l.data,
+      error: l.error ? hydrateError(l.error) : undefined,
+    }));
+
+    const node = foldRouteTree({
+      match,
+      componentMods: ssr.resolvedModules.layouts.concat([ssr.resolvedModules.route]),
+      loaderResults,
+      errorMods: ssr.resolvedModules.errors,
+      reset: () => {
+        // server では reset 発火不可。client hydration で再発火する前提。
+      },
+    });
+
+    // client と同 shape: fragment.children = [route_node, anchor]
+    const fragment = r.createFragment();
+    r.appendChild(fragment, node);
+    r.appendChild(fragment, r.createComment("router"));
+    return fragment;
+  } finally {
+    currentPathname.value = previousPathname;
   }
-
-  // loader 結果を client mode と同じ shape に整える (hydrateError で Error に復元)
-  const loaderResults = ssr.bootstrapData.layers.map((l) => ({
-    data: l.data,
-    error: l.error ? hydrateError(l.error) : undefined,
-  }));
-
-  const node = foldRouteTree({
-    match,
-    componentMods: ssr.resolvedModules.layouts.concat([ssr.resolvedModules.route]),
-    loaderResults,
-    errorMods: ssr.resolvedModules.errors,
-    reset: () => {
-      // server では reset 発火不可。client hydration で再発火する前提。
-    },
-  });
-
-  // client と同 shape: fragment.children = [route_node, anchor]
-  const fragment = r.createFragment();
-  r.appendChild(fragment, node);
-  r.appendChild(fragment, r.createComment("router"));
-  return fragment;
 }
 
 // ---- fold logic (client / server 共通) ----
