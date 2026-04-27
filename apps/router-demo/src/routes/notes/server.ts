@@ -16,15 +16,22 @@ export async function loader(_args: LoaderArgs<"/notes">) {
   return { notes: notes.slice() };
 }
 
+// FormData の値を string に narrow。File 値や null の場合は "" にフォールバック
+// して `String()` 経由で `[object File]` 等が混入する経路を断つ (= no-base-to-string)。
+function getStringField(fd: FormData, name: string): string {
+  const v = fd.get(name);
+  return typeof v === "string" ? v : "";
+}
+
 // ADR 0038 Phase 3 R-mid-1 の動作確認 action。intent 分岐 (R-mid-2) もここで demo:
 // `<input type="hidden" name="intent" value="create|delete">` を読んで分岐する。
 // framework 側の改修は不要 (= runtime のみで分岐)。
 export async function action({ request }: ActionArgs<"/notes">) {
   const fd = await request.formData();
-  const intent = String(fd.get("intent") ?? "");
+  const intent = getStringField(fd, "intent");
 
   if (intent === "create") {
-    const title = String(fd.get("title") ?? "").trim();
+    const title = getStringField(fd, "title").trim();
     if (!title) throw new Error("title is required");
     const note: Note = { id: nextId++, title };
     notes.push(note);
@@ -32,7 +39,7 @@ export async function action({ request }: ActionArgs<"/notes">) {
   }
 
   if (intent === "delete") {
-    const id = Number(fd.get("id") ?? "");
+    const id = Number(getStringField(fd, "id"));
     if (!Number.isFinite(id)) throw new Error("id is required");
     const idx = notes.findIndex((n) => n.id === id);
     if (idx < 0) throw new Error(`note not found: ${id}`);

@@ -21,7 +21,9 @@ describe("createServerHandler — POST handler (ADR 0037 Phase 3 R-min)", () => 
           loader: async () => ({ count: 42 }),
           action: async ({ request }: { request: Request }) => {
             const fd = await request.formData();
-            return { ok: true, title: String(fd.get("title")) };
+            const raw = fd.get("title");
+            // typeof narrow で no-base-to-string を回避。test では title=string 前提
+            return { ok: true, title: typeof raw === "string" ? raw : "" };
           },
         }),
     };

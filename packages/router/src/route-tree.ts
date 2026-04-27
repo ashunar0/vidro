@@ -20,10 +20,9 @@ type RouteLoader = () => Promise<RouteModule>;
 // または `Response` (= redirect 用)。throw は SerializedError 形式で client に伝播。
 export type ServerModule = {
   loader?: (args: { params: Record<string, string> }) => Promise<unknown>;
-  action?: (args: {
-    request: Request;
-    params: Record<string, string>;
-  }) => Promise<unknown> | unknown;
+  // action は sync / async 両対応。`Promise<unknown>` は `unknown` に含まれるので
+  // redundant union を避けて `unknown` 単独で受ける。
+  action?: (args: { request: Request; params: Record<string, string> }) => unknown;
 };
 export type ServerModuleLoader = () => Promise<ServerModule>;
 

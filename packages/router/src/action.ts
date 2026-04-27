@@ -49,8 +49,11 @@ export type ActionArgs<R extends keyof Routes = keyof Routes> = {
  * action として受け入れる関数の最低条件。`Submission<A>` の generic 制約に使う。
  * params shape は route ごとに異なるので `any` で受けて、本当の型は
  * `Awaited<ReturnType<A>>` で個別に取り出す (PageProps と同じ idiom)。
+ *
+ * 戻り値型が `unknown` だけなのは sync / async 両対応の表現。`Promise<unknown>` は
+ * `unknown` に含まれるので redundant union を避けて `unknown` 単独にしている。
  */
-export type AnyAction = (args: { request: Request; params: any }) => Promise<unknown> | unknown;
+export type AnyAction = (args: { request: Request; params: any }) => unknown;
 
 /**
  * server 側で serialize された Error 表現 (router/server.ts の SerializedError と
