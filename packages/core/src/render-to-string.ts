@@ -293,23 +293,35 @@ async function flushBoundary(
  *
  * `__vidroFill(id)`: shell 内の `<!--vb-${id}-start-->` と `<!--vb-${id}-end-->`
  * の間に挟まった fallback markup を `<template id="vidro-tpl-${id}">` の content
- * と差し替える。start/end marker / template も remove して DOM 構造を綺麗にする
- * (hydrate cursor を fallback ではなく resolved children に合わせるため)。
+ * と差し替える。template element は remove して DOM 構造を綺麗にするが、
+ * **start/end marker は保持** する (ADR 0035 B-α: 段階 hydration の boundary
+ * target 境界として必要)。fill 末尾で `__vidroPendingHydrate[id]` が登録済みなら
+ * 発火 (= shell hydrate より遅れて届いた boundary chunk が hydrate を駆動する経路)。
  *
  * `__vidroAddResources(r)` (ADR 0033 + ADR 0034): per-boundary partial bootstrap
  * を **`window.__vidroResources` object に key 単位 merge** する。
  * `bootstrap.ts` の `readVidroData()` は cache 確定時にこの window object を
- * `parsed.resources` に shallow merge する設計 (ADR 0034 Issue 1 fix)。
+ * `parsed.resources` に shallow merge する。ADR 0035 (C-α) では Resource が
+ * cache を bypass して `window.__vidroResources` を直接 lookup する経路もある
+ * (cache 確定後に届いた boundary chunk の resources を引き当てるため)。
+ *
+ * `__vidroPendingHydrate[id] = fn` (ADR 0035): shell hydrate run の Suspense が
+ * children を hold した closure (= boundary 単位 hydrate runner) を保留する registry。
+ * fill が後で来たら登録済み runner が走り、boundary 内が hydrate される。fill が
+ * shell hydrate より先に来たケースは `flushPending` (hydrate.ts) が即時 walk + 実行。
  *
  * 旧仕様 (ADR 0033 初版) は `<script id="__vidro_data">` の textContent を
  * 直接書き換えていたが、`readVidroData()` が `el.remove()` した後に届く partial
- * patch が silent drop される race があった (将来段階 hydration で確実に踏む
- * 地雷)。ADR 0034 で window object 経由に変更してこれを根治。
+ * patch が silent drop される race があった。ADR 0034 で window object 経由に
+ * 変更してこれを根治。
  *
- * minify はあえてしない (size < 700B、可読性優先)。production では bundler が
+ * minify はあえてしない (size < 800B、可読性優先)。production では bundler が
  * dead code elimination で消すか、別途 minify する余地あり。
  */
 export const VIDRO_STREAMING_RUNTIME = `
+window.__vidroResources=window.__vidroResources||{};
+window.__vidroAddResources=function(r){for(var k in r)window.__vidroResources[k]=r[k];};
+window.__vidroPendingHydrate=window.__vidroPendingHydrate||{};
 window.__vidroFill=function(id){
 var iter=document.createNodeIterator(document.body,NodeFilter.SHOW_COMMENT),s=null,e=null,n;
 while((n=iter.nextNode())){if(n.nodeValue==="vb-"+id+"-start")s=n;else if(n.nodeValue==="vb-"+id+"-end")e=n;if(s&&e)break;}
@@ -318,12 +330,10 @@ if(!s||!e||!t)return;
 var c=s.nextSibling;
 while(c&&c!==e){var nx=c.nextSibling;c.parentNode.removeChild(c);c=nx;}
 e.parentNode.insertBefore(t.content,e);
-s.parentNode.removeChild(s);
-e.parentNode.removeChild(e);
 t.parentNode&&t.parentNode.removeChild(t);
+var pend=window.__vidroPendingHydrate[id];
+if(pend){delete window.__vidroPendingHydrate[id];pend();}
 };
-window.__vidroResources=window.__vidroResources||{};
-window.__vidroAddResources=function(r){for(var k in r)window.__vidroResources[k]=r[k];};
 `.replace(/\n/g, "");
 
 /** `<script>...</script>` 内に JSON を inline する用の escape (XSS 対策、`</script>` 閉じ防止)。 */

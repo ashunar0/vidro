@@ -5,6 +5,8 @@ import { getRenderer } from "./renderer";
 import { SuspenseScope, runWithSuspenseScope } from "./suspense-scope";
 import { getCurrentStream } from "./streaming-scope";
 import { ResourceScope, runWithResourceScope } from "./resource-scope";
+import { getCurrentStreamingHydration } from "./streaming-hydration";
+import type { HydrationRenderer } from "./hydration-renderer";
 
 type SuspenseProps = {
   /** pending 中に表示する UI を返す関数。最初に pending が観測された時点で 1 回だけ評価する。 */
@@ -87,7 +89,50 @@ export function Suspense(props: SuspenseProps): Node {
     return fragment;
   }
 
-  // --- client mode (mount / hydrate 共通) ---
+  // --- streaming hydrate run (ADR 0035) ---
+  // shell hydrate 中で本 Suspense が streaming SSR 経由 markup の boundary に
+  // 当たる場合、children は cursor を過剰消費する (children markup は shell に
+  // 入っておらず boundary chunk 経由で別 DOM range として届く) ため、children
+  // 評価は registry へ hold する。
+  //
+  // また「fallback markup or resolved children のどちらが DOM 上に居るか」は
+  // shell hydrate 開始時点で確定しない (boundary chunk が main.tsx の defer 実行
+  // より先に届いて fill 済みのケース有り)。そこで fallback も **評価せず**、
+  // start marker から end marker までの DOM range を cursor から skip する。
+  // fallback の event listener / effect は本経路では attach されない (toy 段階の
+  // trade-off、project_pending_rewrites に「fallback hydrate」項目で記録)。
+  //
+  // boundary fill 後 (= `__vidroFill` runtime) または shell hydrate 完了後
+  // (= `flushPending`) に hydrateBoundary が呼ばれ、start/end 間を target に
+  // した新 HydrationRenderer で childrenFactory を評価する。
+  const streamingRenderer = renderer as HydrationRenderer;
+  const hydrationCtx = getCurrentStreamingHydration();
+  if (streamingRenderer.streaming === true && hydrationCtx && streamingRenderer.skipToComment) {
+    const id = hydrationCtx.allocBoundaryId();
+
+    // server と同順の cursor 消費: start marker → (boundary range skip) → end
+    // marker → suspense anchor。id 規則 (`vb${counter++}`) は server-side
+    // StreamingContext と揃えて registry の id ↔ DOM marker 対応を保つ。
+    const startMarker = renderer.createComment(`vb-${id}-start`);
+    streamingRenderer.skipToComment(`vb-${id}-end`);
+    const endMarker = renderer.createComment(`vb-${id}-end`);
+    const anchor = renderer.createComment("suspense");
+
+    hydrationCtx.registerBoundary({
+      id,
+      childrenFactory: props.children,
+    });
+
+    // fragment 自体は親 (= 上位 JSX) からは appendChild されるが、HydrationRenderer
+    // の appendChild は target.contains(child) で skip するので実 DOM は動かない。
+    const fragment = renderer.createFragment();
+    renderer.appendChild(fragment, startMarker);
+    renderer.appendChild(fragment, endMarker);
+    renderer.appendChild(fragment, anchor);
+    return fragment;
+  }
+
+  // --- client mode (mount / 通常 hydrate 共通) ---
   const scope = new SuspenseScope();
   const parentOwner = getCurrentOwner();
 

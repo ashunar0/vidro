@@ -23,6 +23,7 @@ function setBootstrap(data: unknown): void {
 beforeEach(() => {
   __resetVidroDataCache();
   for (const el of Array.from(document.querySelectorAll("#__vidro_data"))) el.remove();
+  delete (globalThis as { __vidroResources?: unknown }).__vidroResources;
 });
 
 describe("resource bootstrap-hit (client)", () => {
@@ -96,6 +97,46 @@ describe("resource bootstrap-hit (client)", () => {
 
     expect(r.loading).toBe(true);
     expect(fetcherCalls).toBe(1);
+  });
+
+  test("ADR 0035 (C-α): window.__vidroResources の late-arriving lookup で hit する", () => {
+    // shell hydrate run で Router が `__vidro_data` を読んだ後 (= cache 確定後) に
+    // boundary chunk が `__vidroAddResources` で `window.__vidroResources` に
+    // resources を書き込んだ状況を simulate する。bootstrap data の resources は
+    // 空、window 側にだけ key が居る。
+    setBootstrap({ resources: {} });
+    (globalThis as { __vidroResources?: Record<string, unknown> }).__vidroResources = {
+      "late:1": { data: { name: "After-fill" } },
+    };
+
+    let fetcherCalls = 0;
+    const r = resource(
+      () => {
+        fetcherCalls++;
+        return Promise.resolve({ name: "fallback" });
+      },
+      { bootstrapKey: "late:1" },
+    );
+
+    expect(r.loading).toBe(false);
+    expect(r.value).toEqual({ name: "After-fill" });
+    expect(fetcherCalls).toBe(0);
+  });
+
+  test("ADR 0035 (C-α): window 優先 + bootstrap data fallback 両立", () => {
+    // bootstrap data に `early` が、window に `late` が居る状態。両方 hit する。
+    setBootstrap({ resources: { early: { data: 1 } } });
+    (globalThis as { __vidroResources?: Record<string, unknown> }).__vidroResources = {
+      late: { data: 2 },
+    };
+
+    const rEarly = resource(() => Promise.resolve(99), { bootstrapKey: "early" });
+    const rLate = resource(() => Promise.resolve(99), { bootstrapKey: "late" });
+
+    expect(rEarly.value).toBe(1);
+    expect(rEarly.loading).toBe(false);
+    expect(rLate.value).toBe(2);
+    expect(rLate.loading).toBe(false);
   });
 
   test("Suspense 内 + bootstrap-hit: register されず children 直出し (blink なし)", () => {

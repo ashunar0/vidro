@@ -174,6 +174,13 @@ describe("renderToReadableStream", () => {
     // 旧実装の getElementById("__vidro_data") 経路は残っていない (__vidroAddResources 内)
     // __vidroFill は別途 getElementById を使うので、__vidro_data 文字列だけで判定
     expect(VIDRO_STREAMING_RUNTIME).not.toContain('getElementById("__vidro_data")');
+    // ADR 0035: 段階 hydration の registry / 後着 fill 経由 trigger
+    expect(VIDRO_STREAMING_RUNTIME).toContain("__vidroPendingHydrate");
+    // ADR 0035 (B-α): __vidroFill は start/end marker を **remove しない** (boundary
+    // 単位 hydrate target の境界として保持)。runtime body 内に
+    // `s.parentNode.removeChild(s)` / `e.parentNode.removeChild(e)` が無い。
+    expect(VIDRO_STREAMING_RUNTIME).not.toContain("removeChild(s)");
+    expect(VIDRO_STREAMING_RUNTIME).not.toContain("removeChild(e)");
   });
 
   test("ADR 0034 Issue 2: shell-pass throw は controller.error → stream errored になる", async () => {

@@ -291,11 +291,23 @@ export type { Resource };
 // --- bootstrap helpers ---
 
 /**
- * `__vidro_data.resources[key]` から bootstrap value を取り出す。client only。
- * router の readBootstrapData() と同じ shared cache (`readVidroData`) 経由なので、
- * Router と読み出し順序の心配なし (ADR 0030 3b-α)。
+ * bootstrap value を取り出す。client only。ADR 0035 (C-α) で window object 直接
+ * lookup に変更。
+ *
+ * 段階 hydration では cache は shell hydrate run 開始時点で確定する (Router が
+ * `readVidroData()` を呼んだタイミング)。後続 boundary chunk の `__vidroAddResources`
+ * は `window.__vidroResources` に書き込まれるが、cache.resources には反映されない。
+ * Resource は **毎回 `window.__vidroResources` を直接見る** ことで late-arriving
+ * patch を引き当てる。
+ *
+ * key が `window.__vidroResources` に無い (= streaming runtime 不在 or 該当 key を
+ * patch する boundary がそもそも無い) ケースでは `readVidroData()` の cache
+ * (`__vidro_data.resources`) に fallback する。これは ADR 0030 までの動作と互換。
  */
 function readResourceBootstrap(key: string): BootstrapValue | undefined {
+  const stream = (globalThis as { __vidroResources?: Record<string, BootstrapValue> })
+    .__vidroResources;
+  if (stream && key in stream) return stream[key];
   const data = readVidroData();
   if (!data) return undefined;
   const resources = data.resources as Record<string, BootstrapValue> | undefined;
