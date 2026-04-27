@@ -155,7 +155,7 @@ describe("hydrate", () => {
     // ケースは hydrate cursor mismatch する (children/fallback 両方 eager 評価され
     // SSR markup には active 1 つしか出ないため)。完全対応は B-4 (children getter 化)。
     // ここではシンプルケース (fallback 無し + when 静的 true) のみ確認する。
-    const App = () => Show({ when: true, children: h("p", null, _$text("visible")) });
+    const App = () => Show({ when: true, children: () => h("p", null, _$text("visible")) });
     const container = ssrInto(App);
     expect(container.innerHTML).toBe("<p>visible</p><!--show-->");
     const pBefore = container.firstChild;
@@ -168,7 +168,7 @@ describe("hydrate", () => {
   });
 
   test("Show: when 静的 false + fallback 無し で anchor のみ hydrate (B-3c-2)", () => {
-    const App = () => Show({ when: false, children: h("p", null, _$text("hidden")) });
+    const App = () => Show({ when: false, children: () => h("p", null, _$text("hidden")) });
     // 注: children Node は h() 評価で作られるが server fragment には入らない (active が
     // 無いため)。client hydrate 時も h() 評価で children Node が作られるが、これは
     // cursor を消費する。children = h("p", null, _$text("hidden")) → createText("hidden")
@@ -186,7 +186,7 @@ describe("hydrate", () => {
     // ここでは「Match 1 個 + when 静的 true」のシンプルケースのみ確認する。
     const App = () =>
       Switch({
-        children: [Match({ when: true, children: h("p", null, _$text("A")) })],
+        children: [Match({ when: true, children: () => h("p", null, _$text("A")) })],
       });
     const container = ssrInto(App);
     expect(container.innerHTML).toBe("<p>A</p><!--switch-->");
@@ -204,7 +204,7 @@ describe("hydrate", () => {
     // fallback 無しでも複数 Match では mismatch しうる。SSR markup の確認のみ。
     const App = () =>
       Switch({
-        children: [Match({ when: false, children: h("p", null, _$text("X")) })],
+        children: [Match({ when: false, children: () => h("p", null, _$text("X")) })],
       });
     const html = renderToString(App);
     expect(html).toBe("<!--switch-->");
@@ -237,7 +237,7 @@ describe("hydrate", () => {
     const App = () =>
       For({
         each: [] as string[],
-        fallback: h("p", null, _$text("empty")),
+        fallback: () => h("p", null, _$text("empty")),
         children: (item) => h("li", null, _$text(item)),
       });
     const container = document.createElement("div");
@@ -280,6 +280,124 @@ describe("hydrate", () => {
     // hydrate 後も同じ p Node を使う (fallback DOM の再生成なし)
     expect(container.firstChild).toBe(pBefore);
     expect(container.textContent).toBe("fb");
+  });
+
+  test("Show: fallback あり + when=true で children のみ hydrate (B-4 完全 hydrate)", () => {
+    // B-3c-2 では fallback も eager 評価されて cursor mismatch していたケース。
+    // B-4 で children/fallback が getter 化され、active branch のみ評価されるため
+    // 完全 hydrate できる (ADR 0025)。
+    const App = () =>
+      Show({
+        when: true,
+        children: () => h("p", null, _$text("visible")),
+        fallback: () => h("span", null, _$text("hidden")),
+      });
+    const container = ssrInto(App);
+    expect(container.innerHTML).toBe("<p>visible</p><!--show-->");
+    const pBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    expect(container.firstChild).toBe(pBefore);
+    expect(container.textContent).toBe("visible");
+  });
+
+  test("Show: fallback あり + when=false で fallback のみ hydrate (B-4 完全 hydrate)", () => {
+    const App = () =>
+      Show({
+        when: false,
+        children: () => h("p", null, _$text("visible")),
+        fallback: () => h("span", null, _$text("empty")),
+      });
+    const container = ssrInto(App);
+    expect(container.innerHTML).toBe("<span>empty</span><!--show-->");
+    const spanBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    expect(container.firstChild).toBe(spanBefore);
+    expect(container.textContent).toBe("empty");
+  });
+
+  test("Switch: 複数 Match + 1 つ true で active のみ hydrate (B-4 完全 hydrate)", () => {
+    // B-3c-3 では inactive Match の child も eager 評価されて cursor mismatch
+    // していたケース。B-4 で readChild getter 化され active のみ呼ぶため完全 hydrate。
+    const App = () =>
+      Switch({
+        children: [
+          Match({ when: false, children: () => h("p", null, _$text("A")) }),
+          Match({ when: true, children: () => h("p", null, _$text("B")) }),
+          Match({ when: false, children: () => h("p", null, _$text("C")) }),
+        ],
+      });
+    const container = ssrInto(App);
+    expect(container.innerHTML).toBe("<p>B</p><!--switch-->");
+    const pBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    expect(container.firstChild).toBe(pBefore);
+    expect(container.textContent).toBe("B");
+  });
+
+  test("Switch: fallback あり + 全 Match false で fallback のみ hydrate (B-4 完全 hydrate)", () => {
+    const App = () =>
+      Switch({
+        fallback: () => h("p", null, _$text("none")),
+        children: [
+          Match({ when: false, children: () => h("p", null, _$text("A")) }),
+          Match({ when: false, children: () => h("p", null, _$text("B")) }),
+        ],
+      });
+    const container = ssrInto(App);
+    expect(container.innerHTML).toBe("<p>none</p><!--switch-->");
+    const pBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    expect(container.firstChild).toBe(pBefore);
+    expect(container.textContent).toBe("none");
+  });
+
+  test("For: list 非空 + fallback あり で items のみ hydrate (B-4 完全 hydrate)", () => {
+    // B-3c-4 では fallback Node が h() で eager 評価されて cursor 過剰消費 →
+    // mismatch していたケース。B-4 で fallback も getter 化、each が空でない時は
+    // 呼ばれないため完全 hydrate。
+    const App = () =>
+      For({
+        each: ["a", "b"],
+        fallback: () => h("p", null, _$text("empty")),
+        children: (item) => h("li", null, _$text(item)),
+      });
+    const container = document.createElement("ul");
+    container.innerHTML = renderToString(App);
+    expect(container.innerHTML).toBe("<li>a</li><li>b</li><!--for-->");
+    const liA = container.children[0];
+
+    hydrate(App, container);
+
+    expect(container.children[0]).toBe(liA);
+    expect(container.textContent).toBe("ab");
+  });
+
+  test("ErrorBoundary: 普通の JSX 風 children (transform 経由) でも hydrate できる (B-4 forward-compat)", () => {
+    // ADR 0004 で約束した forward-compat: B-4 後は `<ErrorBoundary><Child /></ErrorBoundary>`
+    // も書けるようになる。test では transform 出力 (= `() => h(Child)`) を手書きで
+    // simulate して、ErrorBoundary が children() を呼んで動くことを確認する。
+    const App = () =>
+      ErrorBoundary({
+        fallback: () => h("p", null, _$text("err")),
+        onError: () => {},
+        children: () => h("p", null, _$text("ok")),
+      });
+    const container = ssrInto(App);
+    expect(container.innerHTML).toBe("<p>ok</p><!--error-boundary-->");
+    const pBefore = container.firstChild;
+
+    hydrate(App, container);
+
+    expect(container.firstChild).toBe(pBefore);
+    expect(container.textContent).toBe("ok");
   });
 
   test("text content mismatch は warn + override", () => {

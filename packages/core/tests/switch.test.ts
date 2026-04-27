@@ -15,7 +15,10 @@ describe("Switch / Match", () => {
     mount(
       () =>
         Switch({
-          children: [Match({ when: false, children: a }), Match({ when: true, children: b })],
+          children: [
+            Match({ when: false, children: () => a }),
+            Match({ when: true, children: () => b }),
+          ],
         }),
       target,
     );
@@ -32,7 +35,10 @@ describe("Switch / Match", () => {
     mount(
       () =>
         Switch({
-          children: [Match({ when: true, children: a }), Match({ when: true, children: b })],
+          children: [
+            Match({ when: true, children: () => a }),
+            Match({ when: true, children: () => b }),
+          ],
         }),
       target,
     );
@@ -49,8 +55,8 @@ describe("Switch / Match", () => {
     mount(
       () =>
         Switch({
-          fallback: fb,
-          children: [Match({ when: false, children: a })],
+          fallback: () => fb,
+          children: [Match({ when: false, children: () => a })],
         }),
       target,
     );
@@ -65,7 +71,7 @@ describe("Switch / Match", () => {
     mount(
       () =>
         Switch({
-          children: [Match({ when: false, children: a })],
+          children: [Match({ when: false, children: () => a })],
         }),
       target,
     );
@@ -86,9 +92,9 @@ describe("Switch / Match", () => {
       () =>
         Switch({
           children: [
-            Match({ when: () => state.value === "loading", children: loading }),
-            Match({ when: () => state.value === "error", children: error }),
-            Match({ when: () => state.value === "ok", children: ok }),
+            Match({ when: () => state.value === "loading", children: () => loading }),
+            Match({ when: () => state.value === "error", children: () => error }),
+            Match({ when: () => state.value === "ok", children: () => ok }),
           ],
         }),
       target,
@@ -114,8 +120,8 @@ describe("Switch / Match", () => {
       () =>
         Switch({
           children: [
-            Match({ when: flag, children: a }),
-            Match({ when: () => !flag.value, children: b }),
+            Match({ when: flag, children: () => a }),
+            Match({ when: () => !flag.value, children: () => b }),
           ],
         }),
       target,
@@ -140,7 +146,7 @@ describe("Switch / Match", () => {
     const dispose = mount(
       () =>
         Switch({
-          children: [Match({ when: cond, children: a })],
+          children: [Match({ when: cond, children: () => a })],
         }),
       target,
     );
@@ -163,7 +169,7 @@ describe("Switch / Match", () => {
         Switch({
           children: [
             stray, // 生の Node は collectMatches で無視される
-            Match({ when: true, children: a }),
+            Match({ when: true, children: () => a }),
           ],
         }),
       target,

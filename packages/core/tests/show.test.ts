@@ -10,7 +10,7 @@ describe("Show", () => {
     const child = document.createElement("p");
     child.textContent = "visible";
 
-    mount(() => Show({ when: true, children: child }), target);
+    mount(() => Show({ when: true, children: () => child }), target);
     expect(target.textContent).toBe("visible");
   });
 
@@ -19,7 +19,7 @@ describe("Show", () => {
     const child = document.createElement("p");
     child.textContent = "visible";
 
-    mount(() => Show({ when: false, children: child }), target);
+    mount(() => Show({ when: false, children: () => child }), target);
     expect(target.textContent).toBe("");
   });
 
@@ -30,7 +30,7 @@ describe("Show", () => {
     const fb = document.createElement("p");
     fb.textContent = "fallback";
 
-    mount(() => Show({ when: false, children: child, fallback: fb }), target);
+    mount(() => Show({ when: false, children: () => child, fallback: () => fb }), target);
     expect(target.textContent).toBe("fallback");
   });
 
@@ -42,7 +42,7 @@ describe("Show", () => {
     const fb = document.createElement("p");
     fb.textContent = "B";
 
-    mount(() => Show({ when: cond, children: child, fallback: fb }), target);
+    mount(() => Show({ when: cond, children: () => child, fallback: () => fb }), target);
     expect(target.textContent).toBe("A");
 
     cond.value = false;
@@ -58,7 +58,7 @@ describe("Show", () => {
     const child = document.createElement("p");
     child.textContent = "positive";
 
-    mount(() => Show({ when: () => count.value > 0, children: child }), target);
+    mount(() => Show({ when: () => count.value > 0, children: () => child }), target);
     expect(target.textContent).toBe("");
 
     count.value = 5;
@@ -74,7 +74,7 @@ describe("Show", () => {
     const child = document.createElement("input");
     child.value = "typed"; // "state" を Node 自身に持たせて検証
 
-    mount(() => Show({ when: cond, children: child }), target);
+    mount(() => Show({ when: cond, children: () => child }), target);
     const inputBefore = target.querySelector("input");
     expect(inputBefore?.value).toBe("typed");
 
@@ -95,7 +95,7 @@ describe("Show", () => {
     const child = document.createElement("p");
     child.textContent = "x";
 
-    const dispose = mount(() => Show({ when: cond, children: child }), target);
+    const dispose = mount(() => Show({ when: cond, children: () => child }), target);
     expect(target.textContent).toBe("x");
 
     dispose();

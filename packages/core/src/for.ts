@@ -5,8 +5,18 @@ import { getRenderer } from "./renderer";
 type ForProps<T> = {
   each: T[];
   children: (item: T, index: number) => Node;
-  fallback?: Node;
+  // 公開型は Node または `() => Node`。JSX `<For fallback={<X />}>` も手書き
+  // `fallback: () => node` も許容。runtime で transform は JSXElement attribute を
+  // `() => h(X)` に thunk 化する (callOrUseFallback helper で吸収)。
+  fallback?: Node | (() => Node);
 };
+
+// fallback は transform 経由なら () => Node、手書きなら Node が来る。
+function callOrUseFallback(c: unknown): Node | null {
+  if (c == null) return null;
+  if (typeof c === "function") return (c as () => Node)();
+  return c as Node;
+}
 
 /**
  * リスト primitive。each の配列を keyed reconciliation で DOM に反映する。
@@ -18,28 +28,26 @@ type ForProps<T> = {
  *
  * index は children を最初に呼んだ時点の値で固定 (reactive index は未対応)。
  *
- * server / client / hydrate 共通の renderer 経由 (ADR 0024):
+ * server / client / hydrate 共通の renderer 経由 (ADR 0024 / 0025):
  *   - server: each を sync 評価 → 各 item に children() 呼んで Node 作る +
- *     `<!--for-->` anchor。each 空なら fallback。children は元々関数なので
- *     遅延評価で問題ない (Show / Switch と違って inactive children 問題が無い)
+ *     `<!--for-->` anchor。each 空なら fallback() を呼ぶ
  *   - client (mount): 初期 entries を effect 前に sync 構築、effect 初回は skip
  *   - client (hydrate): 同 flow が HydrationRenderer 上で動く
  *
- * **B-3c-4 の制約**: `fallback` は h() 引数評価で eager 評価される。`<For each={list}
- * fallback={<X />}>` で list が非空のとき、fallback Node も作られて cursor 過剰
- * 消費 → mismatch する。完全な hydrate 対応には B-4 (children getter 化) で
- * fallback も `() => Node` 化する必要がある。本 ADR では構造変更のみ。
+ * fallback は **getter** (`() => Node`) で受ける (ADR 0025、B-4)。each 空の時のみ
+ * 呼ばれ、list 非空ケースの cursor 過剰消費問題が解消する。
  */
 export function For<T>(props: ForProps<T>): Node {
   const renderer = getRenderer();
 
   // server mode: each を sync 評価 → 各 item を children() で Node 化 + anchor。
-  // 空リストなら fallback、それも無ければ anchor のみ。
+  // 空リストなら fallback getter を呼ぶ、それも無ければ anchor のみ。
   if (renderer.isServer) {
     const list = props.each;
     const fragment = renderer.createFragment();
     if (list.length === 0) {
-      if (props.fallback) renderer.appendChild(fragment, props.fallback);
+      const fb = callOrUseFallback(props.fallback);
+      if (fb) renderer.appendChild(fragment, fb);
     } else {
       for (let i = 0; i < list.length; i++) {
         const item = list[i]!;
@@ -62,8 +70,9 @@ export function For<T>(props: ForProps<T>): Node {
   const fragment = renderer.createFragment();
   const initialList = props.each;
   if (initialList.length === 0) {
-    if (props.fallback) {
-      fallbackNode = props.fallback;
+    const fb = callOrUseFallback(props.fallback);
+    if (fb) {
+      fallbackNode = fb;
       renderer.appendChild(fragment, fallbackNode);
     }
   } else {
@@ -101,9 +110,12 @@ export function For<T>(props: ForProps<T>): Node {
         owner.dispose();
       }
       entries.clear();
-      if (props.fallback && fallbackNode === null && parent) {
-        fallbackNode = props.fallback;
-        parent.insertBefore(fallbackNode, anchor);
+      if (fallbackNode === null && parent) {
+        const fb = callOrUseFallback(props.fallback);
+        if (fb) {
+          fallbackNode = fb;
+          parent.insertBefore(fallbackNode, anchor);
+        }
       }
       return;
     }

@@ -10,57 +10,64 @@ type MatchDescriptor = {
   readonly [MATCH_SYMBOL]: true;
   /** Switch の effect 内から呼ぶ。props を毎回 proxy 経由で読むため関数で包む。 */
   readonly readWhen: () => unknown;
-  readonly child: Node | null;
+  /** active になった時のみ Switch 側で呼んで Node を取得 (ADR 0025、B-4 getter 化)。 */
+  readonly readChild: () => Node | null;
 };
 
 type MatchProps = {
   when: unknown;
-  children?: Node;
+  // 公開型は Node または `() => Node` の union。TS 的には JSX `<Match>{<Y/>}</Match>` の
+  // children は Node、手書きで `() => node` を渡すなら関数型。runtime では transform
+  // が JSX child を `() => Node` に thunk 化する (callOrUse helper で吸収)。
+  children?: Node | (() => Node);
 };
+
+// children / fallback は transform 経由なら () => Node、手書きなら Node が来る。
+function callOrUse(c: unknown): Node | null {
+  if (c == null) return null;
+  if (typeof c === "function") return (c as () => Node)();
+  return c as Node;
+}
 
 /**
  * <Switch> 内の分岐を表す marker。Match 自体は DOM を作らず、親 Switch が走査で
  * 参照する descriptor を返す。Switch の外で直接使うと何も表示されない。
  *
- * `when` は proxy で読むたび評価される (= reactive) が、descriptor 上では readWhen
- * 関数で包んで Switch の effect 内から毎回読み直せるようにする。値コピー保存だと
- * 初回評価で固定されて再評価されない。
+ * `children` は **getter** (`() => Node`) で受け取り、Switch 側で active になった
+ * Match のみ child を呼ぶ (ADR 0025)。inactive Match の children は評価されない。
  */
 export function Match(props: MatchProps): Node {
   const descriptor: MatchDescriptor = {
     [MATCH_SYMBOL]: true,
     readWhen: () => props.when,
-    child: props.children ?? null,
+    readChild: () => callOrUse(props.children),
   };
   return descriptor as unknown as Node;
 }
 
 type SwitchProps = {
-  children?: Node | Node[];
-  fallback?: Node;
+  /** transform 経由なら `() => MatchDescriptor` の配列、手書きなら descriptor 直 / 配列 */
+  children?: unknown;
+  fallback?: Node | (() => Node);
 };
 
 /**
  * 多分岐 primitive。Match children を順に評価し、when が真になった最初の 1 つの
  * child を mount する (早い者勝ち)。全て false なら fallback (あれば)。
  *
- * server / client / hydrate 共通の renderer 経由 (ADR 0023):
- *   - server: 各 Match の readWhen を sync 評価 → active child + `<!--switch-->`
- *     anchor を返す (inactive Match の child は捨てる)
- *   - client (mount): 初期 active を fragment に append、effect 初回は skip
- *   - client (hydrate): 同 flow が HydrationRenderer 上で動く
+ * children / fallback は **getter** で受け取る (ADR 0025、B-4):
+ *   - children は `() => MatchDescriptor` の配列 (transform 経由) もしくは
+ *     descriptor 直渡し / 配列 (手書き)。collectMatches で全パターンを吸収
+ *   - fallback は `() => Node` で active Match 無し時のみ呼ぶ
+ *   - Match descriptor の readChild は active になった時のみ呼ばれる
  *
- * **B-3c-3 の制約**: Match の child / fallback は h() 引数評価で **すべて** eager
- * 評価されるため、複数 Match の children が常に作られる。SSR markup には active
- * 1 つしか出ないので、`<Switch>` を持つ subtree の hydrate は cursor mismatch する
- * (`Switch` 自身は anchor を吐くが内部の inactive children が cursor 過剰消費)。
- * 完全な hydrate 対応には B-4 (children getter 化) が必要。本 ADR では構造変更のみ。
+ * server / client / hydrate 共通の renderer 経由 (ADR 0023, 0025)。
  */
 export function Switch(props: SwitchProps): Node {
   const matches = collectMatches(props.children);
   const renderer = getRenderer();
 
-  // server mode: 各 Match の when を sync 評価 → active child + anchor を返す。
+  // server mode: 各 Match の when を sync 評価 → active の readChild + anchor を返す。
   // 全 false なら fallback、それも無ければ anchor のみ。
   if (renderer.isServer) {
     let active: Node | null = null;
@@ -68,11 +75,11 @@ export function Switch(props: SwitchProps): Node {
       const w = m.readWhen();
       const v = typeof w === "function" ? (w as () => unknown)() : w;
       if (v) {
-        active = m.child;
+        active = m.readChild();
         break;
       }
     }
-    active ??= props.fallback ?? null;
+    active ??= callOrUse(props.fallback);
     const fragment = renderer.createFragment();
     if (active !== null) renderer.appendChild(fragment, active);
     renderer.appendChild(fragment, renderer.createComment("switch"));
@@ -80,17 +87,17 @@ export function Switch(props: SwitchProps): Node {
   }
 
   // --- client mode (mount / hydrate 共通、renderer 経由) ---
-  // initial active を effect の前に sync 評価して fragment を組む。
-  let initialActive: Node | null = null;
-  for (const m of matches) {
-    const w = m.readWhen();
+  let initialActiveIndex = -1;
+  for (let i = 0; i < matches.length; i++) {
+    const w = matches[i]!.readWhen();
     const v = typeof w === "function" ? (w as () => unknown)() : w;
     if (v) {
-      initialActive = m.child;
+      initialActiveIndex = i;
       break;
     }
   }
-  initialActive ??= props.fallback ?? null;
+  const initialActive =
+    initialActiveIndex >= 0 ? matches[initialActiveIndex]!.readChild() : callOrUse(props.fallback);
 
   const anchor = renderer.createComment("switch");
   const fragment = renderer.createFragment();
@@ -98,37 +105,38 @@ export function Switch(props: SwitchProps): Node {
   renderer.appendChild(fragment, anchor);
 
   let currentBranch: Node | null = initialActive;
+  // active Match の index を記憶 (-1 = fallback)。Node identity ではなく index で
+  // 判定することで、毎回新 Node を返す getter でも誤 swap を起こさない。
+  let activeIndex = initialActiveIndex;
 
-  // effect 初回 invocation は initial state setup 済みのため skip。dependency
-  // (各 Match の when) は effect body 内で readWhen() 経由で読まれるため subscribe
-  // される。signal の変化で 2 回目以降 invocation が本来の切替 logic に入る。
   let initialEffect = true;
   effect(() => {
-    let next: Node | null = null;
-    for (const m of matches) {
-      if (m.readWhen()) {
-        next = m.child;
+    let nextIndex = -1;
+    for (let i = 0; i < matches.length; i++) {
+      if (matches[i]!.readWhen()) {
+        nextIndex = i;
         break;
       }
     }
-    next ??= props.fallback ?? null;
 
     if (initialEffect) {
       initialEffect = false;
       return;
     }
 
-    if (currentBranch === next) return;
+    if (nextIndex === activeIndex) return;
 
     if (currentBranch !== null) {
       currentBranch.parentNode?.removeChild(currentBranch);
+      currentBranch = null;
     }
 
+    const next = nextIndex >= 0 ? matches[nextIndex]!.readChild() : callOrUse(props.fallback);
     if (next !== null) {
       anchor.parentNode?.insertBefore(next, anchor);
     }
-
     currentBranch = next;
+    activeIndex = nextIndex;
   });
 
   onCleanup(() => {
@@ -139,13 +147,15 @@ export function Switch(props: SwitchProps): Node {
   return fragment;
 }
 
-// children から MATCH_SYMBOL 付き descriptor だけを抜き出す。
-function collectMatches(children: SwitchProps["children"]): MatchDescriptor[] {
+// children を走査して MatchDescriptor だけを抜き出す。transform 経由 (`() =>
+// MatchDescriptor` の配列 / 単一) と手書き (descriptor 直 / 配列) を吸収する。
+function collectMatches(children: unknown): MatchDescriptor[] {
   if (children == null) return [];
   const list = Array.isArray(children) ? children : [children];
   const result: MatchDescriptor[] = [];
   for (const c of list) {
-    if (isMatchDescriptor(c)) result.push(c);
+    const value = typeof c === "function" ? (c as () => unknown)() : c;
+    if (isMatchDescriptor(value)) result.push(value);
   }
   return result;
 }
