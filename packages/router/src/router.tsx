@@ -10,10 +10,12 @@ import { currentParams, currentPathname, navigate } from "./navigation";
 import { _getSubmissionMutator, _registerDispatcher, type SubmissionError } from "./action";
 
 // ADR 0038: Router 内 dispatch の mutator 引数 shape (action.ts と整合)。
+// ADR 0040 (Phase 4 step 1): setInput を form 経路でも呼ぶため interface に追加。
 type SubmissionMutator = {
   setResult: (r: unknown) => void;
   setError: (e: SubmissionError) => void;
   setPending: (v: boolean) => void;
+  setInput: (v: Record<string, unknown> | undefined) => void;
   isPending: () => boolean;
 };
 
@@ -276,8 +278,18 @@ export function Router(props: RouterProps): Node {
     form: HTMLFormElement,
     mutator: SubmissionMutator,
   ): Promise<void> {
+    // ADR 0040 review fix #1: 連打 guard は setInput **より前** に置く。
+    // ADR の lifecycle 表「連打 guard で no-op になった呼出 → input は上書き
+    // されない」を form 経路でも守るため、programmatic 経路 (submit() factory)
+    // と guard 位置を揃える。dispatchSubmit 冒頭の isPending guard は直接呼出
+    // 防衛として残す (= 二重チェック)。
+    if (mutator.isPending()) return;
     const path = form.getAttribute("action") || currentPathname.value;
     const fd = new FormData(form);
+    // ADR 0040: 楽観的 preview 用 input を dispatch 前に確定。
+    // FormData の重複 key (= multi-value) は last-wins で潰れる、production では
+    // qs ライブラリ等で richer decoding するが toy 段階の妥協。
+    mutator.setInput(Object.fromEntries(fd as unknown as Iterable<[string, FormDataEntryValue]>));
     await dispatchSubmit(path, mutator, () =>
       fetch(path, { method: "POST", body: fd, headers: { Accept: "application/json" } }),
     );

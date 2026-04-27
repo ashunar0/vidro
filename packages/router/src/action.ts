@@ -81,7 +81,27 @@ export type Submission<T> = {
   value: Signal<T | undefined>;
   pending: Signal<boolean>;
   error: Signal<SubmissionError | undefined>;
-  /** state を初期化 (value/error/pending を全てクリア)。 */
+  /**
+   * 直近 submit に渡された入力 (= 楽観的 preview の素材、Phase 4 step 1)。
+   *
+   * lifecycle:
+   *   - 初期値: undefined
+   *   - submit 開始時 (form / programmatic 共通): normalize した入力で書き換え
+   *   - 完了 (success / error / redirect): 保持 (= 「最終入力」を UI 側で読み続けられる)
+   *   - 次の submit: 上書き
+   *   - `reset()`: undefined に戻す
+   *
+   * normalize ルール (詳細は normalizeSubmitInput):
+   *   FormData → Object.fromEntries (重複 key は last-wins)
+   *   URLSearchParams → Object.fromEntries
+   *   plain object → そのまま (shallow clone)
+   *   undefined → undefined
+   *
+   * 典型用途: `<Show when={sub.pending.value && sub.input.value}>` で submit 中だけ
+   * pending 行を render し、loader 自動 revalidate で本物に置換される自然な UX に。
+   */
+  input: Signal<Record<string, unknown> | undefined>;
+  /** state を初期化 (value/error/pending/input を全てクリア)。 */
   reset(): void;
   /** `<form {...sub.bind()}>` で spread。`data-vidro-sub` attribute 1 個を返す。 */
   bind(): { "data-vidro-sub": string };
@@ -96,12 +116,15 @@ type SubmissionMutator = {
   setResult: (r: unknown) => void;
   setError: (e: SubmissionError) => void;
   setPending: (v: boolean) => void;
+  /** 楽観的 preview 用の入力を保持 (Phase 4 step 1)。dispatch 前に呼ぶ。 */
+  setInput: (v: Record<string, unknown> | undefined) => void;
   isPending: () => boolean;
   // signal を expose して submission() factory が外から読めるように。
-  // factory の戻り値 (Submission<T>) で .value / .pending / .error を返すため。
+  // factory の戻り値 (Submission<T>) で .value / .pending / .error / .input を返すため。
   _value: Signal<unknown>;
   _pending: Signal<boolean>;
   _error: Signal<SubmissionError | undefined>;
+  _input: Signal<Record<string, unknown> | undefined>;
 };
 
 /** `submit()` が依頼する dispatch 仕様。Router 側 (client mode) が実装を提供。 */
@@ -131,6 +154,7 @@ export function _resetRegistryForTest(): void {
     m._value.value = undefined;
     m._error.value = undefined;
     m._pending.value = false;
+    m._input.value = undefined;
   });
 }
 
@@ -187,6 +211,11 @@ export function submission<A extends AnyAction = AnyAction>(
       return;
     }
 
+    // input signal は dispatch 前に確定させる。dispatcher 内で setPending(true) →
+    // fetch する間に JSX 側が `pending && input` を読んで pending row を render
+    // できるよう、順序は input → dispatcher の順を守る。
+    mutator.setInput(normalizeSubmitInput(input));
+
     const path = opts?.action ?? defaultPathname();
     const { body, headers } = encodeSubmitBody(input, opts?.encoding);
     await _dispatcher.dispatch(path, mutator, { body, headers });
@@ -196,10 +225,12 @@ export function submission<A extends AnyAction = AnyAction>(
     value: mutator._value as Signal<Awaited<ReturnType<A>> | undefined>,
     pending: mutator._pending,
     error: mutator._error,
+    input: mutator._input,
     reset() {
       mutator._value.value = undefined;
       mutator._error.value = undefined;
       mutator._pending.value = false;
+      mutator._input.value = undefined;
     },
     bind() {
       return { "data-vidro-sub": key };
@@ -216,6 +247,7 @@ function getOrCreateMutator(key: string): SubmissionMutator {
   const value = signal<unknown>(undefined);
   const pending = signal(false);
   const error = signal<SubmissionError | undefined>(undefined);
+  const input = signal<Record<string, unknown> | undefined>(undefined);
 
   mutator = {
     setResult(r) {
@@ -229,12 +261,16 @@ function getOrCreateMutator(key: string): SubmissionMutator {
     setPending(v) {
       pending.value = v;
     },
+    setInput(v) {
+      input.value = v;
+    },
     isPending() {
       return pending.value;
     },
     _value: value,
     _pending: pending,
     _error: error,
+    _input: input,
   };
   _registry.set(key, mutator);
   return mutator;
@@ -291,6 +327,30 @@ function encodeSubmitBody(
     body: JSON.stringify(input),
     headers: { "Content-Type": "application/json" },
   };
+}
+
+/**
+ * `submission.input` 用に submit 入力を `Record<string, unknown>` に正規化 (Phase 4 step 1)。
+ * UI は `sub.input.value?.title` のように field 単位で読む想定。
+ *
+ * ルール:
+ *   - undefined / null → undefined (= 「入力なし」明示)
+ *   - FormData → Object.fromEntries (重複 key は last-wins、File 値はそのまま保持)
+ *   - URLSearchParams → Object.fromEntries (重複 key は last-wins)
+ *   - plain object → shallow clone (caller の参照を握って後から書き換えられても影響しない)
+ *
+ * 注意: 重複 key (e.g. `<input name="tag" multiple>`) は last-wins で潰れる。
+ * 楽観 preview には toy 段階で十分。production 化時は qs ライブラリで richer decoding。
+ */
+function normalizeSubmitInput(input: SubmitInput | undefined): Record<string, unknown> | undefined {
+  if (input == null) return undefined;
+  if (input instanceof FormData) {
+    return Object.fromEntries(input as unknown as Iterable<[string, FormDataEntryValue]>);
+  }
+  if (input instanceof URLSearchParams) {
+    return Object.fromEntries(input as unknown as Iterable<[string, string]>);
+  }
+  return { ...input };
 }
 
 /**

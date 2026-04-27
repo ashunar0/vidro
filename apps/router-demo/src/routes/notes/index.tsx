@@ -2,12 +2,14 @@ import { Show } from "@vidro/core";
 import { submission, type PageProps } from "@vidro/router";
 import type { action, loader } from "./server";
 
-// ADR 0038 Phase 3 R-mid-1 の動作確認 demo。
+// ADR 0038 Phase 3 R-mid-1 + ADR 0040 Phase 4 step 1 の動作確認 demo。
 // - `submission(key)` で per-key state (registry に永続)。
 //   loader 自動 revalidate (= component swap) を跨いで result が保持される。
 // - 各 form に `{...subX.bind()}` を spread (data-vidro-sub attribute = key)
 // - intent 分岐 (R-mid-2) を hidden input + action 内分岐で実現
 // - delete button の form は note 行ごとに生やす (per-form state は共通の subDelete)
+// - **楽観的 preview** (ADR 0040): submit 中だけ `subCreate.input` から pending 行を
+//   仮表示。loader revalidate 完了で本物に置換される自然な UX。
 export default function NotesPage({ data }: PageProps<typeof loader>) {
   const subCreate = submission<typeof action>("create");
   const subDelete = submission<typeof action>("delete");
@@ -35,6 +37,16 @@ export default function NotesPage({ data }: PageProps<typeof loader>) {
             </form>
           </li>
         ))}
+        {/* ADR 0040: pending && input の AND ガードで submit 中だけ仮行を出す。
+            loader revalidate で本物の note が data.notes に入ったタイミングで
+            pending=false に戻る → この li は自然消滅。 */}
+        <Show when={subCreate.pending.value && subCreate.input.value}>
+          {() => (
+            <li style="opacity: 0.5;" data-testid="pending-note">
+              {`(adding) ${(subCreate.input.value?.title as string | undefined) ?? ""}`}
+            </li>
+          )}
+        </Show>
       </ul>
 
       <form method="post" {...subCreate.bind()}>
