@@ -15,8 +15,15 @@ type RouteModule = { default: (props?: Record<string, unknown>) => Node };
 type RouteLoader = () => Promise<RouteModule>;
 
 // router.tsx 側から layout loader 実行に使うので export。
+// action は ADR 0037 (Phase 3 R-min) で追加。同 server.ts module 内で loader と
+// 共存する形 (Remix と同じ)。引数は { request, params }、戻り値は plain value
+// または `Response` (= redirect 用)。throw は SerializedError 形式で client に伝播。
 export type ServerModule = {
   loader?: (args: { params: Record<string, string> }) => Promise<unknown>;
+  action?: (args: {
+    request: Request;
+    params: Record<string, string>;
+  }) => Promise<unknown> | unknown;
 };
 export type ServerModuleLoader = () => Promise<ServerModule>;
 

@@ -28,3 +28,8 @@ export type {
   RouteMap,
   Routes,
 } from "./page-props";
+// ADR 0037 Phase 3 R-min — action primitive。submission() factory + ActionArgs<R>
+// で server action と form を結ぶ。internal mutator (`_set*`) は router.tsx
+// (form delegation) からのみ参照。
+export { submission } from "./action";
+export type { Submission, SubmissionError, ActionArgs, AnyAction } from "./action";

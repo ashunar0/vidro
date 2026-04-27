@@ -51,8 +51,9 @@ export type CreateServerHandlerOptions = {
 /**
  * dev / prod 共通の server handler。
  *   1. `/__loader?path=...` → loader 並列実行 + JSON
- *   2. navigation (accept: text/html, ctx.assets あり) → index.html + data inject
- *   3. それ以外 → 404 (entry 側で assets fallback する前提)
+ *   2. POST request → action 呼出 + loader 自動 revalidate (ADR 0037 Phase 3 R-min)
+ *   3. navigation (accept: text/html, ctx.assets あり) → index.html + data inject
+ *   4. それ以外 → 404 (entry 側で assets fallback する前提)
  */
 export function createServerHandler(options: CreateServerHandlerOptions): ServerHandler {
   const { manifest, endpoint = "/__loader" } = options;
@@ -63,6 +64,13 @@ export function createServerHandler(options: CreateServerHandlerOptions): Server
 
     if (url.pathname === endpoint) {
       return handleLoaderEndpoint(url, compiled);
+    }
+
+    // POST は accept より method 優先で分岐 (form submit / programmatic 両対応)。
+    // R-min は form (multipart / x-www-form-urlencoded) 経路のみ。programmatic な
+    // useSubmit({json}) は R-mid 以降。
+    if (request.method === "POST") {
+      return handleAction(url, request, compiled);
     }
 
     const accept = request.headers.get("accept") ?? "";
@@ -83,6 +91,73 @@ async function handleLoaderEndpoint(url: URL, compiled: CompiledFromRoutes): Pro
   }
   const data = await gatherRouteData(path, compiled);
   return jsonResponse(200, data);
+}
+
+/**
+ * POST handler — Phase 3 R-min (ADR 0037、Remix-style action)。
+ *
+ *   1. pathname から match を計算、match.server.action を解決
+ *   2. action が無い (= server.ts に export 不在 / route match 不在) → 405
+ *   3. action throw → SerializedError JSON で 500 (client 側 submission.error に流す)
+ *   4. action 戻り値が `Response` → そのまま return (= `Response.redirect()` 経由の
+ *      navigation や任意 status code の制御を server side で完結させる)
+ *   5. plain value 戻り値 → loader を 自動 revalidate して
+ *      `{ actionResult, loaderData: {params, layers} }` を JSON で返却
+ *
+ * loader 自動 revalidate: action 後に同 path の loader 群を再実行し、その結果を
+ * response に同梱する (Remix の "POST/Redirect/GET" pattern を JSON 経路で代替)。
+ * client 側 router は受け取った loaderData を bootstrap data として上書きしつつ
+ * reload trigger を発火し、effect 経路で foldRouteTree 再実行 → swap する。
+ *
+ * R-min は form 経路 (multipart / x-www-form-urlencoded) のみ前提だが、本 handler
+ * 自体は content-type を見ない (= action 内で `request.formData()` を呼ぶ user
+ * code に委譲)。programmatic な JSON encoding は R-mid で `useSubmit({json})` と
+ * 一緒に正式対応。
+ */
+async function handleAction(
+  url: URL,
+  request: Request,
+  compiled: CompiledFromRoutes,
+): Promise<Response> {
+  const match = matchRoute(url.pathname, compiled);
+  if (!match.server) {
+    return jsonResponse(405, {
+      error: {
+        name: "NoActionError",
+        message: `no server module for route ${url.pathname}`,
+      },
+    });
+  }
+
+  let serverMod: ServerModule;
+  try {
+    serverMod = (await match.server.load()) as ServerModule;
+  } catch (err) {
+    return jsonResponse(500, { error: serializeError(err) });
+  }
+
+  if (!serverMod.action) {
+    return jsonResponse(405, {
+      error: {
+        name: "NoActionError",
+        message: `no action exported for route ${url.pathname}`,
+      },
+    });
+  }
+
+  let result: unknown;
+  try {
+    result = await serverMod.action({ request, params: match.params });
+  } catch (err) {
+    return jsonResponse(500, { error: serializeError(err) });
+  }
+
+  // Response 戻り値はそのまま return (redirect / 任意 status code 用)
+  if (result instanceof Response) return result;
+
+  // plain value → action result + loader 自動 revalidate
+  const loaderData = await gatherRouteData(url.pathname, compiled);
+  return jsonResponse(200, { actionResult: result, loaderData });
 }
 
 async function handleNavigation(

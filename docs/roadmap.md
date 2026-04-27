@@ -114,7 +114,15 @@ Phase 4 (data / form) より先にここを固めることで、`resource` primi
       merge / ADR 0033)
 - [x] **Phase C-3 review fixes**: window resources 化 (race 根治) / shell-pass
       `controller.error` 明示 / cross-boundary key dev warn (ADR 0034)
-- [ ] **Phase C 残**: 段階 hydration (boundary 単位で順次 hydrate)
+- [x] **Phase C 段階 hydration の機構整備**: cursor 切り出し / start/end marker
+      残置 / `__vidroPendingHydrate` registry / `window.__vidroResources` 直接
+      lookup (ADR 0035)
+- [x] **Phase C TTI 改善**: shell flush 直後 inline `<script>` boot trigger +
+      bundle `<head>` async + `__vidroBoot` registry trampoline (ADR 0036)
+- [ ] **Phase C 残**: boundary owner の dispose API
+      (`tryHydrateBoundary` の root Owner leak 解消)
+- [ ] **Phase C 残**: shell hydrate 中の fallback hydrate
+      (cursor pause/resume stack or fallback 専用 sub-cursor)
 - [ ] **Phase C 残**: true full out-of-order (内側 nested Suspense も独立 chunk 化)
 - [ ] **Phase C 残**: shell-pass error → Phase A degrade 復活
 
@@ -180,17 +188,19 @@ Phase 4 (data / form) より先にここを固めることで、`resource` primi
 1. ~~**Phase 1 の残り**~~ — 完了
 2. ~~**Phase 2 の最小版**~~ — 完了 (Private `_` prefix と `useSearchParam` だけ残)
 3. ~~**Phase 3 の loader のみ先行**~~ — 完了 ("Remix 最小版" 相当が動く)
-4. ~~**Phase 3.5 SSR**~~ — streaming SSR (Phase C-1+C-2) まで完了
-5. **次の選択肢** ← イマココ
-   - (A) **Phase 3.5 Phase C 最適化**: out-of-order streaming / 段階 hydration
-   - (B) **Phase 4 resource API 拡張**: mutate / AbortController
-   - (C) **Phase 3 action / RPC**: 型貫通の山場、RPC 方式の判断必要
-6. **Phase 5 Cloudflare target** → **Phase 6 architecture pack**
+4. ~~**Phase 3.5 SSR**~~ — streaming SSR (Phase C-1+C-2+C-3) + 段階 hydration
+   機構 (ADR 0035) + TTI 改善 (ADR 0036) まで完了
+5. **Phase 3 action / RPC** ← イマココ
+   - 型貫通の山場、RPC 方式の判断 (Remix 式 vs tRPC 式) が必要
+6. **Phase 4 resource API 拡張** (action と組み合わせて mutate / AbortController を設計)
+7. **Phase 3.5 残**: boundary owner dispose / fallback hydrate / true full out-of-order
+8. **Phase 5 Cloudflare target** → **Phase 6 architecture pack**
 
-Phase 2 + Phase 3 loader + Phase 3.5 SSR が揃った時点で **Vidro として最小
-成立済み** (router-demo が SSR + bootstrap + reactive source で blink 無く
-動く)。次は action / RPC で「書き込み側」を埋めるか、SSR を更に詰めるかの
-判断ポイント。
+Phase 2 + Phase 3 loader + Phase 3.5 SSR (streaming + 段階 hydration + TTI) が
+揃った時点で **Vidro として最小成立 + production レベルの SSR 体験** が動く
+(router-demo が out-of-order streaming + shell hydrate 先行発火 + boundary 単位
+hydrate で blink 無く動く)。次は action / RPC で「書き込み側」を埋め、双方向
+通信で FW の核心を完成させる。
 
 ---
 
