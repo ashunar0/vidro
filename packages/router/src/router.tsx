@@ -362,13 +362,16 @@ function foldRouteTree(input: FoldInput): Node {
   };
 
   // layout を ErrorBoundary で wrap し、render error 時にその layer より外側の
-  // error.tsx で置き換える。children を引数として closure に凍結するのは、
-  // 呼び側 (fold ループ) で `node` 変数が次のループで上書きされるのを防ぐため。
+  // error.tsx で置き換える。children は **`() => Node` の getter** で受け取り
+  // (ADR 0026、B-4-b)、layoutMod.default に getter のまま渡す。user の layout
+  // 側で `<main>{children}</main>` の `{children}` は _$dynamicChild の 0-arg
+  // function auto-invoke で展開される。これで JSX 評価順が SSR の post-order
+  // (depth-first) と一致するようになり、hydrate cursor mismatch が解消される。
   const wrapLayout = (
     layoutMod: RouteModule,
     layerPathPrefix: string,
     data: unknown,
-    children: Node,
+    children: () => Node,
   ): Node =>
     ErrorBoundary({
       fallback: (err) => renderError(err, selectErrorMod(layerPathPrefix), match.params, reset),
@@ -388,22 +391,24 @@ function foldRouteTree(input: FoldInput): Node {
     }
   }
 
-  let node: Node;
+  // 内側の layer から順に thunk を組み立てる。最外側 thunk を呼ぶと、ErrorBoundary
+  // の mountChildren → layoutMod.default → JSX 評価 → `{children}` で内側 thunk
+  // を auto-invoke という連鎖で depth-first に DOM を構築する (ADR 0026)。
+  let nodeFn: () => Node;
   if (errorIndex !== -1) {
     // errorIndex が layouts.length なら leaf loader error → 最寄り (null)
     // それ以外は layout[errorIndex] の pathPrefix より外側の error.tsx を使う
     const errorLayerPrefix =
       errorIndex < match.layouts.length ? match.layouts[errorIndex]!.pathPrefix : null;
-    node = renderError(loaderError, selectErrorMod(errorLayerPrefix), match.params, reset);
+    nodeFn = () => renderError(loaderError, selectErrorMod(errorLayerPrefix), match.params, reset);
     // error layer より外側の layouts で fold。外側 layouts も render error を
     // 起こしうるので wrapLayout で個別 ErrorBoundary wrap する。
     for (let i = errorIndex - 1; i >= 0; i--) {
-      node = wrapLayout(
-        componentMods[i]!,
-        match.layouts[i]!.pathPrefix,
-        loaderResults[i]!.data,
-        node,
-      );
+      const inner = nodeFn;
+      const layoutMod = componentMods[i]!;
+      const data = loaderResults[i]!.data;
+      const layerPathPrefix = match.layouts[i]!.pathPrefix;
+      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner);
     }
   } else {
     // 全 loader 成功 → 通常経路。leaf は render error catch のため ErrorBoundary
@@ -412,16 +417,21 @@ function foldRouteTree(input: FoldInput): Node {
     const leafData = loaderResults[loaderResults.length - 1]!.data;
     const layoutMods = componentMods.slice(0, -1);
 
-    node = ErrorBoundary({
-      fallback: (err) => renderError(err, selectErrorMod(null), match.params, reset),
-      onError: (err) => console.error("[router] render error:", err),
-      children: () => leafMod.default({ params: match.params, data: leafData }),
-    });
+    nodeFn = () =>
+      ErrorBoundary({
+        fallback: (err) => renderError(err, selectErrorMod(null), match.params, reset),
+        onError: (err) => console.error("[router] render error:", err),
+        children: () => leafMod.default({ params: match.params, data: leafData }),
+      });
     for (let i = layoutMods.length - 1; i >= 0; i--) {
-      node = wrapLayout(layoutMods[i]!, match.layouts[i]!.pathPrefix, loaderResults[i]!.data, node);
+      const inner = nodeFn;
+      const layoutMod = layoutMods[i]!;
+      const data = loaderResults[i]!.data;
+      const layerPathPrefix = match.layouts[i]!.pathPrefix;
+      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner);
     }
   }
-  return node;
+  return nodeFn();
 }
 
 // ---- error helpers (renderer 経由) ----

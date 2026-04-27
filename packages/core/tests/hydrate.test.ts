@@ -400,6 +400,42 @@ describe("hydrate", () => {
     expect(container.textContent).toBe("ok");
   });
 
+  test("layout + leaf 構造で children getter (() => Node) が _$dynamicChild で auto-invoke されて hydrate できる (B-4-b)", () => {
+    // foldRouteTree の inside-out fold 順序問題 (ADR 0020 で表面化、ADR 0026 で
+    // 構造的解決) の最小再現。layout が `<main>{children}</main>` の形で leaf を
+    // 埋め込むケース。children を `() => Node` で渡すと、_$dynamicChild の 0-arg
+    // function auto-invoke (ADR 0026) で展開され、SSR depth-first 順と一致する。
+    const Leaf = () => h("h2", null, _$text("Leaf"));
+    const Layout = (props: { children: Node }) =>
+      h(
+        "div",
+        { class: "root" },
+        h("h1", null, _$text("Layout")),
+        h(
+          "main",
+          null,
+          _$dynamicChild(() => props.children),
+        ),
+      );
+    // layout の children に getter を渡す: foldRouteTree の B-4-b 改修と同じ形
+    const App = () => Layout({ children: (() => Leaf()) as unknown as Node });
+
+    const container = ssrInto(App);
+    // 期待 markup: <div class="root"><h1>Layout</h1><main><h2>Leaf</h2></main></div>
+    expect(container.innerHTML).toBe(
+      '<div class="root"><h1>Layout</h1><main><h2>Leaf</h2></main></div>',
+    );
+    const divBefore = container.firstChild;
+    const h2Before = container.querySelector("h2");
+
+    hydrate(App, container);
+
+    // hydrate 後も同一 Node を再利用 (DOM 再生成なし、cursor mismatch なし)
+    expect(container.firstChild).toBe(divBefore);
+    expect(container.querySelector("h2")).toBe(h2Before);
+    expect(container.textContent).toBe("LayoutLeaf");
+  });
+
   test("text content mismatch は warn + override", () => {
     const App = () => h("h1", null, _$text("expected"));
     const container = document.createElement("div");

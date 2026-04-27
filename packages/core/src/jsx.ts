@@ -132,7 +132,17 @@ export function _$text(value: unknown): Node {
  */
 export function _$dynamicChild(thunk: () => unknown): Node {
   const r = getRenderer();
-  const peeked = untrack(thunk);
+  let peeked = untrack(thunk);
+
+  // 0-arg 関数は children getter として auto-invoke する (ADR 0026、B-4-b)。
+  // layout の `<main>{children}</main>` で children が `() => Node` の形で
+  // 渡ってきた時に、user 側で `{children()}` と書かなくても展開できるようにする。
+  // jsx.ts の handwritten path (appendChild) も同じく function を auto-invoke
+  // する設計と一貫性を持たせる。length !== 0 (例: For の (item, i) => ...) は
+  // render callback として素通し (本 helper には到達しないが念のため)。
+  if (typeof peeked === "function" && (peeked as Function).length === 0) {
+    peeked = (peeked as () => unknown)();
+  }
 
   if (Array.isArray(peeked)) {
     const frag = r.createFragment();
@@ -163,6 +173,9 @@ export function _$dynamicChild(thunk: () => unknown): Node {
   const text = r.createText(toText(peeked));
   effect(() => {
     let v = thunk();
+    // reactive update path も auto-invoke (children が signal で差し替わる
+    // ようなケースは無いが、対称性のため)。
+    if (typeof v === "function" && (v as Function).length === 0) v = (v as () => unknown)();
     if (v instanceof Signal) v = v.value;
     r.setText(text, toText(v));
   });
