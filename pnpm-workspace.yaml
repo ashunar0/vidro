@@ -12,10 +12,10 @@ catalog:
   "@tailwindcss/vite": ^4.2.4
   "@types/babel__generator": ^7.27.0
   "@types/babel__traverse": ^7.28.0
-  "@types/node": ^24
+  "@types/node": ^25.5.0
   jsdom: ^29.0.2
   tailwindcss: ^4.2.4
-  typescript: ^5
+  typescript: ^6.0.2
   vite: npm:@voidzero-dev/vite-plus-core@latest
   vite-plus: latest
   vitest: npm:@voidzero-dev/vite-plus-test@latest
@@ -25,9 +25,11 @@ overrides:
   vite: "catalog:"
   vitest: "catalog:"
   # vite-plus alpha 期間中の dedup hack。CF plugin が transitive に古い
-  # vite-plus-core (0.1.19) を引き込み、`vite: npm:vite-plus-core@latest` の
-  # 解決と path 違いで TS が `Plugin<any>[]` を別型扱いし `tsc -b` が
-  # "Excessive stack depth" を起こしていた。stable 後は撤去できる (ADR 0045)。
+  # vite-plus-core を引き込まないよう version を pin。
+  # 注 (36th session 訂正): `Plugin<any>[]` "Excessive stack depth" の真因は
+  # version 差ではなく **peer dep 違い (typescript / @types/node)** で
+  # vite-plus-core が複数 instance に分裂することだった。version pin は副次。
+  # 主因は catalog で peer 系を 1 version に揃えること (ADR 0045 follow-up)。
   "@voidzero-dev/vite-plus-core": "0.1.20"
   "@voidzero-dev/vite-plus-test": "0.1.20"
   "vite-plus": "0.1.20"

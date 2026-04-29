@@ -14,5 +14,5 @@ export default defineConfig({
   build: {
     outDir: ".vidro/build",
   },
-  plugins: [cloudflare({ viteEnvironment: { name: "ssr" } }), ...vidro({ router: true })],
+  plugins: [cloudflare({ viteEnvironment: { name: "ssr" } }), vidro({ router: true })],
 });
