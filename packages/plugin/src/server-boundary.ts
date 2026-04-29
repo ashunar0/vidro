@@ -1,4 +1,4 @@
-import type { Plugin } from "vite-plus";
+import type { Plugin } from "vite";
 
 // Vidro の server boundary plugin。役割は **client bundle に server-only code を
 // 漏らさない security boundary** の 1 点 (ADR 0043 で簡素化)。

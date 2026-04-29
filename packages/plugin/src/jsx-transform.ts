@@ -2,7 +2,7 @@ import { parse } from "@babel/parser";
 import _traverse, { type NodePath } from "@babel/traverse";
 import _generate from "@babel/generator";
 import * as t from "@babel/types";
-import type { Plugin } from "vite-plus";
+import type { Plugin } from "vite";
 
 // @babel/traverse / @babel/generator は ESM 互換性のために default.default を持つことがある
 const traverse = (_traverse as unknown as { default?: typeof _traverse }).default ?? _traverse;
@@ -53,6 +53,23 @@ export function jsxTransform(): Plugin {
   return {
     name: "vidro-jsx-transform",
     enforce: "pre",
+    // user の vite.config.ts に jsx 設定を書かせないため、plugin の config() hook
+    // で必要な設定を一括で push する。React/Solid plugin と同じ流儀 (user は
+    // plugin 1 個書くだけで済む)。
+    //
+    // vite-plus は OXC ベースに移行済 (vite-plus 0.1.x で `esbuild` option は
+    // deprecated)。@vitejs/plugin-react と同じ `oxc.jsx.{runtime, importSource}` を
+    // 設定し、JSX 自動 import の解決先を Vidro の jsx-runtime に向ける。
+    config() {
+      return {
+        oxc: {
+          jsx: {
+            runtime: "automatic" as const,
+            importSource: "@vidro/core",
+          },
+        },
+      };
+    },
     transform(code, id) {
       if (!id.endsWith(".tsx")) return null;
       if (id.includes("node_modules")) return null;

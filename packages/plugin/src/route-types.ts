@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
-import type { Plugin } from "vite-plus";
+import type { Plugin } from "vite";
 
 // routes/ ディレクトリを walk して `.vidro/` 配下の静的 artifact を生成する
 // vite plugin。生成物は 3 種類:
