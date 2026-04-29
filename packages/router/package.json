@@ -16,11 +16,15 @@
       "types": "./dist/server.d.mts",
       "default": "./dist/server.mjs"
     },
+    "./client": {
+      "types": "./dist/client.d.mts",
+      "default": "./dist/client.mjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "vp pack src/index.ts src/server.ts --dts",
-    "dev": "vp pack src/index.ts src/server.ts --dts --watch",
+    "build": "vp pack src/index.ts src/server.ts src/client.ts --dts",
+    "dev": "vp pack src/index.ts src/server.ts src/client.ts --dts --watch",
     "test": "vp test",
     "typecheck": "tsc --noEmit"
   },
