@@ -9,11 +9,20 @@ import { jsxTransform, routeTypes, serverBoundary } from "@vidro/plugin";
 export default defineConfig({
   // esbuild の JSX automatic runtime を @vidro/core に向ける。tsconfig の
   // jsxImportSource は tsc 用で、vite (esbuild) の dep scan には届かないため
-  // 明示する必要がある。これがないと CF plugin の SSR env scan が
-  // `react/jsx-runtime` を探して失敗する。
+  // transform phase 用に明示する必要がある。
   esbuild: {
     jsx: "automatic",
     jsxImportSource: "@vidro/core",
+  },
+  // dep scan phase (起動時 pre-bundling) は vite-plus 0.1.x で esbuild → Rolldown
+  // 移行中で、`optimizeDeps.esbuildOptions` は deprecated。dep scanner が JSX を
+  // 見て `react/jsx-runtime` を自動 import 解決しに行くのを止めるため、resolve
+  // alias で `@vidro/core/jsx-runtime` に向け直す (tooling 中立な fix)。
+  resolve: {
+    alias: {
+      "react/jsx-runtime": "@vidro/core/jsx-runtime",
+      "react/jsx-dev-runtime": "@vidro/core/jsx-dev-runtime",
+    },
   },
   plugins: [
     cloudflare({ viteEnvironment: { name: "ssr" } }),
