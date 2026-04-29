@@ -1,10 +1,30 @@
-import { signal, computed, For } from "@vidro/core";
+import { signal, computed, effect, For } from "@vidro/core";
 
 type Todo = { id: number; text: string; done: boolean };
 
+const STORAGE_KEY = "vidro-todos";
+
+// localStorage から todo を読み込む。壊れてたり空だったら [] で開始
+function loadTodos(): Todo[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
 function App() {
-  const todos = signal<Todo[]>([]);
+  const initialTodos = loadTodos();
+
+  const todos = signal<Todo[]>(initialTodos);
   const draft = signal("");
+
+  // todos が変わるたびに localStorage に保存。effect は初回 register 時にも
+  // 1 回走る (= subscribe + 即実行)。読まれた todos.value が依存として記録される
+  effect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(todos.value));
+  });
 
   // todo を追加する
   const handleAddTodo = () => {
