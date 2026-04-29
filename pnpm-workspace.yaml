@@ -24,6 +24,13 @@ catalogMode: prefer
 overrides:
   vite: "catalog:"
   vitest: "catalog:"
+  # vite-plus alpha 期間中の dedup hack。CF plugin が transitive に古い
+  # vite-plus-core (0.1.19) を引き込み、`vite: npm:vite-plus-core@latest` の
+  # 解決と path 違いで TS が `Plugin<any>[]` を別型扱いし `tsc -b` が
+  # "Excessive stack depth" を起こしていた。stable 後は撤去できる (ADR 0045)。
+  "@voidzero-dev/vite-plus-core": "0.1.20"
+  "@voidzero-dev/vite-plus-test": "0.1.20"
+  "vite-plus": "0.1.20"
 peerDependencyRules:
   allowAny:
     - vite
