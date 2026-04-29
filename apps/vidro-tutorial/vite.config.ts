@@ -7,6 +7,13 @@ import { jsxTransform, routeTypes, serverBoundary } from "@vidro/plugin";
 // viteEnvironment.name = "ssr" で vite の SSR environment と紐付け、
 // client + server の HMR を統合 (CF docs の full-stack framework 推奨設定)。
 export default defineConfig({
+  // build artifact を `.vidro/build/{client,ssr}/` に集約する (Next.js `.next/`
+  // 流の 1 親 dir 集約)。`.vidro/` は routeTypes() の auto-gen source も置く dir
+  // なので、`build/` 階層を切って vite の `emptyOutDir` (build 前 wipe) の影響
+  // 範囲を build 出力のみに限定する (ADR 0043)。
+  build: {
+    outDir: ".vidro/build",
+  },
   // esbuild の JSX automatic runtime を @vidro/core に向ける。tsconfig の
   // jsxImportSource は tsc 用で、vite (esbuild) の dep scan には届かないため
   // transform phase 用に明示する必要がある。

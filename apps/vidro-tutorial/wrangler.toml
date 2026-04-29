@@ -5,8 +5,8 @@ main = "./.vidro/server-entry.ts"
 compatibility_date = "2026-04-17"
 
 [assets]
-# CF vite plugin の build output convention に合わせる (./dist/client)。
-directory = "./dist/client"
+# build output を .vidro/build/{client,ssr}/ に集約 (ADR 0043)。
+directory = "./.vidro/build/client"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = true

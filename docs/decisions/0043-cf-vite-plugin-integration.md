@@ -58,8 +58,8 @@ export default defineConfig({
 - dev は **workerd を vite dev server 内に in-process 起動** し、全 request を
   `wrangler.toml` の `main` (= `.vidro/server-entry.ts`) に流す
 - HMR は client + worker 両方に効く (vite ネイティブ + CF plugin の worker reload)
-- prod は CF plugin が build output を `dist/client/` (静的) + `dist/ssr/` (worker
-  bundle + flattened `wrangler.json`) に統合管理する
+- prod は CF plugin が build output を `.vidro/build/client/` (静的) +
+  `.vidro/build/ssr/` (worker bundle + flattened `wrangler.json`) に統合管理する
 - `wrangler dev` 不要、`vp dev` 1 本で完結
 
 `viteEnvironment.name = "ssr"` は CF docs の full-stack framework 推奨設定。
@@ -87,15 +87,22 @@ if (!isClientPass) return null;
 CF plugin は新 API を使い、worker pass の `name` は `"ssr"` なので stub されない。
 旧 plugin (legacy `opts.ssr`) との互換性も保つ。
 
-### 4. build output 構造を `dist/client/` + `dist/ssr/` に集約
+### 4. build output 構造を `.vidro/build/{client,ssr}/` に集約
 
 旧: `dist/` (client) + `dist-server/` (worker) の 2 階層散らばり
-新: `dist/client/` + `dist/ssr/` の **1 親 dir 集約** (Next.js `.next/` 流)
+新: `.vidro/build/client/` + `.vidro/build/ssr/` の **1 親 dir 集約** (Next.js
+`.next/` 流)。`.vidro/` は routeTypes() の auto-gen source (route-manifest.ts /
+routes.d.ts / server-entry.ts) も置く dir なので、`build/` 階層を切って vite の
+`emptyOutDir` (build 前 wipe) の影響範囲を build 出力のみに限定する。
 
-`dist/ssr/wrangler.json` は CF plugin が `wrangler.toml` を flatten して生成し、
-そのまま `wrangler deploy dist/ssr` で deploy 可能形になる。
+`vite.config.ts` で `build.outDir = ".vidro/build"` を指定し、`wrangler.toml` の
+`[assets].directory = "./.vidro/build/client"` で揃える。
 
-`.gitignore` の `dist-server` entry は削除。
+`.vidro/build/ssr/wrangler.json` は CF plugin が `wrangler.toml` を flatten して
+生成し、そのまま `wrangler deploy .vidro/build/ssr` で deploy 可能形になる。
+
+top-level の `dist` 自体は `.gitignore` に残す (router-demo 等 CF plugin 未移行の
+app は今もこの path を使うため)。
 
 ### 5. `esbuild.jsxImportSource` を vite.config で明示する
 

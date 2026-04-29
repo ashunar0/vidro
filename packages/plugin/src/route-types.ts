@@ -19,7 +19,7 @@ import type { Plugin } from "vite-plus";
 //    manifest を読み `createServerHandler(routeManifest)` を `{ fetch }` として
 //    default export する固定 snippet。`@cloudflare/vite-plugin` が
 //    `wrangler.toml` 経由で source を直接読み、dev では workerd in-process、
-//    prod では `dist/ssr/index.js` に bundle して deploy 可能形にする (ADR 0043)。
+//    prod では `.vidro/build/ssr/index.js` に bundle して deploy 可能形にする (ADR 0043)。
 //
 // 置き場は vite root 直下の `.vidro/` に集約 (ADR 0013)。tsconfig base は plugin
 // package に同梱されている (`@vidro/plugin/tsconfig.base.json`) ので、user
@@ -241,7 +241,7 @@ function renderServerEntry(): string {
   lines.push("// Cloudflare Workers 向け fetch handler。`@cloudflare/vite-plugin` が");
   lines.push('// `wrangler.toml` の `main = "./.vidro/server-entry.ts"` 経由で source を読み、');
   lines.push(
-    "// dev は workerd in-process、prod は `dist/ssr/index.js` に bundle する (ADR 0043)。",
+    "// dev は workerd in-process、prod は `.vidro/build/ssr/index.js` に bundle する (ADR 0043)。",
   );
   lines.push("");
   lines.push('import { createServerHandler } from "@vidro/router/server";');
