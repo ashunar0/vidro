@@ -119,6 +119,21 @@ For GitHub Actions, consider using [`voidzero-dev/setup-vp`](https://github.com/
 - `AI時代のフロントエンドFW プロジェクト-エデン` — 層分離・型貫通の深掘り (Session 3)
 - `エデン target syntax` — target syntax の iteration ログ
 
+## 開発ワークフロー (apps/)
+
+`apps/vidro-tutorial/` も `apps/router-demo/` も **`@cloudflare/vite-plugin` 統合済** (ADR 0043)。`vp dev` 1 本で workerd in-process + client/worker 両方の HMR が動くので、別途 `wrangler dev` を立てる必要は **無い**。
+
+```bash
+cd apps/vidro-tutorial   # or apps/router-demo
+vp dev                   # → http://localhost:5173/
+```
+
+- **dev 中の SSR 確認**: ブラウザで普通に開けば SSR + hydrate される。curl で見る時は `Accept: text/html` header 必須 (`curl -H "Accept: text/html" http://localhost:5173/`)。default の `*/*` だと worker が 404 → assets fallback で bare HTML が返る
+- **`packages/plugin` / `packages/router` 改修後**: 該当 package で `vp pack --dts` (router は `vp pack src/index.ts src/server.ts --dts` で両 entry 出力) → app の `vp dev` は HMR が拾う、ダメなら再起動
+- **build output**: `.vidro/build/{client,ssr}/`。deploy は `wrangler deploy .vidro/build/ssr` で 1 行
+- **`.vidro/` 直下**: `routeTypes()` の auto-gen source (`route-manifest.ts` / `routes.d.ts` / `server-entry.ts`) も同居している。手で編集しない
+- **旧 pipeline (`dist-server/` 経由 + `wrangler dev` 別ターミナル) は廃止**。古い手順を案内している memory / ドキュメントを見つけたら更新する
+
 ## 実装方針
 
 - **小さく作って動かす**: 一気に仕様を詰めず、primitive から段階的に。実装して動かして、不満が出たら設計書に戻る
