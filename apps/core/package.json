@@ -12,6 +12,7 @@
     "@vidro/core": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "catalog:",
     "@vidro/plugin": "workspace:*",
     "typescript": "~6.0.2",
     "vite": "catalog:",

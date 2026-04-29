@@ -1,8 +1,4 @@
 {
-  "extends": "@vidro/plugin/tsconfig.base.json",
-  "compilerOptions": {
-    "noUnusedLocals": true,
-    "noUnusedParameters": true
-  },
-  "include": ["src", ".vidro/**/*.d.ts"]
+  "files": [],
+  "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }]
 }

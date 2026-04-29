@@ -21,9 +21,9 @@ import type { Plugin } from "vite";
 //    `wrangler.toml` 経由で source を直接読み、dev では workerd in-process、
 //    prod では `.vidro/build/ssr/index.js` に bundle して deploy 可能形にする (ADR 0043)。
 //
-// 置き場は vite root 直下の `.vidro/` に集約 (ADR 0013)。tsconfig base は plugin
-// package に同梱されている (`@vidro/plugin/tsconfig.base.json`) ので、user
-// tsconfig が extends するだけで Vidro が必要とする compilerOptions が揃う。
+// 置き場は vite root 直下の `.vidro/` に集約 (ADR 0013)。user の tsconfig.app.json
+// で `include: ["src", ".vidro/**/*.d.ts"]` のように `.vidro/` 配下の auto-gen
+// `routes.d.ts` を取り込んでもらう (ADR 0046 で extends 路線から inline に移行)。
 
 export type RouteTypesOptions = {
   /** routes ディレクトリ (vite root 相対)。default: "src/routes" */
