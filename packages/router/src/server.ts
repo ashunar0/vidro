@@ -1,12 +1,11 @@
 // `/__loader` (loader JSON endpoint) と navigation (accept: text/html) の両方を
-// 同じ WinterCG fetch handler として提供する。dev (@vidro/plugin の
-// serverBoundary middleware) と prod (Cloudflare Workers 向けの server entry)
-// の両方で同じ関数を使う。
+// 同じ WinterCG fetch handler として提供する。dev では `@cloudflare/vite-plugin`
+// が workerd を in-process 起動して全 request をこの handler に流し、prod では
+// Cloudflare Workers 向けの server entry が同じ handler を呼ぶ (ADR 0043)。
 //
-// 入力は `RouteRecord` で、dev では vite の `server.ssrLoadModule()` を
-// lazy loader として埋めたもの、prod では `.vidro/route-manifest.ts` から
-// 生成された静的 import 版 (plugin の routeTypes() が吐く)。どちらも
-// `compileRoutes` に食わせれば同じ `CompiledRoutes` が得られる設計 (ADR 0012)。
+// 入力は `RouteRecord` で、dev / prod ともに `.vidro/route-manifest.ts` から
+// 生成された静的 import 版を使う (plugin の routeTypes() が吐く)。
+// `compileRoutes` に食わせれば `CompiledRoutes` が得られる設計 (ADR 0012)。
 //
 // 案 B-2 Phase A (SSR data injection): navigation request には `env.ASSETS` で
 // 取得した index.html に `<script type="application/json" id="__vidro_data">` を
