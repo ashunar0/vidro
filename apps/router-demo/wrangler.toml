@@ -1,9 +1,12 @@
 name = "router-demo"
-main = "./dist-server/index.mjs"
+# @cloudflare/vite-plugin が source を直接読み、dev では workerd in-process、
+# prod では vite build が worker bundle を生成する。main は source を指す (ADR 0043)。
+main = "./.vidro/server-entry.ts"
 compatibility_date = "2026-04-17"
 
 [assets]
-directory = "./dist"
+# build output を .vidro/build/{client,ssr}/ に集約 (ADR 0043)。
+directory = "./.vidro/build/client"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 # navigation に bootstrap data (`__vidro_data`) を inject したいので、全 request を

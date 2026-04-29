@@ -67,6 +67,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/router
     devDependencies:
+      '@cloudflare/vite-plugin':
+        specifier: 'catalog:'
+        version: 1.34.0(@voidzero-dev/vite-plus-core@0.1.19(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(typescript@6.0.3)(yaml@2.8.3))(workerd@1.20260426.1)(wrangler@4.86.0)
       '@vidro/plugin':
         specifier: workspace:*
         version: link:../../packages/plugin
