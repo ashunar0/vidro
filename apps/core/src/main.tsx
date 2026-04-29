@@ -1,4 +1,6 @@
 import { mount } from "@vidro/core";
 import App from "./App";
 
-mount(() => <App />, document.getElementById("app")!);
+const root = document.getElementById("app")!;
+
+mount(() => <App />, root);
