@@ -1,7 +1,7 @@
-import { Todos } from "./components/Todos";
+import { Users } from "./components/Users";
 
 function App() {
-  return <Todos />;
+  return <Users />;
 }
 
 export default App;
