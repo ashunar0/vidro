@@ -17,6 +17,9 @@ export default function RootLayout({ children }: LayoutProps) {
         <Link href="/users" match="prefix" class={linkClass}>
           Users
         </Link>
+        <Link href="/notes" class={linkClass}>
+          Notes
+        </Link>
         <Link href="/broken" class={linkClass}>
           Broken
         </Link>
