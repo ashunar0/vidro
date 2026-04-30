@@ -14,11 +14,8 @@ export default function RootLayout({ children }: LayoutProps) {
         <Link href="/about" class={linkClass}>
           About
         </Link>
-        <Link href="/users/1" class={linkClass}>
-          User 1
-        </Link>
-        <Link href="/users/2" class={linkClass}>
-          User 2
+        <Link href="/users" match="prefix" class={linkClass}>
+          Users
         </Link>
         <Link href="/broken" class={linkClass}>
           Broken
