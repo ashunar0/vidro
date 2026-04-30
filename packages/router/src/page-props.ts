@@ -28,16 +28,27 @@ export type LoaderArgs<R extends keyof Routes = keyof Routes> = {
 // 本当の型は `Parameters<L>[0]["params"]` で個別に取り出す。
 type AnyLoader = (args: { params: any }) => Promise<unknown>;
 
-// route component が受け取る props 型。loader 関数そのものを generic に取り、
-// `data` (loader の戻り値) と `params` (loader の引数から抽出) を一気に型付けする。
-// この設計により、loader の戻り値型を変えるだけで component 側の data 型が
-// 自動追従する (= DB → UI まで型が 1 本で貫通する)。
+// route component が受け取る props 型。
 //
-// 使い方: `function User({ data, params }: PageProps<typeof loader>)`
+// ADR 0049 (Soft supersede 0007): `data` field は削除済。loader 戻りは
+// **`loaderData<typeof loader>()`** で reactive store として取得する。props は
+// snapshot 規則 (ADR 0048) に従い、param のみ通る。型貫通は loader 関数の
+// generic で従来通り維持: `loaderData<typeof loader>()` の戻り型 `Store<T>` が
+// loader の戻り値型から自動展開される。
+//
+// 使い方:
+// ```ts
+// import { loaderData, type PageProps } from "@vidro/router";
+// import type { loader } from "./server";
+//
+// export default function User({ params }: PageProps<typeof loader>) {
+//   const data = loaderData<typeof loader>();
+//   return <div>{`#${params.id}: ${data.name.value}`}</div>;
+// }
+// ```
 //
 // loader を持たない route (Home / About 等) は引数を省略する (関数 contravariance で互換)。
 export type PageProps<L extends AnyLoader> = {
-  data: Awaited<ReturnType<L>>;
   params: Parameters<L>[0]["params"];
 };
 

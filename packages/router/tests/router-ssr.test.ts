@@ -5,6 +5,7 @@ import { describe, expect, test } from "vite-plus/test";
 import { h } from "@vidro/core";
 import { renderToString } from "@vidro/core/server";
 import { Router } from "../src/router";
+import { loaderData } from "../src/loader-data";
 import { preloadRouteComponents } from "../src/server";
 import type { RouteRecord } from "../src/route-tree";
 
@@ -65,9 +66,14 @@ describe("Router SSR (server mode)", () => {
     expect(html).toBe("<h1>About us</h1><!--error-boundary--><!--router-->");
   });
 
-  test("loader data が leaf の props.data として届く", async () => {
-    const IndexPage = (props: { data: { name: string } }) =>
-      h("p", null, `Hello ${props.data.name}`);
+  test("loader data が loaderData() store として届く (ADR 0049)", async () => {
+    // ADR 0049: PageProps.data 廃止。loader 戻りは loaderData<L>() で reactive
+    // に取る。store proxy 経由なので leaf access は `.value`。
+    type Loader = () => Promise<{ name: string }>;
+    const IndexPage = () => {
+      const data = loaderData<Loader>();
+      return h("p", null, `Hello ${data.name.value}`);
+    };
 
     const manifest: RouteRecord = {
       "/routes/index.tsx": () => Promise.resolve({ default: IndexPage }),

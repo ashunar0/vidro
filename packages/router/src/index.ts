@@ -33,3 +33,6 @@ export type {
 // (form delegation) からのみ参照。
 export { submission } from "./action";
 export type { Submission, SubmissionError, ActionArgs, AnyAction } from "./action";
+// ADR 0049 — loaderData() primitive。loader 戻りを reactive store として取得。
+// internal helpers (`_setLayerIndex` 等) は router.tsx の foldRouteTree が呼ぶ。
+export { loaderData } from "./loader-data";

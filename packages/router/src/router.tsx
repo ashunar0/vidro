@@ -13,6 +13,16 @@ import {
   _registerDispatcher,
   type SubmissionError,
 } from "./action";
+// ADR 0049 — loaderData() primitive 関連の internal API。
+// foldRouteTree が layer の component を呼ぶ直前に layer index を立て、
+// effect (revalidate) では同 pathname なら diff merge で page remount を抑止する。
+import {
+  _diffMergeAllLayers,
+  _resetAllForServer,
+  _resetPageLoaderData,
+  _restoreLayerIndex,
+  _setLayerIndex,
+} from "./loader-data";
 
 // ADR 0038: Router 内 dispatch の mutator 引数 shape (action.ts と整合)。
 // ADR 0040 (Phase 4 step 1): setInput を form 経路でも呼ぶため interface に追加。
@@ -207,6 +217,11 @@ export function Router(props: RouterProps): Node {
   const canSyncBootstrap =
     !!props.eagerModules && !!bootstrapData && bootstrapData.pathname === currentPathname.value;
 
+  // ADR 0049: 「最後の成功 render」を記録して、effect の next run が同 pathname
+  // への revalidate なら page remount せず diff merge に切り替える。pathname /
+  // layer 数が違う or error 発生 → 通常 swap (page remount)。
+  let lastSuccessRender: { pathname: string; layerCount: number } | null = null;
+
   let initialNode: Node | null = null;
   if (canSyncBootstrap) {
     const eager = props.eagerModules!;
@@ -223,6 +238,10 @@ export function Router(props: RouterProps): Node {
         data: l.data,
         error: l.error ? hydrateError(l.error) : undefined,
       }));
+      // ADR 0049: foldRouteTree の前に layer-indexed raw を確定。user の
+      // route component が sync に loaderData() を呼んだ時、現 layer の raw を
+      // 引き当てて store として返せるようにする。
+      _resetPageLoaderData(loaderResults.map((r) => r.data));
       initialNode = foldRouteTree({
         match: initialMatch,
         componentMods: resolved.layouts.concat(resolved.route ? [resolved.route] : []),
@@ -230,6 +249,11 @@ export function Router(props: RouterProps): Node {
         errorMods: resolved.errors,
         reset,
       });
+      // 成功 render を記録: 後続 effect が「同 pathname への revalidate」を判定する。
+      const hasError = loaderResults.some((r) => r.error !== undefined);
+      if (!hasError) {
+        lastSuccessRender = { pathname: boot.pathname, layerCount: loaderResults.length };
+      }
     }
   }
 
@@ -485,10 +509,36 @@ export function Router(props: RouterProps): Node {
     void Promise.all([loadComponents, loadLoaderResults, loadErrorMods])
       .then(([rawMods, loaderResults, errorMods]) => {
         if (token !== loadToken) return;
+        const hasError = loaderResults.some((r) => r.error !== undefined);
+
+        // ADR 0049: 同 pathname + 全 loader 成功 + layer 数一致 → 「page-internal
+        // revalidate」とみなして diff merge で済ませる。page は remount せず、
+        // page-local signal (filter / count / accordion / focus / scroll) も
+        // ErrorBoundary subtree も生き続ける。
+        // それ以外 (= 別 pathname / loader error / 層数違い等) は従来通り swap で
+        // 全 remount。判定が誤ると user の page-local state が消えるので、より
+        // 「remount 寄り」に倒した保守的判定にしている。
+        const isSamePageRevalidate =
+          lastSuccessRender !== null &&
+          lastSuccessRender.pathname === pathname &&
+          lastSuccessRender.layerCount === loaderResults.length &&
+          !hasError;
+
+        if (isSamePageRevalidate) {
+          // 既存 store instance に diff merge。loaderData() を持つ全 component が
+          // fine-grained に再評価され、page DOM は in-place で更新される。
+          _diffMergeAllLayers(loaderResults.map((r) => r.data));
+          // pathname / params 同値、currentParams は前回 set 済のまま継続でよい。
+          return;
+        }
+
         // 子孫が currentParams を読めるよう、fold 前に新 route の params に同期。
         // foldRouteTree 内で評価される component の effect / JSX が新 params を
         // 見るタイミングを fold 開始前に揃える。
         currentParams.value = match.params;
+        // ADR 0049: 別 page への navigation → 旧 stores は捨てて、新 raws を登録。
+        // foldRouteTree で各 layer の loaderData() が新しい raw を wrap する。
+        _resetPageLoaderData(loaderResults.map((r) => r.data));
         const componentMods = rawMods as RouteModule[];
         const node = foldRouteTree({
           match,
@@ -498,6 +548,15 @@ export function Router(props: RouterProps): Node {
           reset,
         });
         swap(node);
+
+        // 次回 effect で revalidate 判定するための state 更新。loader error が
+        // 起きていたら "成功 render" 扱いしない (= 次に成功した瞬間に diff merge
+        // ではなく remount を発火させて user 状態を綺麗に流す)。
+        if (hasError) {
+          lastSuccessRender = null;
+        } else {
+          lastSuccessRender = { pathname, layerCount: loaderResults.length };
+        }
       })
       .catch((err) => {
         // component module の load 失敗 (network failure 等)。error.tsx modules の
@@ -506,6 +565,7 @@ export function Router(props: RouterProps): Node {
         if (token !== loadToken) return;
         console.error("[router] module load error:", err);
         swap(defaultErrorNode(err));
+        lastSuccessRender = null;
       });
   });
 
@@ -556,6 +616,11 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
       error: l.error ? hydrateError(l.error) : undefined,
     }));
 
+    // ADR 0049: server render でも foldRouteTree 前に layer-indexed raw を確定。
+    // user の sync `loaderData()` が server 側でも raw を引き当てて store として
+    // 動く (= SSR で `<For each={data.notes}>` が成立する)。
+    _resetPageLoaderData(loaderResults.map((r) => r.data));
+
     const node = foldRouteTree({
       match,
       componentMods: ssr.resolvedModules.layouts.concat([ssr.resolvedModules.route]),
@@ -574,6 +639,10 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
   } finally {
     currentPathname.value = previousPathname;
     currentParams.value = previousParams;
+    // ADR 0049: server render 終了で module scope を空に戻す。Workers の同 isolate
+    // 内で並行 request が走った時、こちらの request の loaderRaws が混入しない
+    // ように最低限の safety net (= AsyncLocalStorage 化は project_pending_rewrites)。
+    _resetAllForServer();
   }
 }
 
@@ -611,16 +680,29 @@ function foldRouteTree(input: FoldInput): Node {
   // 側で `<main>{children}</main>` の `{children}` は _$dynamicChild の 0-arg
   // function auto-invoke で展開される。これで JSX 評価順が SSR の post-order
   // (depth-first) と一致するようになり、hydrate cursor mismatch が解消される。
+  //
+  // ADR 0049: layer index を component default 呼び出し前に setLayerIndex で立てる。
+  // user の layout / page 内 sync な loaderData() 呼び出しが現 layer の raw を引き
+  // 当てられる。ErrorBoundary の children getter 側で try/finally する (= boundary
+  // の fallback 経路は layer index に依存しないので影響なし)。
   const wrapLayout = (
     layoutMod: RouteModule,
     layerPathPrefix: string,
     data: unknown,
     children: () => Node,
+    layerIdx: number,
   ): Node =>
     ErrorBoundary({
       fallback: (err) => renderError(err, selectErrorMod(layerPathPrefix), match.params, reset),
       onError: (err) => console.error("[router] layout render error:", err),
-      children: () => layoutMod.default({ params: match.params, data, children }),
+      children: () => {
+        const prev = _setLayerIndex(layerIdx);
+        try {
+          return layoutMod.default({ params: match.params, data, children });
+        } finally {
+          _restoreLayerIndex(prev);
+        }
+      },
     });
 
   // loader error を layer 単位で検査。最も外側 (最小 index) を採用し、その
@@ -652,27 +734,39 @@ function foldRouteTree(input: FoldInput): Node {
       const layoutMod = componentMods[i]!;
       const data = loaderResults[i]!.data;
       const layerPathPrefix = match.layouts[i]!.pathPrefix;
-      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner);
+      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner, i);
     }
   } else {
     // 全 loader 成功 → 通常経路。leaf は render error catch のため ErrorBoundary
     // で wrap (fallback は最寄り)、各 layout は wrapLayout で外側 error.tsx。
     const leafMod = componentMods[componentMods.length - 1]!;
-    const leafData = loaderResults[loaderResults.length - 1]!.data;
     const layoutMods = componentMods.slice(0, -1);
+    // ADR 0049: leaf の layer index は layouts.length 番目 (= 最後の layer)。
+    const leafLayerIdx = layoutMods.length;
 
     nodeFn = () =>
       ErrorBoundary({
         fallback: (err) => renderError(err, selectErrorMod(null), match.params, reset),
         onError: (err) => console.error("[router] render error:", err),
-        children: () => leafMod.default({ params: match.params, data: leafData }),
+        children: () => {
+          // ADR 0049 step 6: PageProps から data field を削除した。runtime でも
+          // leaf に data prop は渡さず、user は loaderData<typeof loader>() で
+          // reactive に取得する。layouts は LayoutProps が依然 data 持ちなので
+          // wrapLayout 側は維持。
+          const prev = _setLayerIndex(leafLayerIdx);
+          try {
+            return leafMod.default({ params: match.params });
+          } finally {
+            _restoreLayerIndex(prev);
+          }
+        },
       });
     for (let i = layoutMods.length - 1; i >= 0; i--) {
       const inner = nodeFn;
       const layoutMod = layoutMods[i]!;
       const data = loaderResults[i]!.data;
       const layerPathPrefix = match.layouts[i]!.pathPrefix;
-      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner);
+      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner, i);
     }
   }
   return nodeFn();
