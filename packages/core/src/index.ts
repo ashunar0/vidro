@@ -3,6 +3,8 @@
 // internal、型としての Signal<T> 等は `export type` で引き続き使える (型注釈目的)。
 export { signal } from "./signal";
 export type { Signal } from "./signal";
+export { store } from "./store";
+export type { Store } from "./store";
 export { effect } from "./effect";
 export type { Effect } from "./effect";
 export { computed } from "./computed";
