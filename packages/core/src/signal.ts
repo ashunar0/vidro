@@ -55,3 +55,11 @@ export class Signal<T> implements ObserverSource {
 export function signal<T>(initial: T): Signal<T> {
   return new Signal(initial);
 }
+
+// Signal class を value としては export しない方針 (ADR 0006、project_signal_api_decision)
+// が、runtime で Signal 判定したい場面 (e.g. @vidro/router の loaderData diff merge で
+// 「leaf signal vs 中間 proxy」を見分ける時) の最小限の helper。
+// `value instanceof Signal` 相当で、true なら primitive の `.value` 経由で更新できる。
+export function isSignal(value: unknown): value is Signal<unknown> {
+  return value instanceof Signal;
+}

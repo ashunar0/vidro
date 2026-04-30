@@ -1,7 +1,7 @@
 // @vidro/core の公開エントリ。
 // primitive の生成は factory (signal / computed / ref / effect) に統一。class 本体は
 // internal、型としての Signal<T> 等は `export type` で引き続き使える (型注釈目的)。
-export { signal } from "./signal";
+export { signal, isSignal } from "./signal";
 export type { Signal } from "./signal";
 export { store } from "./store";
 export type { Store } from "./store";
