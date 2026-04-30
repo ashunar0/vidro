@@ -1,4 +1,4 @@
-import { currentParams, type PageProps } from "@vidro/router";
+import { currentParams, loaderData, type PageProps } from "@vidro/router";
 import { resource, Suspense } from "@vidro/core";
 import type { loader } from "./server";
 
@@ -7,7 +7,11 @@ import type { loader } from "./server";
 // server 2-pass で resolve され、markup には posts のタイトルが焼かれた状態
 // で配信される (blink なし)。/users/1 → /users/5 navigation では reactive
 // source が currentParams 変化を検知して fetcher(id) を auto refetch。
-export default function UserPage({ data, params }: PageProps<typeof loader>) {
+//
+// ADR 0049: PageProps.data 廃止 → loaderData<typeof loader>() で reactive store
+// を取得。leaf access は `.value`。
+export default function UserPage({ params }: PageProps<typeof loader>) {
+  const data = loaderData<typeof loader>();
   return (
     <section>
       <h2>User</h2>
@@ -15,10 +19,10 @@ export default function UserPage({ data, params }: PageProps<typeof loader>) {
         Path param ID: <strong>{params.id}</strong>
       </p>
       <p>
-        Name: <strong>{data.user.name}</strong>
+        Name: <strong>{data.user.name.value}</strong>
       </p>
       <p>
-        Email: <strong>{data.user.email}</strong>
+        Email: <strong>{data.user.email.value}</strong>
       </p>
       <p>
         (loader が <code>./server.ts</code> から fetch したのだ。

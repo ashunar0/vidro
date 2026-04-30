@@ -1,40 +1,36 @@
 import { computed, For, signal } from "@vidro/core";
-import { submission, type PageProps } from "@vidro/router";
+import { loaderData, submission, type PageProps } from "@vidro/router";
 import type { action, loader } from "./server";
 
-// C-4: filter state を URL params (`?q=xxx`) に backing する手書き implementation。
-// Vidro はまだ useSearchParams 系 API が無いので window 直叩きで実装。
-// 効果: page remount (= action 後) でも URL から復元 → filter 維持。
+// ADR 0049 dogfood — 痛み B (= action 後 page-local state が remount で reset される)
+// の構造解消を実機検証する page。
 //
-// 注意: SSR は URL search params を読まない (loader API が params のみで request 不在)
-// ため、reload で ?q=xxx 付きの URL を直接開くと server markup と client init が
-// ズレる可能性あり。今回の dogfood は client navigate / action 経路に絞って
-// 体感する形 (= 純粋な client-only state persistence の demo)。
-function readFilterFromURL(): string {
-  if (typeof window === "undefined") return "";
-  return new URLSearchParams(window.location.search).get("q") ?? "";
-}
+// **Before (38th 末)**: data は plain object で渡るので、action 後の loader 再実行で
+// page を remount → filter signal / count signal が消える。仕方なく filter は URL
+// (`?q=...`) に backing する hack を入れていた (= readFilterFromURL / writeFilterToURL)。
+//
+// **After (39th, ADR 0049)**: loaderData() で取った store は同 page revalidate で
+// 維持される (Router が swap せず diff merge する)。よって:
+//   - filter signal だけで filter 状態が action 後も維持される (URL backing 不要)
+//   - count signal も同様に維持される
+//   - submission の cumulative state (`Adding...` → `Added: ...`) も維持される
+//
+// dogfood 手順:
+//   1. filter input に "Vidro" と打つ
+//   2. count ボタンを 5 回くらい押す (count = 5)
+//   3. "新しい note" を入力して Add
+//   4. **期待**: filter input は "Vidro" のまま、count は 5 のまま、notes 末尾に
+//      新 note が in-place で append される (= page remount してない証拠)
 
-function writeFilterToURL(value: string): void {
-  if (typeof window === "undefined") return;
-  const params = new URLSearchParams(window.location.search);
-  if (value) params.set("q", value);
-  else params.delete("q");
-  const qs = params.toString();
-  const newUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
-  // pushState でなく replaceState: 1 タイプ毎に history entry を増やさない
-  window.history.replaceState(null, "", newUrl);
-}
-
-export default function NotesPage({ data }: PageProps<typeof loader>) {
+export default function NotesPage(_props: PageProps<typeof loader>) {
+  const data = loaderData<typeof loader>();
   const subCreate = submission<typeof action>("create");
 
   const count = signal(0);
-  // 初期値を URL から読む。page remount のたびに再 init されるが、URL が同じ値で
-  // 残っている (writeFilterToURL で update 済) ので結果として filter が「残る」。
-  const filter = signal(readFilterFromURL());
+  // ADR 0049 後は plain signal だけで OK (= URL backing 撤去済)。
+  const filter = signal("");
   const filteredNotes = computed(() =>
-    data.notes.filter((n) => n.title.toLowerCase().includes(filter.value.toLowerCase())),
+    data.notes.filter((n) => n.title.value.toLowerCase().includes(filter.value.toLowerCase())),
   );
 
   return (
@@ -44,23 +40,18 @@ export default function NotesPage({ data }: PageProps<typeof loader>) {
       <input
         value={filter.value}
         onInput={(e: InputEvent) => {
-          const value = (e.currentTarget as HTMLInputElement).value;
-          filter.value = value;
-          writeFilterToURL(value);
+          filter.value = (e.currentTarget as HTMLInputElement).value;
         }}
         placeholder="絞り込み..."
         class="mt-4 w-full rounded border px-3 py-2"
       />
 
-      {/* debug: filter signal が typing で更新されるか確認 */}
+      {/* debug: filter signal が action 後も維持されることを目視確認 */}
       <p class="mt-1 text-xs text-gray-500">{`(debug) filter: "${filter.value}"`}</p>
 
       <ul class="mt-2 space-y-1">
         <For each={filteredNotes.value}>
-          {(n) => (
-            // 注: B-4 待ちの Vidro 現状制約 → template literal で 1 dynamic slot に圧縮
-            <li class="rounded border px-3 py-2">{`#${n.id}: ${n.title}`}</li>
-          )}
+          {(n) => <li class="rounded border px-3 py-2">{`#${n.id.value}: ${n.title.value}`}</li>}
         </For>
       </ul>
 

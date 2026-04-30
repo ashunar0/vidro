@@ -1,5 +1,5 @@
 import { Show } from "@vidro/core";
-import { submission, type PageProps } from "@vidro/router";
+import { loaderData, submission, type PageProps } from "@vidro/router";
 import type { action, loader } from "./server";
 
 // ADR 0038 Phase 3 R-mid-1 + ADR 0040 Phase 4 step 1 の動作確認 demo。
@@ -10,7 +10,11 @@ import type { action, loader } from "./server";
 // - delete button の form は note 行ごとに生やす (per-form state は共通の subDelete)
 // - **楽観的 preview** (ADR 0040): submit 中だけ `subCreate.input` から pending 行を
 //   仮表示。loader revalidate 完了で本物に置換される自然な UX。
-export default function NotesPage({ data }: PageProps<typeof loader>) {
+//
+// ADR 0049: PageProps.data 廃止 → loaderData<typeof loader>() で reactive store
+// を取得。`n.id.value` / `n.title.value` で leaf access (signal triad)。
+export default function NotesPage(_props: PageProps<typeof loader>) {
+  const data = loaderData<typeof loader>();
   const subCreate = submission<typeof action>("create");
   const subDelete = submission<typeof action>("delete");
 
@@ -29,11 +33,11 @@ export default function NotesPage({ data }: PageProps<typeof loader>) {
             が複数並ぶと hydrate mismatch の元になる)。 */}
         {data.notes.map((n) => (
           <li>
-            <span>{`#${n.id}: ${n.title} `}</span>
+            <span>{`#${n.id.value}: ${n.title.value} `}</span>
             <form method="post" {...subDelete.bind()} style="display: inline;">
               <input type="hidden" name="intent" value="delete" />
-              <input type="hidden" name="id" value={String(n.id)} />
-              <button data-testid={`delete-${n.id}`}>Delete</button>
+              <input type="hidden" name="id" value={String(n.id.value)} />
+              <button data-testid={`delete-${n.id.value}`}>Delete</button>
             </form>
           </li>
         ))}
