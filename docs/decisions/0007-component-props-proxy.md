@@ -2,7 +2,22 @@
 
 ## Status
 
-Accepted — 2026-04-24
+**Superseded by ADR 0048** — 2026-04-30
+
+提起・採択: 2026-04-24 (Accepted)
+撤回: 2026-04-30 (38th session、ADR 0048 で supersede)
+
+### supersede 経緯 (= 後続のための memo)
+
+37th + 38th session で Vidro identity を **「props は snapshot、reactive は明示 primitive で declare」** に reframe した (= memory `feedback_props_unification_preference`、ADR 0048)。本 ADR の「props を Proxy で wrap して implicit reactive にする」設計は、以下の理由で superseded:
+
+- ADR 0047 (store path F) で `.value` 蓋を末端に置く設計が確定し、「`.value` 経由が reactive、それ以外は snapshot」の単一 mental model が成立した
+- Solid の implicit reactive props は run-once の必然じゃなく choice (= Svelte 5 / Vue 3 / React は explicit 派) と確認、Vidro が explicit 派に move するのは legitimate
+- memory `project_legibility_test` (= 「読んで日本語に訳せる」) から見ると、implicit reactive props は transform 知識が前提で legibility ✗
+
+ただし **(B) Soft supersede** を採用しているため、本 ADR で記述された runtime 機構 (`_reactive` helper / `h()` の Proxy wrap / vite plugin transform / `Match`/`Show`/`For` の props 受け方) は **当面残置** (= 既存 user code の互換性のため)。将来 Hard supersede に進む判断が出たら別 ADR amendment で撤廃する。
+
+以下は撤回時点の元文書 (= 履歴として保存)。
 
 ## Context
 
