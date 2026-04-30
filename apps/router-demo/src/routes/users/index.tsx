@@ -2,11 +2,15 @@ import { Show } from "@vidro/core";
 import { Link, submission } from "@vidro/router";
 import type { action } from "./layout.server";
 
-// ADR 0042 demo: leaf に server.ts が無い `/users` path で、layout.server.ts の
-// action にフォールバックする経路を確認する。`<form action="/users">` で POST を
-// `/users` に向け、layout action (= mark all) を呼ぶ。
+// ADR 0042 demo (post-ADR 0051): leaf に server.ts が無い `/users` path で、
+// layout.server.ts の action にフォールバックする経路を確認する。`<form action="/users">`
+// で POST を `/users` に向け、layout action (= mark all) を呼ぶ。
+//
+// ADR 0051: `submission<typeof action>()` は現 route の latest submission view。
+// この page は single form なので array は要らず、view 1 個で pending / value / error
+// を読める。
 export default function Users() {
-  const sub = submission<typeof action>("users-mark");
+  const sub = submission<typeof action>();
 
   return (
     <section>
@@ -21,7 +25,7 @@ export default function Users() {
         </li>
       </ul>
 
-      <form method="post" action="/users" {...sub.bind()}>
+      <form method="post" action="/users">
         <button data-testid="mark-all-button">
           {sub.pending.value ? "Marking..." : "Mark all (layout action)"}
         </button>

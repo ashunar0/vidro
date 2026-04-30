@@ -1,36 +1,41 @@
-import { computed, For, signal, signalify } from "@vidro/core";
-import { loaderData, submission } from "@vidro/router";
+import { computed, For, signal } from "@vidro/core";
+import { loaderData, submissions } from "@vidro/router";
 import type { action, loader } from "./server";
 
-// ADR 0049 dogfood — 痛み B (= action 後 page-local state が remount で reset される)
-// の構造解消を実機検証する page。
+// ADR 0051 dogfood — derive 派楽観更新 + intent pattern + 複数 in-flight。
 //
-// **Before (38th 末)**: data は plain object で渡るので、action 後の loader 再実行で
-// page を remount → filter signal / count signal が消える。仕方なく filter は URL
-// (`?q=...`) に backing する hack を入れていた (= readFilterFromURL / writeFilterToURL)。
+// 主要ポイント:
+//   - **canonical store (`data.notes`) には書き込まない**: 楽観行は `subs.value` から
+//     derive する。失敗時の rollback コードが不要 (= 書いてないものは消えない)
+//   - **複数 form は HTML `<button name="intent" value="...">` で区別**: `submissions()`
+//     の string key 引数は廃止。同 route の全 submission を array で取って intent で filter
+//   - **複数 in-flight 自然対応**: Add 連打で 3 つの楽観行が並行表示される
+//   - **loader 再 revalidate 完了で楽観行が auto-cleanup**: server 戻りで `data.notes`
+//     に本物が現れた瞬間、success な submission が array から remove → 楽観行が自然消滅
 //
-// **After (39th, ADR 0049)**: loaderData() で取った store は同 page revalidate で
-// 維持される (Router が swap せず diff merge する)。よって:
-//   - filter signal だけで filter 状態が action 後も維持される (URL backing 不要)
-//   - count signal も同様に維持される
-//   - submission の cumulative state (`Adding...` → `Added: ...`) も維持される
+// ADR 0049 痛み B 解消 (= action 後 page-local state が remount で消える) も維持:
+//   filter signal / count signal は loader revalidate を跨いで保持される。
 //
-// dogfood 手順:
-//   1. filter input に "Vidro" と打つ
-//   2. count ボタンを 5 回くらい押す (count = 5)
-//   3. "新しい note" を入力して Add
-//   4. **期待**: filter input は "Vidro" のまま、count は 5 のまま、notes 末尾に
-//      新 note が in-place で append される (= page remount してない証拠)
+// dogfood 検証手順 (= ADR 0051 Consequences の 5 シナリオ):
+//   1. filter "Vidro" + count 5 + Add → filter / count 維持、新行が in-place 追加
+//   2. Add 連打 ("A" → Add → "B" → Add → "C" → Add) → 楽観行 3 つ並列、各々完了で消える
+//   3. Delete 並列 (2 行同時) → opacity-50 line-through、loader 戻りで両方消える
+//   4. server で throw → 楽観行が消えて data.notes は元のまま (= rollback コードゼロ)
 
 export default function NotesPage() {
   const data = loaderData<typeof loader>();
-  const subCreate = submission<typeof action>("create");
+  const subs = submissions<typeof action>();
 
   const count = signal(0);
-  // ADR 0049 後は plain signal だけで OK (= URL backing 撤去済)。
   const filter = signal("");
+
   const filteredNotes = computed(() =>
     data.notes.filter((n) => n.title.value.toLowerCase().includes(filter.value.toLowerCase())),
+  );
+
+  // intent === "create" な in-flight = 楽観行表示用
+  const pendingCreates = computed(() =>
+    subs.value.filter((s) => s.input.value?.intent === "create" && s.pending.value),
   );
 
   return (
@@ -46,12 +51,56 @@ export default function NotesPage() {
         class="mt-4 w-full rounded border px-3 py-2"
       />
 
-      {/* debug: filter signal が action 後も維持されることを目視確認 */}
+      {/* debug: filter signal が action 後も維持される目視確認 */}
       <p class="mt-1 text-xs text-gray-500">{`(debug) filter: "${filter.value}"`}</p>
 
       <ul class="mt-2 space-y-1">
         <For each={filteredNotes.value}>
-          {(n) => <li class="rounded border px-3 py-2">{`#${n.id.value}: ${n.title.value}`}</li>}
+          {(n) => {
+            // 各 note 行が「自分が delete 中か」を subs から peek。複数 delete 並列でも
+            // 各行が独立に判定される (= ADR 0051 derive 派の per-item UX)。
+            const isDeleting = computed(() =>
+              subs.value.some(
+                (s) =>
+                  s.input.value?.intent === "delete" &&
+                  s.input.value?.id === String(n.id.value) &&
+                  s.pending.value,
+              ),
+            );
+            return (
+              <li
+                class={`flex items-center justify-between rounded border px-3 py-2 ${
+                  isDeleting.value ? "opacity-50 line-through" : ""
+                }`}
+              >
+                <span>{`#${n.id.value}: ${n.title.value}`}</span>
+                {/* note ごとに小さい delete form。intent + id を hidden で持つ。 */}
+                <form method="post" class="ml-2">
+                  <input type="hidden" name="id" value={String(n.id.value)} />
+                  <button
+                    name="intent"
+                    value="delete"
+                    class="rounded bg-red-100 px-2 py-1 text-sm text-red-700 hover:bg-red-200"
+                  >
+                    Delete
+                  </button>
+                </form>
+              </li>
+            );
+          }}
+        </For>
+
+        {/* 楽観行: in-flight な create を server 戻り前に仮表示 */}
+        <For each={pendingCreates.value}>
+          {(s) => {
+            const title = s.input.value?.title;
+            const titleStr = typeof title === "string" ? title : "";
+            return (
+              <li class="rounded border border-dashed px-3 py-2 italic opacity-50">
+                {`#?: ${titleStr} (...adding)`}
+              </li>
+            );
+          }}
         </For>
       </ul>
 
@@ -63,39 +112,19 @@ export default function NotesPage() {
         {`Click me (${count.value})`}
       </button>
 
-      <form
-        method="post"
-        {...subCreate.bind()}
-        onSubmit={(e: SubmitEvent) => {
-          // ADR 0050 dogfood: 楽観更新 (= server 往復を待たず client store に即 append)。
-          // plain Note を `signalify` で Store<Note> に昇格してから push する流儀。
-          // `data.notes.push({ id: -Date.now(), title })` は TS error
-          // (= push 引数は Store<Note> を要求) → ADR 0050 の痛みの起点。
-          //
-          // 注意: 楽観 -Date.now() と server 戻り (= 本物 id) は ADR 0049 の id-keyed
-          // reconcile で別エントリ扱い → flicker / 重複表示する。これは ADR 0050 の
-          // scope 外で、declarative 楽観更新 API (= 別 ADR γ 候補) で扱う宿題。
-          const fd = new FormData(e.currentTarget as HTMLFormElement);
-          const titleField = fd.get("title");
-          const title = typeof titleField === "string" ? titleField.trim() : "";
-          if (title) {
-            data.notes.push(signalify({ id: -Date.now(), title }));
-          }
-          // submit 自体は subCreate.bind() の handler に任せる (= preventDefault しない)
-        }}
-        class="mt-4 flex gap-2"
-      >
+      {/* 全体の create form。submit 時に Router が intercept して action へ送る。 */}
+      <form method="post" class="mt-4 flex gap-2">
         <input
           name="title"
           placeholder="新しい note のタイトル"
           class="flex-1 rounded border px-3 py-2"
         />
         <button
-          type="submit"
-          disabled={subCreate.pending.value}
-          class="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-blue-300"
+          name="intent"
+          value="create"
+          class="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
         >
-          {subCreate.pending.value ? "Adding..." : "Add"}
+          Add
         </button>
       </form>
     </div>

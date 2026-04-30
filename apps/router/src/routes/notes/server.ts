@@ -20,15 +20,29 @@ function getStringField(fd: FormData, name: string): string {
   return typeof v === "string" ? v : "";
 }
 
-// 最小 action: title を受けて note を 1 件追加するだけ。
-// 戻り値は plain object → router が loader 自動 revalidate して
-// `{ actionResult, loaderData }` を返す。client は actionResult を submission.value
-// に流し、loaderData で page を再 render する。
+// ADR 0051: 1 route = 1 action 規約 + intent pattern。複数 form を `intent` field で
+// 識別する (= HTML `<button name="intent" value="...">` 由来、Remix `<Form>` 慣習)。
+// 戻り値の type は intent ごとに union だが、`Awaited<ReturnType<action>>` で
+// `{ addedNote } | { deletedId } | { error }` として client に貫通する。
 export async function action({ request }: ActionArgs<"/notes">) {
   const fd = await request.formData();
-  const title = getStringField(fd, "title").trim();
-  if (!title) throw new Error("title is required");
-  const note: Note = { id: nextId++, title };
-  notes.push(note);
-  return { addedNote: note };
+  const intent = getStringField(fd, "intent");
+
+  if (intent === "create") {
+    const title = getStringField(fd, "title").trim();
+    if (!title) throw new Error("title is required");
+    const note: Note = { id: nextId++, title };
+    notes.push(note);
+    return { addedNote: note };
+  }
+
+  if (intent === "delete") {
+    const idRaw = getStringField(fd, "id");
+    const id = Number(idRaw);
+    if (!Number.isFinite(id)) throw new Error("invalid id");
+    notes = notes.filter((n) => n.id !== id);
+    return { deletedId: id };
+  }
+
+  throw new Error(`unknown intent: ${intent || "(none)"}`);
 }
