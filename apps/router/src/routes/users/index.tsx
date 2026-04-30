@@ -7,6 +7,7 @@ import type { loader } from "./server";
 // proxy 内部の signal 経由で fine-grained に届く。
 export default function Users() {
   const data = loaderData<typeof loader>();
+
   return (
     <div>
       <h2 class="text-xl font-semibold">Users</h2>
