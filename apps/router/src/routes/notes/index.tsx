@@ -1,4 +1,4 @@
-import { computed, For, signal } from "@vidro/core";
+import { computed, For, signal, signalify } from "@vidro/core";
 import { loaderData, submission } from "@vidro/router";
 import type { action, loader } from "./server";
 
@@ -63,7 +63,28 @@ export default function NotesPage() {
         {`Click me (${count.value})`}
       </button>
 
-      <form method="post" {...subCreate.bind()} class="mt-4 flex gap-2">
+      <form
+        method="post"
+        {...subCreate.bind()}
+        onSubmit={(e: SubmitEvent) => {
+          // ADR 0050 dogfood: 楽観更新 (= server 往復を待たず client store に即 append)。
+          // plain Note を `signalify` で Store<Note> に昇格してから push する流儀。
+          // `data.notes.push({ id: -Date.now(), title })` は TS error
+          // (= push 引数は Store<Note> を要求) → ADR 0050 の痛みの起点。
+          //
+          // 注意: 楽観 -Date.now() と server 戻り (= 本物 id) は ADR 0049 の id-keyed
+          // reconcile で別エントリ扱い → flicker / 重複表示する。これは ADR 0050 の
+          // scope 外で、declarative 楽観更新 API (= 別 ADR γ 候補) で扱う宿題。
+          const fd = new FormData(e.currentTarget as HTMLFormElement);
+          const titleField = fd.get("title");
+          const title = typeof titleField === "string" ? titleField.trim() : "";
+          if (title) {
+            data.notes.push(signalify({ id: -Date.now(), title }));
+          }
+          // submit 自体は subCreate.bind() の handler に任せる (= preventDefault しない)
+        }}
+        class="mt-4 flex gap-2"
+      >
         <input
           name="title"
           placeholder="新しい note のタイトル"
