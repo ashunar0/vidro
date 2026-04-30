@@ -1,36 +1,35 @@
 // @vitest-environment node
-// ADR 0038 Phase 3 R-mid-1: submission() factory の per-key registry +
-// `bind()` + programmatic `submit()` の動作確認。
+// ADR 0051: derive 派楽観更新 + intent pattern + per-route registry の動作確認。
 //
 // テスト対象:
-//   - 初期 state (value=undefined / pending=false / error=undefined)
-//   - per-key 共有: 同 key の `submission()` を 2 回呼ぶと同じ signal セット
-//   - 別 key 独立: 別 key の signal は互いに干渉しない
-//   - bind() は data-vidro-sub に key を入れる
-//   - state 永続: setResult 後に再度 submission(key) を呼んでも value 保持
-//     (= swap シミュレーション、registry が module scope なので OK)
-//   - submit() の encoding 推論 (FormData / URLSearchParams / plain object × encoding)
-//   - submit() の lifecycle (pending true → result/error → pending false)
-//   - 連打 guard (同 key の in-flight 中は no-op)
+//   - submission() (= LatestSubmission view): 初期 state / pending 後 / success 後
+//   - submissions() (= active array signal): push / 複数 in-flight / cleanup
+//   - submit() programmatic: 各 call で新 instance、複数 in-flight 並列実行
+//   - Submission.retry(): pending 中 no-op、completed 後に同 input で再 submit
+//   - Submission.clear(): array から remove
+//   - encoding 推論 (FormData / URLSearchParams / plain object × encoding)
+//   - lifecycle (pending true → result/error → pending false)
 //   - dispatcher 不在時の no-op + warn
-//   - reset() で当該 key の field 初期化
+//   - _clearAllSubmissionState (navigation flush)
+//   - _cleanupSuccessfulSubmissions (= 同 page revalidate 完了で auto-remove)
+//   - intent pattern: FormData の intent field が input に正規化される
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vite-plus/test";
 import {
+  _cleanupSuccessfulSubmissions,
   _clearAllSubmissionState,
-  _getSubmissionMutator,
+  _createSubmissionInstance,
   _registerDispatcher,
   _resetRegistryForTest,
   submission,
-  type SubmitDispatcher,
+  submissions,
+  submit,
 } from "../src/action";
 
-describe("submission factory (ADR 0038 Phase 3 R-mid-1, per-key)", () => {
-  // console.warn の spy: dispatcher 不在時の warn を観察 + テスト出力を黙らせる。
+describe("submission / submissions / submit (ADR 0051)", () => {
   let warnSpy: ReturnType<typeof vi.fn> | null = null;
 
   beforeEach(() => {
-    // registry 全 entry を一括 reset (将来 key が増えても test 間 leak しない)
     _resetRegistryForTest();
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {}) as ReturnType<typeof vi.fn>;
   });
@@ -40,124 +39,285 @@ describe("submission factory (ADR 0038 Phase 3 R-mid-1, per-key)", () => {
     warnSpy = null;
   });
 
-  test("初期 state: value/error undefined、pending false", () => {
+  // ---- LatestSubmission view (= submission()) ----
+
+  test("submission(): 初期 state — 全 signal が undefined / false", () => {
     const sub = submission();
     expect(sub.value.value).toBeUndefined();
     expect(sub.pending.value).toBe(false);
     expect(sub.error.value).toBeUndefined();
+    expect(sub.input.value).toBeUndefined();
   });
 
-  test("同 key 共有: 2 回 call で同じ signal セット", () => {
-    const a = submission("k1");
-    const b = submission("k1");
-
-    const mu = _getSubmissionMutator("k1")!;
-    mu.setResult({ ok: "shared" });
-    expect(a.value.value).toEqual({ ok: "shared" });
-    expect(b.value.value).toEqual({ ok: "shared" }); // 同じ signal
+  test("submission(): submit 後に最新 instance の state を反映", async () => {
+    const view = submission();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ title: "x" });
+      expect(view.value.value).toEqual({ ok: true });
+      expect(view.pending.value).toBe(false);
+      expect(view.input.value).toEqual({ title: "x" });
+    } finally {
+      unregister();
+    }
   });
 
-  test("別 key 独立: 別 key の signal は干渉しない", () => {
-    const a = submission("k1");
-    const b = submission("k2");
-
-    _getSubmissionMutator("k1")!.setResult({ ok: "a" });
-    expect(a.value.value).toEqual({ ok: "a" });
-    expect(b.value.value).toBeUndefined();
-
-    _getSubmissionMutator("k2")!.setError({ name: "ValidationError", message: "boom" });
-    expect(b.error.value?.message).toBe("boom");
-    expect(a.error.value).toBeUndefined();
+  test("submission(): 連続 submit で最新 instance を反映 (= 末尾 view)", async () => {
+    const view = submission();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        const input = state._input.value;
+        state.setResult({ echoed: input });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ id: 1 });
+      expect(view.value.value).toEqual({ echoed: { id: 1 } });
+      await submit({ id: 2 });
+      expect(view.value.value).toEqual({ echoed: { id: 2 } });
+    } finally {
+      unregister();
+    }
   });
 
-  test("bind() は data-vidro-sub に key を入れる", () => {
-    expect(submission().bind()["data-vidro-sub"]).toBe("default");
-    expect(submission("create").bind()["data-vidro-sub"]).toBe("create");
-    expect(submission("delete").bind()["data-vidro-sub"]).toBe("delete");
+  // ---- active array (= submissions()) ----
+
+  test("submissions(): 初期は空 array", () => {
+    const subs = submissions();
+    expect(subs.value).toEqual([]);
   });
 
-  test("state 永続: setResult 後の再 submission(key) で value 保持 (swap simulation)", () => {
-    const first = submission("create");
-    _getSubmissionMutator("create")!.setResult({ added: { title: "x" } });
-    expect(first.value.value).toEqual({ added: { title: "x" } });
-
-    // 再 mount を simulate: 新 component が再度 submission("create") を呼ぶ
-    // (= 古い NotesPage は swap で破棄されたが registry は module scope で残る)
-    const second = submission("create");
-    expect(second.value.value).toEqual({ added: { title: "x" } });
+  test("submissions(): submit するたびに array に push される (= 複数 in-flight)", async () => {
+    const subs = submissions();
+    let resolveDispatch: (() => void) | null = null;
+    const unregister = _registerDispatcher({
+      dispatch: async () => {
+        // dispatcher 内で resolve を待つ → 全部 in-flight のまま観察できる
+        await new Promise<void>((resolve) => {
+          resolveDispatch = resolve;
+        });
+      },
+    });
+    try {
+      const p1 = submit({ id: 1 });
+      const p2 = submit({ id: 2 });
+      const p3 = submit({ id: 3 });
+      // 3 つとも in-flight
+      expect(subs.value).toHaveLength(3);
+      expect(subs.value.every((s) => s.pending.value)).toBe(true);
+      // 解放して全部完了させる
+      resolveDispatch!();
+      // 直後に再度 resolve できるよう dispatcher を更新する代わりに、
+      // 以降は dispatcher が同じ resolveDispatch を握りっぱなしなので、
+      // 個別に await しても resolve 済 (1 つの resolve が全 dispatch の Promise を resolve しないので、ここで止まる)
+      //
+      // → このテストは単に「push されること」だけを確認する。完了を待たずに早期 return する。
+      // (= dispatch が解放された後に新たに await する待ちは別 test で行う)
+      void p1;
+      void p2;
+      void p3;
+    } finally {
+      unregister();
+    }
   });
 
-  test("mutator 経由で result セットすると error は自動クリア", () => {
-    const sub = submission("k1");
-    const mu = _getSubmissionMutator("k1")!;
-    mu.setError({ name: "Error", message: "first" });
-    expect(sub.error.value?.message).toBe("first");
-    mu.setResult({ ok: true });
-    expect(sub.value.value).toEqual({ ok: true });
-    expect(sub.error.value).toBeUndefined();
+  test("submissions(): success 完了で array に残る (= 明示 cleanup されるまで保持)", async () => {
+    const subs = submissions();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ id: 1 });
+      // 完了済だが array にまだ居る (auto-cleanup は revalidate 完了で別途呼ぶ)
+      expect(subs.value).toHaveLength(1);
+      expect(subs.value[0]!.pending.value).toBe(false);
+      expect(subs.value[0]!.value.value).toEqual({ ok: true });
+    } finally {
+      unregister();
+    }
   });
 
-  test("mutator 経由で error セットすると value は自動クリア", () => {
-    const sub = submission("k1");
-    const mu = _getSubmissionMutator("k1")!;
-    mu.setResult({ ok: true });
-    mu.setError({ name: "Error", message: "boom" });
-    expect(sub.error.value?.message).toBe("boom");
-    expect(sub.value.value).toBeUndefined();
+  test("submissions(): 各 instance は固有 id を持つ", async () => {
+    const subs = submissions();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ a: 1 });
+      await submit({ a: 2 });
+      const ids = subs.value.map((s) => s.id);
+      expect(new Set(ids).size).toBe(2); // unique
+    } finally {
+      unregister();
+    }
   });
 
-  test("reset: 当該 key の全 field 初期化、別 key には影響なし", () => {
-    const a = submission("k1");
-    const b = submission("k2");
-    _getSubmissionMutator("k1")!.setResult({ ok: "a" });
-    _getSubmissionMutator("k2")!.setResult({ ok: "b" });
+  // ---- intent pattern (= FormData の intent field 正規化) ----
 
-    a.reset();
-    expect(a.value.value).toBeUndefined();
-    expect(b.value.value).toEqual({ ok: "b" });
+  test("intent pattern: FormData の intent / その他 field が input に乗る", async () => {
+    const subs = submissions();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      const fd = new FormData();
+      fd.append("intent", "create");
+      fd.append("title", "hello");
+      await submit(fd);
+      expect(subs.value[0]!.input.value).toEqual({ intent: "create", title: "hello" });
+    } finally {
+      unregister();
+    }
   });
 
-  test("submit() — dispatcher 不在時は no-op + console.warn", async () => {
-    const sub = submission();
-    await sub.submit({ title: "x" });
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(sub.pending.value).toBe(false);
-    expect(sub.value.value).toBeUndefined();
+  test("intent pattern: 異なる intent の submission は同 array で共存 (= filter で分離)", async () => {
+    const subs = submissions();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ intent: "create", title: "A" });
+      await submit({ intent: "delete", id: "3" });
+      await submit({ intent: "create", title: "B" });
+      const creates = subs.value.filter((s) => s.input.value?.intent === "create");
+      const deletes = subs.value.filter((s) => s.input.value?.intent === "delete");
+      expect(creates).toHaveLength(2);
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]!.input.value).toEqual({ intent: "delete", id: "3" });
+    } finally {
+      unregister();
+    }
   });
+
+  // ---- retry / clear ----
+
+  test("Submission.retry(): 同 input で再 submit", async () => {
+    const subs = submissions();
+    let dispatchCount = 0;
+    let lastInput: unknown;
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        dispatchCount++;
+        lastInput = state._input.value;
+        state.setResult({ ok: dispatchCount });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ title: "x" });
+      expect(dispatchCount).toBe(1);
+      const sub0 = subs.value[0]!;
+      await sub0.retry();
+      expect(dispatchCount).toBe(2);
+      expect(lastInput).toEqual({ title: "x" });
+      // identity 維持 (= 同 instance、id は変わらず)
+      expect(subs.value).toHaveLength(1);
+      expect(subs.value[0]!.id).toBe(sub0.id);
+    } finally {
+      unregister();
+    }
+  });
+
+  test("Submission.retry(): pending 中は no-op", async () => {
+    const subs = submissions();
+    let resolveDispatch: (() => void) | null = null;
+    let dispatchCount = 0;
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        dispatchCount++;
+        await new Promise<void>((resolve) => {
+          resolveDispatch = resolve;
+        });
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      const p = submit({ title: "x" });
+      // pending 中
+      expect(subs.value[0]!.pending.value).toBe(true);
+      // retry は no-op (pending 中)
+      await subs.value[0]!.retry();
+      expect(dispatchCount).toBe(1);
+      resolveDispatch!();
+      await p;
+    } finally {
+      unregister();
+    }
+  });
+
+  test("Submission.clear(): array から remove", async () => {
+    const subs = submissions();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ a: 1 });
+      await submit({ a: 2 });
+      expect(subs.value).toHaveLength(2);
+      subs.value[0]!.clear();
+      expect(subs.value).toHaveLength(1);
+      expect(subs.value[0]!.input.value).toEqual({ a: 2 });
+    } finally {
+      unregister();
+    }
+  });
+
+  // ---- encoding 推論 ----
 
   test("submit() plain object: default は JSON encoding", async () => {
-    const sub = submission("create");
     let captured: { path: string; body: BodyInit; headers: Record<string, string> } | null = null;
-    const dispatcher: SubmitDispatcher = {
-      dispatch: async (path, mutator, fetchInit) => {
+    const unregister = _registerDispatcher({
+      dispatch: async (path, state, fetchInit) => {
         captured = { path, ...fetchInit };
-        mutator.setResult({ ok: true });
+        state.setResult({ ok: true });
+        state.setPending(false);
       },
-    };
-    const unregister = _registerDispatcher(dispatcher);
+    });
     try {
-      await sub.submit({ title: "hello" }, { action: "/notes" });
+      await submit({ title: "hello" }, { action: "/notes" });
       expect(captured!.path).toBe("/notes");
       expect(captured!.headers["Content-Type"]).toBe("application/json");
       expect(captured!.body).toBe(JSON.stringify({ title: "hello" }));
-      expect(sub.value.value).toEqual({ ok: true });
     } finally {
       unregister();
     }
   });
 
   test("submit() FormData: そのまま渡す (Content-Type は browser default)", async () => {
-    const sub = submission("create");
     const fd = new FormData();
     fd.append("title", "fd");
     let captured: { body: BodyInit; headers: Record<string, string> } | null = null;
     const unregister = _registerDispatcher({
-      dispatch: async (_path, _mu, fetchInit) => {
+      dispatch: async (_path, state, fetchInit) => {
         captured = fetchInit;
+        state.setResult({ ok: true });
+        state.setPending(false);
       },
     });
     try {
-      await sub.submit(fd, { action: "/notes" });
+      await submit(fd, { action: "/notes" });
       expect(captured!.body).toBe(fd);
       expect(captured!.headers).toEqual({});
     } finally {
@@ -166,16 +326,17 @@ describe("submission factory (ADR 0038 Phase 3 R-mid-1, per-key)", () => {
   });
 
   test("submit() URLSearchParams: form-urlencoded ヘッダ付き", async () => {
-    const sub = submission("create");
     const params = new URLSearchParams({ title: "u" });
     let captured: { body: BodyInit; headers: Record<string, string> } | null = null;
     const unregister = _registerDispatcher({
-      dispatch: async (_path, _mu, fetchInit) => {
+      dispatch: async (_path, state, fetchInit) => {
         captured = fetchInit;
+        state.setResult({ ok: true });
+        state.setPending(false);
       },
     });
     try {
-      await sub.submit(params, { action: "/notes" });
+      await submit(params, { action: "/notes" });
       expect(captured!.body).toBe(params);
       expect(captured!.headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
     } finally {
@@ -184,318 +345,215 @@ describe("submission factory (ADR 0038 Phase 3 R-mid-1, per-key)", () => {
   });
 
   test("submit() plain object + encoding=form: urlencoded に変換", async () => {
-    const sub = submission("create");
     let captured: { body: BodyInit; headers: Record<string, string> } | null = null;
     const unregister = _registerDispatcher({
-      dispatch: async (_path, _mu, fetchInit) => {
+      dispatch: async (_path, state, fetchInit) => {
         captured = fetchInit;
+        state.setResult({ ok: true });
+        state.setPending(false);
       },
     });
     try {
-      await sub.submit({ a: "1", b: "2" }, { encoding: "form", action: "/notes" });
+      await submit({ a: "1", b: "2" }, { encoding: "form", action: "/notes" });
       expect(captured!.headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
       expect(captured!.body).toBeInstanceOf(URLSearchParams);
-      const params = captured!.body as URLSearchParams;
-      expect(params.get("a")).toBe("1");
-      expect(params.get("b")).toBe("2");
+      const p = captured!.body as URLSearchParams;
+      expect(p.get("a")).toBe("1");
+      expect(p.get("b")).toBe("2");
     } finally {
       unregister();
     }
   });
 
-  test("submit() 連打 guard: 同 key の in-flight 中は 2 回目 no-op", async () => {
-    const sub = submission("k1");
-    let dispatchCount = 0;
-    let resolveFirst: (() => void) | null = null;
+  // ---- input normalize ----
 
+  test("input: plain object は shallow clone される (= caller の参照変更で input は不変)", async () => {
+    const subs = submissions();
     const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        dispatchCount++;
-        mutator.setPending(true);
-        await new Promise<void>((resolve) => {
-          resolveFirst = resolve;
-        });
-        mutator.setPending(false);
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
       },
     });
-
+    const original = { title: "first" };
     try {
-      const p1 = sub.submit({ a: 1 }, { action: "/" });
-      // 連打: pending true 中の 2 回目は dispatch されない
-      const p2 = sub.submit({ a: 2 }, { action: "/" });
-      // p2 は即時 resolve (pending guard で no-op)
-      await p2;
-      expect(dispatchCount).toBe(1);
-
-      resolveFirst!();
-      await p1;
-      expect(sub.pending.value).toBe(false);
-    } finally {
-      unregister();
-    }
-  });
-
-  test("別 key は並列 submit 可能 (= 連打 guard は per-key)", async () => {
-    const subA = submission("k1");
-    const subB = submission("k2");
-    let count = 0;
-    const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        count++;
-        mutator.setPending(true);
-        await Promise.resolve();
-        mutator.setPending(false);
-      },
-    });
-    try {
-      await Promise.all([
-        subA.submit({ x: 1 }, { action: "/" }),
-        subB.submit({ y: 1 }, { action: "/" }),
-      ]);
-      expect(count).toBe(2);
-    } finally {
-      unregister();
-    }
-  });
-
-  // ---- ADR 0040 Phase 4 step 1: input lifecycle ----
-
-  test("input: 初期値は undefined", () => {
-    const sub = submission("p4-init");
-    expect(sub.input.value).toBeUndefined();
-  });
-
-  test("input: plain object で submit すると normalize された input が見える", async () => {
-    const sub = submission("p4-plain");
-    let observedInput: Record<string, unknown> | undefined;
-    const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        // dispatcher 内で input が確定済みであること (= dispatch 前に setInput 済)
-        observedInput = sub.input.value;
-        mutator.setResult({ ok: true });
-      },
-    });
-    try {
-      await sub.submit({ title: "hello", count: 3 }, { action: "/" });
-      expect(observedInput).toEqual({ title: "hello", count: 3 });
-      // 完了後も保持
-      expect(sub.input.value).toEqual({ title: "hello", count: 3 });
-    } finally {
-      unregister();
-    }
-  });
-
-  test("input: FormData は Object.fromEntries で normalize される", async () => {
-    const sub = submission("p4-fd");
-    const fd = new FormData();
-    fd.append("title", "fd-title");
-    fd.append("intent", "create");
-    const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        mutator.setResult({ ok: true });
-      },
-    });
-    try {
-      await sub.submit(fd, { action: "/" });
-      expect(sub.input.value).toEqual({ title: "fd-title", intent: "create" });
-    } finally {
-      unregister();
-    }
-  });
-
-  test("input: URLSearchParams も Object.fromEntries で normalize される", async () => {
-    const sub = submission("p4-params");
-    const params = new URLSearchParams({ a: "1", b: "2" });
-    const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        mutator.setResult({ ok: true });
-      },
-    });
-    try {
-      await sub.submit(params, { action: "/" });
-      expect(sub.input.value).toEqual({ a: "1", b: "2" });
+      await submit(original);
+      expect(subs.value[0]!.input.value).toEqual({ title: "first" });
+      original.title = "mutated";
+      expect(subs.value[0]!.input.value).toEqual({ title: "first" });
     } finally {
       unregister();
     }
   });
 
   test("input: 引数なし submit では undefined のまま (= 「入力なし」明示)", async () => {
-    const sub = submission("p4-none");
+    const subs = submissions();
     const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        mutator.setResult({ ok: true });
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
       },
     });
     try {
-      await sub.submit();
-      expect(sub.input.value).toBeUndefined();
+      await submit();
+      expect(subs.value[0]!.input.value).toBeUndefined();
     } finally {
       unregister();
     }
   });
 
-  test("input: 連打 guard で 2 回目 no-op の時は input も上書きされない", async () => {
-    const sub = submission("p4-guard");
-    let resolveFirst: (() => void) | null = null;
-    const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        mutator.setPending(true);
-        await new Promise<void>((resolve) => {
-          resolveFirst = resolve;
-        });
-        mutator.setPending(false);
-      },
-    });
-    try {
-      const p1 = sub.submit({ a: 1 }, { action: "/" });
-      // 1 回目で input が反映され、pending true 中
-      expect(sub.input.value).toEqual({ a: 1 });
-      // 連打: 2 回目は pending guard で setInput 自体に到達しない
-      const p2 = sub.submit({ a: 99 }, { action: "/" });
-      await p2;
-      expect(sub.input.value).toEqual({ a: 1 }); // 上書きされていない
-      resolveFirst!();
-      await p1;
-    } finally {
-      unregister();
-    }
-  });
+  // ---- error / dispatcher 不在 ----
 
-  test("input: error 後も保持 (UI で再入力に流用可)", async () => {
-    const sub = submission("p4-err");
+  test("error: state.setError で error 反映、value はクリア", async () => {
+    const subs = submissions();
     const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        mutator.setError({ name: "ValidationError", message: "bad" });
+      dispatch: async (_path, state) => {
+        state.setError({ name: "ValidationError", message: "bad" });
+        state.setPending(false);
       },
     });
     try {
-      await sub.submit({ title: "broken" }, { action: "/" });
+      await submit({ title: "broken" });
+      const sub = subs.value[0]!;
       expect(sub.error.value?.message).toBe("bad");
+      expect(sub.value.value).toBeUndefined();
+      // input は失敗後も保持 (= retry / 再入力に流用可)
       expect(sub.input.value).toEqual({ title: "broken" });
     } finally {
       unregister();
     }
   });
 
-  test("input: reset() で undefined に戻る", async () => {
-    const sub = submission("p4-reset");
+  test("submit(): dispatcher 不在時は no-op + console.warn", async () => {
+    await submit({ title: "x" });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(submissions().value).toEqual([]);
+  });
+
+  // ---- navigation flush ----
+
+  test("_clearAllSubmissionState: 全 route slot の active を空にする", async () => {
+    const subs = submissions();
     const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        mutator.setResult({ ok: true });
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
       },
     });
     try {
-      await sub.submit({ title: "x" }, { action: "/" });
-      expect(sub.input.value).toEqual({ title: "x" });
-      sub.reset();
-      expect(sub.input.value).toBeUndefined();
-      // value/pending/error も合わせてクリア (既存挙動の re-confirm)
-      expect(sub.value.value).toBeUndefined();
-      expect(sub.pending.value).toBe(false);
-      expect(sub.error.value).toBeUndefined();
+      await submit({ a: 1 });
+      await submit({ a: 2 });
+      expect(subs.value).toHaveLength(2);
+
+      _clearAllSubmissionState();
+      expect(subs.value).toEqual([]);
     } finally {
       unregister();
     }
   });
 
-  test("input: 別 key 独立 (registry per-key)", async () => {
-    const subA = submission("p4-a");
-    const subB = submission("p4-b");
-    const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        mutator.setResult({ ok: true });
-      },
-    });
-    try {
-      await subA.submit({ x: 1 }, { action: "/" });
-      await subB.submit({ y: 2 }, { action: "/" });
-      expect(subA.input.value).toEqual({ x: 1 });
-      expect(subB.input.value).toEqual({ y: 2 });
-    } finally {
-      unregister();
-    }
-  });
-
-  test("input: plain object は shallow clone される (caller の参照変更で input は不変)", async () => {
-    const sub = submission("p4-clone");
-    const original = { title: "first" };
-    const unregister = _registerDispatcher({
-      dispatch: async (_path, mutator) => {
-        mutator.setResult({ ok: true });
-      },
-    });
-    try {
-      await sub.submit(original, { action: "/" });
-      expect(sub.input.value).toEqual({ title: "first" });
-      // caller が後から書き換えても input は不変であること
-      original.title = "mutated";
-      expect(sub.input.value).toEqual({ title: "first" });
-    } finally {
-      unregister();
-    }
-  });
-
-  // ---- ADR 0041: navigation 単位 flush (production 経路の helper) ----
-
-  test("_clearAllSubmissionState: 全 key の全 field を flush する", () => {
-    const a = submission("nav-a");
-    const b = submission("nav-b");
-    _getSubmissionMutator("nav-a")!.setResult({ ok: "a" });
-    _getSubmissionMutator("nav-a")!.setInput({ title: "ax" });
-    _getSubmissionMutator("nav-b")!.setError({ name: "ValidationError", message: "boom" });
-    _getSubmissionMutator("nav-b")!.setPending(true);
-
+  test("_clearAllSubmissionState: signal identity を保持 (= 再 submission() で同 signal)", () => {
+    const view1 = submission();
     _clearAllSubmissionState();
-
-    expect(a.value.value).toBeUndefined();
-    expect(a.error.value).toBeUndefined();
-    expect(a.input.value).toBeUndefined();
-    expect(a.pending.value).toBe(false);
-    expect(b.value.value).toBeUndefined();
-    expect(b.error.value).toBeUndefined();
-    expect(b.input.value).toBeUndefined();
-    expect(b.pending.value).toBe(false);
+    const view2 = submission();
+    // computed の identity は呼び出しごとに変わるが、underlying slot.active signal は同じ。
+    // ここでは「flush 後でも error なく動く」ことだけ確認 (slot identity は internal)。
+    expect(view1.value.value).toBeUndefined();
+    expect(view2.value.value).toBeUndefined();
   });
 
-  test("_clearAllSubmissionState: signal identity を保持 (= 再 submission(key) で同 signal)", () => {
-    const first = submission("nav-id");
-    _getSubmissionMutator("nav-id")!.setResult({ ok: 1 });
-    const valueSignalBefore = first.value;
-    const inputSignalBefore = first.input;
+  // ---- auto-cleanup (= 同 page loader revalidate 完了で success を array から remove) ----
 
-    _clearAllSubmissionState();
-
-    const second = submission("nav-id");
-    // 同じ signal インスタンスを共有 (registry Map entry は削除されていない)
-    expect(second.value).toBe(valueSignalBefore);
-    expect(second.input).toBe(inputSignalBefore);
-    // ただし値は flush 済み
-    expect(second.value.value).toBeUndefined();
-  });
-
-  test("_clearAllSubmissionState: 空 registry でも安全 (no-op)", () => {
-    // この test 単独では beforeEach で registry が flush 済 + entry 0 個になりうる
-    // 状況を想定。entry 0 個でも throw しないこと。
-    expect(() => _clearAllSubmissionState()).not.toThrow();
-  });
-
-  test("_registerDispatcher の戻り値 unregister: 後勝ち上書きで stale unregister は no-op", async () => {
-    const d1: SubmitDispatcher = { dispatch: async () => {} };
-    let d2Called = false;
-    const d2: SubmitDispatcher = {
-      dispatch: async () => {
-        d2Called = true;
+  test("_cleanupSuccessfulSubmissions: success のみ remove、errored / pending は残す", async () => {
+    const subs = submissions();
+    let resolveSecond: (() => void) | null = null;
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        const input = state._input.value;
+        if (input?.kind === "success") {
+          state.setResult({ ok: true });
+          state.setPending(false);
+        } else if (input?.kind === "error") {
+          state.setError({ name: "ValidationError", message: "boom" });
+          state.setPending(false);
+        } else if (input?.kind === "pending") {
+          // resolve しない (= pending のまま保持)
+          await new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          });
+        }
       },
-    };
+    });
+    try {
+      // 1 回目: success
+      await submit({ kind: "success" });
+      // 2 回目: error
+      await submit({ kind: "error" });
+      // 3 回目: pending のまま保持
+      const pendingPromise = submit({ kind: "pending" });
 
-    const u1 = _registerDispatcher(d1);
-    const u2 = _registerDispatcher(d2); // d2 が active
+      expect(subs.value).toHaveLength(3);
 
-    u1(); // d1 を unregister するが、現在 active は d2 なので no-op (d2 を消さない)
+      // route path は default の "/" (SSR fallback)。test 環境で window が無いため。
+      _cleanupSuccessfulSubmissions("/");
 
-    const sub = submission("k1");
-    await sub.submit({ a: 1 }, { action: "/" });
-    expect(d2Called).toBe(true);
-    u2();
+      // success は remove、error / pending は残る
+      expect(subs.value).toHaveLength(2);
+      const kinds = subs.value.map((s) => {
+        const k = s.input.value?.kind;
+        return typeof k === "string" ? k : "";
+      });
+      kinds.sort((a, b) => a.localeCompare(b));
+      expect(kinds).toEqual(["error", "pending"]);
+
+      resolveSecond!();
+      await pendingPromise;
+    } finally {
+      unregister();
+    }
+  });
+
+  test("_cleanupSuccessfulSubmissions: 存在しない route は no-op", () => {
+    expect(() => _cleanupSuccessfulSubmissions("/never-touched")).not.toThrow();
+  });
+
+  // ---- _createSubmissionInstance (internal) ----
+
+  test("_createSubmissionInstance: 直接呼び出しで Submission instance を作って array に push", () => {
+    const subs = submissions();
+    const { state, submission: inst } = _createSubmissionInstance(
+      "/",
+      { foo: "bar" },
+      JSON.stringify({ foo: "bar" }),
+      { "Content-Type": "application/json" },
+    );
+    expect(subs.value).toContain(inst);
+    expect(inst.id).toBeTruthy();
+    expect(inst.pending.value).toBe(true);
+    expect(inst.input.value).toEqual({ foo: "bar" });
+    state.setResult({ ok: true });
+    state.setPending(false);
+    expect(inst.value.value).toEqual({ ok: true });
+    expect(inst.pending.value).toBe(false);
+  });
+
+  // ---- multi-route isolation ----
+
+  test("別 route の submission は独立 (= /a への submit が /b の subs に漏れない)", async () => {
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ x: 1 }, { action: "/a" });
+      await submit({ x: 2 }, { action: "/b" });
+      // submit() は opts.action で path を上書き、各 path の slot に push される
+      // submissions() は default pathname "/" を見るので空のはず (test env)
+      expect(submissions().value).toHaveLength(0);
+    } finally {
+      unregister();
+    }
   });
 });

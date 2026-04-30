@@ -1,44 +1,44 @@
-// Phase 3 R-mid-1 (ADR 0038) の action primitive 公開 API。
-// loader と同じ場所 (`server.ts`) に export された action 関数を、Web 標準の
-// `<form method="post">` か programmatic な `sub.submit()` から呼び出して、
-// 結果を per-key signal で読む。
+// ADR 0051: derive 派楽観更新 + intent pattern + per-route registry。
 //
-// state ライフサイクル設計 (B-γ):
-//   submission state (value/pending/error の signal セット) は **module scope の
-//   registry に key 単位で格納** する。call-order ベースの自動採番 (React hooks
-//   風 B-α) は magic で fragile なので採用せず、user が明示的に文字列 key を
-//   渡す形 (= Vidro 哲学の Hono的透明性と整合)。
+// state ライフサイクル設計:
+//   submission instance (= 1 回の submit に対応する state slot) は **route path 単位の
+//   registry に array で格納** する。各 instance は固有 id を持ち、`<For each={subs}>`
+//   の key prop として使える。同 route 内の複数 form は HTML `<button name="intent">` で
+//   区別する (= ADR 0051 の intent pattern、Remix `<Form>` 慣習)。
 //
-//   理由: loader 自動 revalidate (= reset() による swap) で component tree が
-//   再構築されても、registry が module scope にあれば action 結果が消えずに
-//   残り、Remix UX (POST/Redirect/GET の "Added: ..." 表示) を維持できる。
-//   per-component instance の state では swap で破棄される。
-//
-//   trade-off: page 跨ぎで state が残る (= /notes で submit → /about に
-//   navigate → /notes 戻ると古い value 見える)。toy 段階では受容、navigation
-//   単位の clear API は別 ADR (Phase 5)。
+//   per-key string registry (ADR 0038) は廃止: 1 route = 1 action 規約 (= 設計書) を
+//   維持するなら key 引数は構造的に不要で、key 由来の dual source of truth (`<form
+//   data-vidro-sub="create">` ↔ `submission("create")`) と stringly-typed の問題が
+//   解消する。
 //
 // public:
-//   - `submission<typeof action>(key?)` factory: key 単位で signal セットを共有。
-//     省略時は "default" key (= R-min 互換、1 form の単純ケース)。複数 form は
-//     `submission("create")` / `submission("delete")` のように明示。
-//   - `Submission<T>` 型: bind() / submit() 込みの戻り値 shape
-//   - `ActionArgs<R>` / `AnyAction` / `SubmissionError` 型
+//   - `submission<A>()`: 現 route の最新 submission の **stable view** を返す。
+//     未だ submission が無ければ全 signal が undefined / false を返す。
+//     単発 form (Settings 等) の pending / error / input 表示用。
+//   - `submissions<A>()`: 現 route の全 submission instance を array signal で返す。
+//     複数 in-flight 楽観 UX で `<For each={subs.value}>` する用途。各要素は固有 id +
+//     pending / value / error / input + retry() / clear()。
+//   - `submit(input?, opts?)`: 現 route の action に programmatic 投げ。
+//   - `Submission<T>` / `LatestSubmission<T>` / `ActionArgs<R>` / `AnyAction` /
+//     `SubmissionError` 型。
 //
 // internal (router.tsx 経由のみ参照):
-//   - `_getSubmissionMutator(key)`: form delegation が registry から submission
-//     state を引き当てる lookup
+//   - `_createSubmissionInstance(...)`: 新 Submission を生成して array に push し、
+//     state mutator + Submission を返す。form delegation / programmatic submit /
+//     retry が共通で使う。
 //   - `_registerDispatcher(d)`: Router の client mode が dispatcher を登録、
-//     `submission.submit()` がこの dispatcher 経由で fetch + state mutator を呼ぶ。
-//     SSR や Router 外では dispatcher 不在で submit() は no-op + warn。
+//     `submit()` 経路がこの dispatcher 経由で fetch + state mutator を呼ぶ。
+//   - `_clearAllSubmissionState()`: navigation 単位 flush (ADR 0041 と同思想)。
+//   - `_cleanupSuccessfulSubmissions(routePath)`: 同 page loader revalidate 完了で
+//     呼ばれる auto-cleanup (= 楽観行を server 戻りで自動消滅、derive 派の核体験)。
+//   - `_resetRegistryForTest()`: test 用全 flush。
 
-import { signal, type Signal } from "@vidro/core";
+import { computed, signal, type Signal } from "@vidro/core";
 import type { Routes } from "./page-props";
 
 /**
- * action 関数が server 側で受け取る引数。`R` に route path (例: `"/users/:id"`)
- * を渡すと params の型が RouteMap から自動展開される。LoaderArgs と同形式で揃え、
- * 同じ route の loader / action が同じ params 型を共有する。
+ * action 関数が server 側で受け取る引数。`R` に route path (例: `"/users/:id"`) を
+ * 渡すと params の型が RouteMap から自動展開される。LoaderArgs と同形式。
  */
 export type ActionArgs<R extends keyof Routes = keyof Routes> = {
   request: Request;
@@ -49,9 +49,6 @@ export type ActionArgs<R extends keyof Routes = keyof Routes> = {
  * action として受け入れる関数の最低条件。`Submission<A>` の generic 制約に使う。
  * params shape は route ごとに異なるので `any` で受けて、本当の型は
  * `Awaited<ReturnType<A>>` で個別に取り出す (PageProps と同じ idiom)。
- *
- * 戻り値型が `unknown` だけなのは sync / async 両対応の表現。`Promise<unknown>` は
- * `unknown` に含まれるので redundant union を避けて `unknown` 単独にしている。
  */
 export type AnyAction = (args: { request: Request; params: any }) => unknown;
 
@@ -62,7 +59,7 @@ export type AnyAction = (args: { request: Request; params: any }) => unknown;
 export type SubmissionError = { name: string; message: string; stack?: string };
 
 /**
- * `submission()` の `submit(input)` で受け入れる入力。
+ * `submit()` で受け入れる入力。
  * - `FormData` → multipart (browser が boundary 付きで Content-Type を設定)
  * - `URLSearchParams` → application/x-www-form-urlencoded
  * - plain object → default は JSON、`encoding: "form"` 指定で urlencoded
@@ -77,118 +74,94 @@ export type SubmitOptions = {
 };
 
 /**
- * `submission()` factory の戻り値。Resource (ADR 0028) と同形式の signal-like API
- * + form binding (`bind()`) + programmatic submit (`submit()`)。
+ * 1 つの submission instance。`submissions()` の配列要素。
+ * lifecycle (ADR 0051):
+ *   - 生成: form submit / submit() / retry() 時に新 instance、`pending = true`
+ *   - success: `pending = false`、value 確定。同 route の loader revalidate
+ *     完了で auto-cleanup (= array から remove) される
+ *   - error: `pending = false`、error 確定。array に残留 (= retry / clear で操作)
+ *   - clear(): array から外す。失敗を user 操作で消す経路
+ *   - retry(): 同 input / 同 path で再 submit (= pending=true 再開、error クリア)
+ *   - navigation: 全 flush
  */
 export type Submission<T> = {
-  value: Signal<T | undefined>;
-  pending: Signal<boolean>;
-  error: Signal<SubmissionError | undefined>;
-  /**
-   * 直近 submit に渡された入力 (= 楽観的 preview の素材、Phase 4 step 1)。
-   *
-   * lifecycle:
-   *   - 初期値: undefined
-   *   - submit 開始時 (form / programmatic 共通): normalize した入力で書き換え
-   *   - 完了 (success / error / redirect): 保持 (= 「最終入力」を UI 側で読み続けられる)
-   *   - 次の submit: 上書き
-   *   - `reset()`: undefined に戻す
-   *
-   * normalize ルール (詳細は normalizeSubmitInput):
-   *   FormData → Object.fromEntries (重複 key は last-wins)
-   *   URLSearchParams → Object.fromEntries
-   *   plain object → そのまま (shallow clone)
-   *   undefined → undefined
-   *
-   * 典型用途: `<Show when={sub.pending.value && sub.input.value}>` で submit 中だけ
-   * pending 行を render し、loader 自動 revalidate で本物に置換される自然な UX に。
-   */
-  input: Signal<Record<string, unknown> | undefined>;
-  /** state を初期化 (value/error/pending/input を全てクリア)。 */
-  reset(): void;
-  /** `<form {...sub.bind()}>` で spread。`data-vidro-sub` attribute 1 個を返す。 */
-  bind(): { "data-vidro-sub": string };
-  /** programmatic submit。SSR / Router 外では no-op + warn。 */
-  submit(input?: SubmitInput, opts?: SubmitOptions): Promise<void>;
+  /** array での stable identity (= `<For>` の key prop / 同一性判定に使う)。 */
+  readonly id: string;
+  readonly value: Signal<T | undefined>;
+  readonly pending: Signal<boolean>;
+  readonly error: Signal<SubmissionError | undefined>;
+  readonly input: Signal<Record<string, unknown> | undefined>;
+  /** 同 input / 同 path で再 submit。pending 中は no-op。 */
+  retry(): Promise<void>;
+  /** 自身を array から remove。dispatcher の参照は走り続けるが UI からは消える。 */
+  clear(): void;
 };
 
-// ---- internal: per-key registry + dispatcher ----
+/**
+ * `submission()` factory の戻り値。「現 route の最新 submission」の stable view。
+ *
+ * 各 signal は computed: 配列末尾の Submission の同名 signal を読む。
+ * submission が未だ生成されていない / array が空 → value/error/input は undefined、
+ * pending は false を返す。
+ *
+ * 単発 form (Settings 保存等) で「最新の状態」を読むだけのケースで使う。複数
+ * in-flight を 1 つずつ扱うなら `submissions()` を使う。
+ */
+export type LatestSubmission<T> = {
+  readonly value: Signal<T | undefined>;
+  readonly pending: Signal<boolean>;
+  readonly error: Signal<SubmissionError | undefined>;
+  readonly input: Signal<Record<string, unknown> | undefined>;
+};
 
-/** form delegation / submit() が呼ぶ state mutator 集合 (key 単位で永続)。 */
-type SubmissionMutator = {
+// ---- internal: per-route slot + dispatcher ----
+
+/** 1 つの submission の内部 state mutator (= router.tsx 経由)。 */
+export type SubmissionState = {
   setResult: (r: unknown) => void;
   setError: (e: SubmissionError) => void;
   setPending: (v: boolean) => void;
-  /** 楽観的 preview 用の入力を保持 (Phase 4 step 1)。dispatch 前に呼ぶ。 */
   setInput: (v: Record<string, unknown> | undefined) => void;
   isPending: () => boolean;
-  // signal を expose して submission() factory が外から読めるように。
-  // factory の戻り値 (Submission<T>) で .value / .pending / .error / .input を返すため。
-  _value: Signal<unknown>;
-  _pending: Signal<boolean>;
-  _error: Signal<SubmissionError | undefined>;
-  _input: Signal<Record<string, unknown> | undefined>;
+  // signal を expose (factory が view を作るため)。
+  readonly _value: Signal<unknown>;
+  readonly _pending: Signal<boolean>;
+  readonly _error: Signal<SubmissionError | undefined>;
+  readonly _input: Signal<Record<string, unknown> | undefined>;
 };
 
-/** `submit()` が依頼する dispatch 仕様。Router 側 (client mode) が実装を提供。 */
+/** dispatcher 仕様。Router 側 (client mode) が実装を提供する。 */
 export type SubmitDispatcher = {
   dispatch(
     path: string,
-    mutator: SubmissionMutator,
+    state: SubmissionState,
     fetchInit: { body: BodyInit; headers: Record<string, string> },
   ): Promise<void>;
 };
 
-const _registry = new Map<string, SubmissionMutator>();
+/** route path 1 つあたりの submission slot。 */
+type RouteSlot = {
+  active: Signal<Submission<unknown>[]>;
+};
+
+const _registry = new Map<string, RouteSlot>();
 let _dispatcher: SubmitDispatcher | null = null;
+let _idCounter = 0;
 
-/** form delegation (router.tsx) が data-vidro-sub attribute 経由で呼ぶ lookup。 */
-export const _getSubmissionMutator = (key: string): SubmissionMutator | undefined =>
-  _registry.get(key);
+function getOrCreateSlot(routePath: string): RouteSlot {
+  let slot = _registry.get(routePath);
+  if (slot) return slot;
+  slot = { active: signal<Submission<unknown>[]>([]) };
+  _registry.set(routePath, slot);
+  return slot;
+}
 
-/**
- * registry 全エントリの state (value / error / pending / input) を一括 flush する
- * 内部 helper。Map entry 自体は残す = 既存の subscriber (effect 等) を切らない。
- * 同じロジックを `_clearAllSubmissionState` (production = navigation flush, ADR 0041)
- * と `_resetRegistryForTest` (test) の両者で共有する。
- */
-function flushAllRegistryState(): void {
-  _registry.forEach((m) => {
-    m._value.value = undefined;
-    m._error.value = undefined;
-    m._pending.value = false;
-    m._input.value = undefined;
-  });
+function nextId(): string {
+  return `s${++_idCounter}`;
 }
 
 /**
- * navigation 単位 (ADR 0041) で全 submission state を flush する production API。
- * Router client mode が `currentPathname` の変化を effect で subscribe して呼ぶ。
- *
- * 永続性の意味論:
- *   - 同 path 内の loader 自動 revalidate (= component swap) では呼ばれない
- *     → "Added: ..." 等の result は維持される (= ADR 0038 / Remix UX)
- *   - 別 path への navigate / popstate で呼ばれる → 古い submission state が消える
- *     (= Remix の useActionData の挙動と整合)
- *
- * registry entry 自体は削除しないので、再度同 key で `submission()` が呼ばれた時に
- * 同じ signal identity を共有し続け、subscriber が orphaned にならない。
- */
-export function _clearAllSubmissionState(): void {
-  flushAllRegistryState();
-}
-
-/**
- * test 用: 同上。`beforeEach` で「使ったキーを列挙して reset」する形だと将来
- * テストが増えた時に静かに leak する (review fix #5) ため、全 entry を一括 reset
- * する経路を用意。production では `_clearAllSubmissionState` を使う。
- */
-export function _resetRegistryForTest(): void {
-  flushAllRegistryState();
-}
-
-/**
- * dispatcher を登録 (= Router の client mode mount)。返値は unregister 関数で、
+ * dispatcher 登録 (= Router の client mode mount)。返値は unregister 関数で、
  * Router の onCleanup から呼ばれる。multiple Router 同時 mount は想定しない
  * (= toy 段階、後勝ち上書きで別 Router の dispatcher は無効化される)。
  */
@@ -200,114 +173,216 @@ export function _registerDispatcher(d: SubmitDispatcher): () => void {
 }
 
 /**
- * 現在の form submission の state を読む factory (per-key)。
+ * navigation 単位の全 submission flush (ADR 0041)。Router client mode が
+ * `currentPathname` の変化を effect で subscribe して呼ぶ。
  *
- * 使い方:
- * ```tsx
- * import { submission } from "@vidro/router";
- * import type { action } from "./server";
- *
- * // 単一 form: key 省略 ("default" key で共有)
- * const sub = submission<typeof action>();
- *
- * // 複数 form: 明示 key で独立管理
- * const subCreate = submission<typeof action>("create");
- * const subDelete = submission<typeof action>("delete");
- * <form method="post" {...subCreate.bind()}>...</form>
- *
- * // programmatic
- * await subCreate.submit({ title: "foo" });               // JSON
- * await subCreate.submit(formData);                        // multipart
- * ```
- *
- * 同じ key で複数回呼ぶと **同じ signal セットを共有** する。state は module
- * scope の registry に格納され、loader 自動 revalidate (= component swap) を
- * 跨いで保持される (= Remix UX 維持の核)。
+ * 全 route slot の active 配列を空にする。各 Signal の identity は保持され、
+ * 既存の computed (= LatestSubmission の view) は引き続き動く。
  */
-export function submission<A extends AnyAction = AnyAction>(
-  key: string = "default",
-): Submission<Awaited<ReturnType<A>>> {
-  const mutator = getOrCreateMutator(key);
-
-  const submit = async (input?: SubmitInput, opts?: SubmitOptions): Promise<void> => {
-    if (mutator.isPending()) return; // 同 key の連打 guard
-
-    if (!_dispatcher) {
-      // SSR / Router 外。silent ではなく console.warn で気付ける形に。
-      console.warn(
-        "[vidro/router] submission.submit() called without a mounted Router (no dispatcher).",
-      );
-      return;
-    }
-
-    // input signal は dispatch 前に確定させる。dispatcher 内で setPending(true) →
-    // fetch する間に JSX 側が `pending && input` を読んで pending row を render
-    // できるよう、順序は input → dispatcher の順を守る。
-    mutator.setInput(normalizeSubmitInput(input));
-
-    const path = opts?.action ?? defaultPathname();
-    const { body, headers } = encodeSubmitBody(input, opts?.encoding);
-    await _dispatcher.dispatch(path, mutator, { body, headers });
-  };
-
-  return {
-    value: mutator._value as Signal<Awaited<ReturnType<A>> | undefined>,
-    pending: mutator._pending,
-    error: mutator._error,
-    input: mutator._input,
-    reset() {
-      mutator._value.value = undefined;
-      mutator._error.value = undefined;
-      mutator._pending.value = false;
-      mutator._input.value = undefined;
-    },
-    bind() {
-      return { "data-vidro-sub": key };
-    },
-    submit,
-  };
-}
-
-/** registry から key の mutator を取得、無ければ signals を新規作成して登録。 */
-function getOrCreateMutator(key: string): SubmissionMutator {
-  let mutator = _registry.get(key);
-  if (mutator) return mutator;
-
-  const value = signal<unknown>(undefined);
-  const pending = signal(false);
-  const error = signal<SubmissionError | undefined>(undefined);
-  const input = signal<Record<string, unknown> | undefined>(undefined);
-
-  mutator = {
-    setResult(r) {
-      value.value = r;
-      error.value = undefined;
-    },
-    setError(e) {
-      error.value = e;
-      value.value = undefined;
-    },
-    setPending(v) {
-      pending.value = v;
-    },
-    setInput(v) {
-      input.value = v;
-    },
-    isPending() {
-      return pending.value;
-    },
-    _value: value,
-    _pending: pending,
-    _error: error,
-    _input: input,
-  };
-  _registry.set(key, mutator);
-  return mutator;
+export function _clearAllSubmissionState(): void {
+  _registry.forEach((slot) => {
+    slot.active.value = [];
+  });
 }
 
 /**
+ * 同 page loader revalidate 完了時に呼ばれる auto-cleanup (ADR 0051)。
+ *
+ * 該当 route の active 配列から **success な submission (= !pending && !error)** を
+ * 取り除く。errored submission は残す (= user が clear / retry で操作する)。
+ *
+ * これにより、derive 楽観 UX で `<For each={subs.value}>` が「server 戻りで自動的に
+ * 楽観行が消える」体験を得られる (= ADR 0051 derive 派の核体験)。
+ *
+ * router.tsx の effect で `_diffMergeAllLayers` 完了直後に呼ぶ。pathname 一致の
+ * revalidate のみ対象 (= 別 page navigate は `_clearAllSubmissionState` 経由)。
+ */
+export function _cleanupSuccessfulSubmissions(routePath: string): void {
+  const slot = _registry.get(routePath);
+  if (!slot) return;
+  slot.active.value = slot.active.value.filter(
+    (s) => s.pending.value || s.error.value !== undefined,
+  );
+}
+
+/**
+ * test 用全 flush。registry entry も全削除する (= 同 test runner プロセス内で
+ * 古い slot identity が次の test に漏れない)。
+ */
+export function _resetRegistryForTest(): void {
+  _registry.clear();
+  _idCounter = 0;
+}
+
+/**
+ * 新 Submission instance を生成して route slot に push する (router.tsx 経由)。
+ *
+ * 戻り値:
+ *   - `state`: dispatcher が呼ぶ mutator (setPending / setResult / setError / setInput)
+ *   - `submission`: array に push 済みの Submission instance (= UI 側で読む)
+ *
+ * 引数 `body` / `headers` は retry() で再利用するため保持する。FormData は
+ * single-use なので、retry が必要な経路では事前に clone するか input record で
+ * 再 encode するのが堅実。本実装では (body, headers) をそのまま握って retry で
+ * 同一参照を渡す (= toy 段階、user が file upload 系で retry したくなったら
+ * input record + encoding から再 encode する path を別途追加する)。
+ */
+export function _createSubmissionInstance(
+  routePath: string,
+  input: Record<string, unknown> | undefined,
+  body: BodyInit,
+  headers: Record<string, string>,
+): { state: SubmissionState; submission: Submission<unknown> } {
+  const slot = getOrCreateSlot(routePath);
+  const id = nextId();
+
+  const valueSig = signal<unknown>(undefined);
+  // pending=true で生成 (= 即 in-flight として現れる)。
+  const pendingSig = signal(true);
+  const errorSig = signal<SubmissionError | undefined>(undefined);
+  const inputSig = signal<Record<string, unknown> | undefined>(input);
+
+  const state: SubmissionState = {
+    setResult(r) {
+      valueSig.value = r;
+      errorSig.value = undefined;
+    },
+    setError(e) {
+      errorSig.value = e;
+      valueSig.value = undefined;
+    },
+    setPending(v) {
+      pendingSig.value = v;
+    },
+    setInput(v) {
+      inputSig.value = v;
+    },
+    isPending() {
+      return pendingSig.value;
+    },
+    _value: valueSig,
+    _pending: pendingSig,
+    _error: errorSig,
+    _input: inputSig,
+  };
+
+  const submission: Submission<unknown> = {
+    id,
+    value: valueSig,
+    pending: pendingSig,
+    error: errorSig,
+    input: inputSig,
+    retry: async () => {
+      if (pendingSig.value) return;
+      if (!_dispatcher) {
+        console.warn("[vidro/router] retry() called without a mounted Router (no dispatcher).");
+        return;
+      }
+      // 同 input / 同 path で再 submit。state は既存 instance を上書きするだけで、
+      // array 内の identity (id) は維持する (= UI の `<For key={s.id}>` が壊れない)。
+      pendingSig.value = true;
+      errorSig.value = undefined;
+      await _dispatcher.dispatch(routePath, state, { body, headers });
+    },
+    clear: () => {
+      slot.active.value = slot.active.value.filter((s) => s.id !== id);
+    },
+  };
+
+  slot.active.value = [...slot.active.value, submission];
+  return { state, submission };
+}
+
+// ---- public factories ----
+
+/**
+ * 現 route の最新 submission の stable view。
+ *
+ * ```tsx
+ * const sub = submission<typeof action>();
+ * <button disabled={sub.pending.value}>Save</button>
+ * ```
+ *
+ * 単発 form (Settings 保存) や「最新の error / value を読みたい」ケース向け。
+ * 複数 in-flight を 1 件ずつ操作するなら `submissions()` を使う。
+ */
+export function submission<A extends AnyAction = AnyAction>(): LatestSubmission<
+  Awaited<ReturnType<A>>
+> {
+  const route = defaultPathname();
+  const slot = getOrCreateSlot(route);
+  return {
+    value: computed(() => {
+      const last = slot.active.value[slot.active.value.length - 1];
+      return last ? (last.value.value as Awaited<ReturnType<A>> | undefined) : undefined;
+    }) as unknown as Signal<Awaited<ReturnType<A>> | undefined>,
+    pending: computed(() => {
+      const last = slot.active.value[slot.active.value.length - 1];
+      return last ? last.pending.value : false;
+    }) as unknown as Signal<boolean>,
+    error: computed(() => {
+      const last = slot.active.value[slot.active.value.length - 1];
+      return last ? last.error.value : undefined;
+    }) as unknown as Signal<SubmissionError | undefined>,
+    input: computed(() => {
+      const last = slot.active.value[slot.active.value.length - 1];
+      return last ? last.input.value : undefined;
+    }) as unknown as Signal<Record<string, unknown> | undefined>,
+  };
+}
+
+/**
+ * 現 route の全 submission instance を array signal で取る。
+ *
+ * ```tsx
+ * const subs = submissions<typeof action>();
+ * <For each={subs.value.filter(s => s.input.value?.intent === "create")}>
+ *   {(s) => <li class="opacity-50">{String(s.input.value?.title)} (...adding)</li>}
+ * </For>
+ * ```
+ *
+ * 複数 in-flight 楽観 UX (like 連打、list add、chat 連投) で全 in-flight を
+ * 個別に表示する用途。intent ごとに分けたければ user 側で `filter` する
+ * (= fw は intent を特別扱いしない、Hono的透明性)。
+ */
+export function submissions<A extends AnyAction = AnyAction>(): Signal<
+  Submission<Awaited<ReturnType<A>>>[]
+> {
+  const route = defaultPathname();
+  const slot = getOrCreateSlot(route);
+  return slot.active as unknown as Signal<Submission<Awaited<ReturnType<A>>>[]>;
+}
+
+/**
+ * programmatic submit。現 route (or `opts.action`) の action に input を投げる。
+ *
+ * ```tsx
+ * await submit({ intent: "create", title: "foo" });
+ * await submit(formData);
+ * ```
+ *
+ * 各呼び出しが新 Submission instance を生成する (= 連打 guard なし、複数 in-flight
+ * 自然対応)。SSR / Router 外では no-op + console.warn。
+ */
+export async function submit(input?: SubmitInput, opts?: SubmitOptions): Promise<void> {
+  if (!_dispatcher) {
+    console.warn("[vidro/router] submit() called without a mounted Router (no dispatcher).");
+    return;
+  }
+  const path = opts?.action ?? defaultPathname();
+  const normalized = normalizeSubmitInput(input);
+  const { body, headers } = encodeSubmitBody(input, opts?.encoding);
+
+  const { state } = _createSubmissionInstance(path, normalized, body, headers);
+  await _dispatcher.dispatch(path, state, { body, headers });
+}
+
+// ---- helpers ----
+
+/**
  * default action path: window.location.pathname。SSR では `"/"` fallback。
- * `submission.submit()` の `opts.action` 未指定時に使う。
+ * `submit()` の `opts.action` 未指定時、および `submission()` / `submissions()` の
+ * route 解決に使う。
  */
 function defaultPathname(): string {
   if (typeof window === "undefined") return "/";
@@ -359,8 +434,8 @@ function encodeSubmitBody(
 }
 
 /**
- * `submission.input` 用に submit 入力を `Record<string, unknown>` に正規化 (Phase 4 step 1)。
- * UI は `sub.input.value?.title` のように field 単位で読む想定。
+ * submission.input 用に submit 入力を `Record<string, unknown>` に正規化。
+ * UI は `s.input.value?.title` のように field 単位で読む想定。
  *
  * ルール:
  *   - undefined / null → undefined (= 「入力なし」明示)
@@ -371,7 +446,9 @@ function encodeSubmitBody(
  * 注意: 重複 key (e.g. `<input name="tag" multiple>`) は last-wins で潰れる。
  * 楽観 preview には toy 段階で十分。production 化時は qs ライブラリで richer decoding。
  */
-function normalizeSubmitInput(input: SubmitInput | undefined): Record<string, unknown> | undefined {
+export function normalizeSubmitInput(
+  input: SubmitInput | undefined,
+): Record<string, unknown> | undefined {
   if (input == null) return undefined;
   if (input instanceof FormData) {
     return Object.fromEntries(input as unknown as Iterable<[string, FormDataEntryValue]>);

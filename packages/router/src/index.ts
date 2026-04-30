@@ -28,11 +28,20 @@ export type {
   RouteMap,
   Routes,
 } from "./page-props";
-// ADR 0037 Phase 3 R-min — action primitive。submission() factory + ActionArgs<R>
-// で server action と form を結ぶ。internal mutator (`_set*`) は router.tsx
-// (form delegation) からのみ参照。
-export { submission } from "./action";
-export type { Submission, SubmissionError, ActionArgs, AnyAction } from "./action";
+// ADR 0051 — derive 派楽観更新 + intent pattern。
+// `submission()` (= 最新の stable view、単発 form 用) と `submissions()` (= array、
+// 複数 in-flight 楽観 UX 用) と `submit()` (= programmatic) を露出。`<form method="post">`
+// は Router が自動 intercept し、複数 form の区別は HTML `<button name="intent">`。
+export { submission, submissions, submit } from "./action";
+export type {
+  Submission,
+  LatestSubmission,
+  SubmissionError,
+  ActionArgs,
+  AnyAction,
+  SubmitInput,
+  SubmitOptions,
+} from "./action";
 // ADR 0049 — loaderData() primitive。loader 戻りを reactive store として取得。
 // internal helpers (`_setLayerIndex` 等) は router.tsx の foldRouteTree が呼ぶ。
 export { loaderData } from "./loader-data";

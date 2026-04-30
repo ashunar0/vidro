@@ -9,9 +9,12 @@ import {
 import { currentParams, currentPathname, navigate } from "./navigation";
 import {
   _clearAllSubmissionState,
-  _getSubmissionMutator,
+  _cleanupSuccessfulSubmissions,
+  _createSubmissionInstance,
   _registerDispatcher,
+  normalizeSubmitInput,
   type SubmissionError,
+  type SubmissionState,
 } from "./action";
 // ADR 0049 — loaderData() primitive 関連の internal API。
 // foldRouteTree が layer の component を呼ぶ直前に layer index を立て、
@@ -24,15 +27,9 @@ import {
   _setLayerIndex,
 } from "./loader-data";
 
-// ADR 0038: Router 内 dispatch の mutator 引数 shape (action.ts と整合)。
-// ADR 0040 (Phase 4 step 1): setInput を form 経路でも呼ぶため interface に追加。
-type SubmissionMutator = {
-  setResult: (r: unknown) => void;
-  setError: (e: SubmissionError) => void;
-  setPending: (v: boolean) => void;
-  setInput: (v: Record<string, unknown> | undefined) => void;
-  isPending: () => boolean;
-};
+// ADR 0051: dispatcher が受ける引数 shape は action.ts の SubmissionState を流用。
+// router.tsx の dispatchSubmit / handleFormSubmit はこの interface 経由で
+// pending / value / error / input を制御する。
 
 // ---- bootstrap data (Phase A SSR data injection) ----
 // server (createServerHandler) が navigation response の index.html に
@@ -144,40 +141,38 @@ export function Router(props: RouterProps): Node {
     reloadCounter.value += 1;
   };
 
-  // ---- form submit delegation (ADR 0038 Phase 3 R-mid-1) ----
+  // ---- form submit delegation (ADR 0051) ----
   // method="post" の form を Web 標準のまま hijack して action 経路に流す。
   // event bubble の capture phase で拾うと nested form / event.stopPropagation
   // による取りこぼしを回避できる。
   //
-  // R-mid-1 では `<form {...sub.bind()}>` の `data-vidro-sub` attribute がある
-  // form だけ hijack 対象。attribute 不在の form は browser default 動作 (= 通常
-  // POST navigation) に委ねる。これにより JSX 上で「Vidro が拾うか否か」が明示。
+  // ADR 0051 で `data-vidro-sub` attribute による opt-in は廃止し、route page 上の
+  // **全 method="post" form を自動 intercept** に倒した。1 route = 1 action 規約 +
+  // intent pattern が canonical なので、form ごとの opt-in marker は不要。
+  // 例外的に hijack させたくない form は `data-vidro-no-intercept` を付ける
+  // (= 通常 POST navigation に流す escape hatch、痛みが出てから運用判断)。
   const onSubmit = (e: SubmitEvent): void => {
     const target = e.target;
     if (!(target instanceof HTMLFormElement)) return;
     if (target.method.toLowerCase() !== "post") return;
-    const subId = target.dataset.vidroSub;
-    if (!subId) return; // attribute 不在 = hijack せず default 動作
-    const mutator = _getSubmissionMutator(subId);
-    if (!mutator) return;
-    // 注意: mutator 不在は「`bind()` を spread した form があるが `submission(key)` が
-    // 一度も呼ばれていない」状態。理論上は SSR で form の HTML が出てる + client が
-    // hydrate 完了する前に submit イベントが firing した極小窓だけ。silently fall through
-    // して browser default の full-page POST に委ねる (= server action は動くので致命傷
-    // にはならない)。preventDefault しないのは意図的。
+    if (target.dataset.vidroNoIntercept !== undefined) return;
     e.preventDefault();
-    void handleFormSubmit(target, mutator);
+    // ADR 0051: submitter (= 押された <button>) を FormData constructor に渡すことで
+    // `<button name="intent" value="...">` の name/value を FormData に含める。
+    // 1 引数の `new FormData(form)` は submit button の name/value を含めない HTML
+    // 仕様 (= input/select/textarea のみ列挙)、submitter を渡して intent pattern を成立させる。
+    void handleFormSubmit(target, e.submitter as HTMLElement | null);
   };
   window.addEventListener("submit", onSubmit, true);
   onCleanup(() => window.removeEventListener("submit", onSubmit, true));
 
-  // ---- dispatcher 登録 (programmatic submit 用、ADR 0038 大論点 4) ----
-  // submission.submit() が呼ぶ経路。form delegation と同じ dispatchSubmit を
-  // 共有して、loader 自動 revalidate / redirect / error handling のロジックを
-  // 1 経路に統一する。Router unmount 時に unregister。
+  // ---- dispatcher 登録 (programmatic submit 用、ADR 0051) ----
+  // 公開 `submit()` (top-level) と Submission.retry() が呼ぶ経路。form delegation と
+  // 同じ dispatchSubmit を共有して、loader 自動 revalidate / redirect / error handling
+  // のロジックを 1 経路に統一する。Router unmount 時に unregister。
   const unregisterDispatcher = _registerDispatcher({
-    dispatch: (path, mutator, fetchInit) =>
-      dispatchSubmit(path, mutator, () =>
+    dispatch: (path, state, fetchInit) =>
+      dispatchSubmit(path, state, () =>
         fetch(path, {
           method: "POST",
           body: fetchInit.body,
@@ -318,61 +313,55 @@ export function Router(props: RouterProps): Node {
   // `__vidro_data` を使って fetch を skip する。pathname 一致を確認したうえで
   // consume し、以降は HTTP 経路に戻る。
   /**
-   * form submit (ADR 0038 R-mid-1) は dispatchSubmit に流す薄い wrapper。
-   * form の action 属性 || current pathname を POST 先に決め、FormData 化した
-   * body を fetch に渡す。response 分岐は dispatchSubmit 共通経路で処理。
+   * form submit (ADR 0051) は dispatchSubmit に流す薄い wrapper。
+   * form の action 属性 || current pathname を POST 先に決め、FormData 化した body を
+   * 新 Submission instance に紐づけて発射する。response 分岐は dispatchSubmit 共通経路。
+   *
+   * 連打 guard は per-instance では行わない (= 各 submit が新 instance で複数 in-flight
+   * 自然対応)。連打を抑止したい場合は user 側で `<button disabled={pending}>` 等に倒す。
    */
   async function handleFormSubmit(
     form: HTMLFormElement,
-    mutator: SubmissionMutator,
+    submitter: HTMLElement | null,
   ): Promise<void> {
-    // ADR 0040 review fix #1: 連打 guard は setInput **より前** に置く。
-    // ADR の lifecycle 表「連打 guard で no-op になった呼出 → input は上書き
-    // されない」を form 経路でも守るため、programmatic 経路 (submit() factory)
-    // と guard 位置を揃える。dispatchSubmit 冒頭の isPending guard は直接呼出
-    // 防衛として残す (= 二重チェック)。
-    if (mutator.isPending()) return;
     const path = form.getAttribute("action") || currentPathname.value;
-    const fd = new FormData(form);
-    // ADR 0040: 楽観的 preview 用 input を dispatch 前に確定。
-    // FormData の重複 key (= multi-value) は last-wins で潰れる、production では
-    // qs ライブラリ等で richer decoding するが toy 段階の妥協。
-    mutator.setInput(Object.fromEntries(fd as unknown as Iterable<[string, FormDataEntryValue]>));
-    await dispatchSubmit(path, mutator, () =>
+    // FormData(form, submitter) で submit button の name/value も乗せる (= intent pattern)。
+    const fd = new FormData(form, submitter);
+    const input = normalizeSubmitInput(fd);
+    // 新 Submission instance を route slot に push (= UI 側の `submissions().value` で即見える)。
+    const { state } = _createSubmissionInstance(path, input, fd, {});
+    await dispatchSubmit(path, state, () =>
       fetch(path, { method: "POST", body: fd, headers: { Accept: "application/json" } }),
     );
   }
 
   /**
-   * form 経由 / programmatic submit 共通の dispatch core (ADR 0038)。
-   * 連打 guard は per-instance (mutator.isPending) で行う:
-   *   - 同 instance の in-flight 中は無視 (= 連打弾き)
-   *   - 別 instance なら並列実行可
+   * form 経由 / programmatic submit 共通の dispatch core (ADR 0051)。
+   *
+   * ADR 0038 までの per-key 連打 guard は ADR 0051 で廃止 (= 各 submit が新 instance、
+   * 並列 in-flight が canonical)。dispatchSubmit は 1 instance の lifecycle を進める
+   * だけのシンプルな関数。
    *
    * response 分岐:
    *   1. redirected → navigate で新 path に遷移、pending 解除のみ
-   *   2. JSON `{actionResult, loaderData}` → mutator.setResult + bootstrapData 上書き
+   *   2. JSON `{actionResult, loaderData}` → state.setResult + bootstrapData 上書き
    *      + reset() で loader 自動 revalidate (1 往復)
-   *   3. JSON `{error}` → mutator.setError
-   *   4. non-JSON / fetch 失敗 → NetworkError 化して mutator.setError
+   *   3. JSON `{error}` → state.setError
+   *   4. non-JSON / fetch 失敗 → NetworkError 化して state.setError
    *
    * `path !== currentPathname.value` の場合は bootstrapData 上書きをせず
-   * navigate(path) で正規 navigation に流す (R-min review fix #3 と同じ理由)。
+   * navigate(path) で正規 navigation に流す。
    */
   async function dispatchSubmit(
     path: string,
-    mutator: SubmissionMutator,
+    state: SubmissionState,
     fetchFn: () => Promise<Response>,
   ): Promise<void> {
-    if (mutator.isPending()) return; // 同 instance の連打 guard
-
     // ADR 0041: in-flight 中に別 path へ navigate されたら、_clearAllSubmissionState
     // で flush 済の registry に書き戻さない (= 古い結果が新 page に漏れる stale-write
     // 防止)。loadToken パターンと同思想で、navigation の境界を超えたら結果を捨てる。
     const originPathname = currentPathname.value;
     const stillOnOriginPath = (): boolean => currentPathname.value === originPathname;
-
-    mutator.setPending(true);
 
     type ActionResponse = {
       actionResult?: unknown;
@@ -389,7 +378,7 @@ export function Router(props: RouterProps): Node {
       if (res.redirected) {
         // server-side `Response.redirect(...)` は default redirect=follow で追従済み。
         // navigate() で client navigation に流すと、その currentPathname 変化で
-        // _clearAllSubmissionState() が走るので、redirect 先で古い "Added: ..." が
+        // _clearAllSubmissionState() が走るので、redirect 先で古い submission が
         // 残ることはない (= ADR 0041 の bonus fix)。同 path への redirect だけは
         // signal が同値 set で notify されず flush しない既知の限界 (ADR 0041 残課題)。
         const target = new URL(res.url);
@@ -399,7 +388,7 @@ export function Router(props: RouterProps): Node {
 
       const ctype = res.headers.get("content-type") ?? "";
       if (!ctype.includes("application/json")) {
-        mutator.setError({
+        state.setError({
           name: "NetworkError",
           message: `non-JSON response (status ${res.status})`,
         });
@@ -412,11 +401,11 @@ export function Router(props: RouterProps): Node {
       if (!stillOnOriginPath()) return;
 
       if (body.error) {
-        mutator.setError(body.error);
+        state.setError(body.error);
         return;
       }
 
-      mutator.setResult(body.actionResult);
+      state.setResult(body.actionResult);
 
       if (body.loaderData) {
         if (path === currentPathname.value) {
@@ -433,16 +422,16 @@ export function Router(props: RouterProps): Node {
     } catch (err) {
       // navigate 後に reject (= AbortError 等) しても registry に書き戻さない。
       if (!stillOnOriginPath()) return;
-      mutator.setError({
+      state.setError({
         name: "NetworkError",
         message: err instanceof Error ? err.message : String(err),
       });
     } finally {
       // 別 path 済なら pending は flush 済 (= false)。ここで setPending すると
-      // navigate 先で同 key を再 submit 中の pending=true を上書きする可能性があるので
+      // navigate 先で submission を再生成中の pending=true を上書きする可能性があるので
       // skip する。同 path に居る場合のみ pending を解除。
       if (stillOnOriginPath()) {
-        mutator.setPending(false);
+        state.setPending(false);
       }
     }
   }
@@ -528,6 +517,10 @@ export function Router(props: RouterProps): Node {
           // 既存 store instance に diff merge。loaderData() を持つ全 component が
           // fine-grained に再評価され、page DOM は in-place で更新される。
           _diffMergeAllLayers(loaderResults.map((r) => r.data));
+          // ADR 0051: 同 page revalidate 完了で success 状態の submission を array
+          // から auto-remove する (= 楽観行が server 戻りで自動消滅、derive 派の核体験)。
+          // errored submission は残留 (= retry / clear で操作)。
+          _cleanupSuccessfulSubmissions(pathname);
           // pathname / params 同値、currentParams は前回 set 済のまま継続でよい。
           return;
         }
