@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vite-plus/test";
-import { effect, signal, store, type Signal } from "../src/index";
+import { effect, signal, signalify, store, type Signal } from "../src/index";
 
 describe("store (path F: leaf signal + 中間 proxy)", () => {
   describe("primitive 値", () => {
@@ -244,5 +244,75 @@ describe("store (path F: leaf signal + 中間 proxy)", () => {
       s2.value = 100;
       expect(s1.value).toBe(s2.value);
     });
+  });
+});
+
+// ADR 0050: signalify は store() と内部実装を共有する公開 utility。
+// 「plain → Store の昇格」を user に明示させるための名前で、push 引数の楽観更新等で使う。
+describe("signalify (ADR 0050: write-side 昇格 API)", () => {
+  test("primitive を渡すと Signal が返る (= store と同じ shape)", () => {
+    const a = signalify<number>(0);
+    const b = store<number>(0);
+    expect(a.value).toBe(b.value);
+    a.value = 5;
+    expect(a.value).toBe(5);
+  });
+
+  test("plain object は leaf signal + 中間 proxy で wrap される", () => {
+    const note = signalify({ id: 1, title: "vidro" });
+    const id = note.id as unknown as Signal<number>;
+    const title = note.title as unknown as Signal<string>;
+    expect(id.value).toBe(1);
+    expect(title.value).toBe("vidro");
+  });
+
+  test("plain array も中間 proxy 化、要素は leaf signal", () => {
+    const items = signalify([{ id: 1, title: "a" }]);
+    const first = items[0] as { id: Signal<number>; title: Signal<string> };
+    expect(first.id.value).toBe(1);
+    expect(first.title.value).toBe("a");
+  });
+
+  test("既存 Store の write 引数として使える (= 楽観更新の典型)", () => {
+    // setup: loaderData() 相当の親 store を擬似的に store() で作る
+    const data = store<{ notes: { id: number; title: string }[] }>({
+      notes: [{ id: 1, title: "first" }],
+    });
+    expect(data.notes.length).toBe(1);
+
+    // ADR 0050 target syntax: plain を signalify で昇格して push
+    data.notes.push(signalify({ id: 2, title: "second" }));
+
+    expect(data.notes.length).toBe(2);
+    const appended = data.notes[1] as unknown as {
+      id: Signal<number>;
+      title: Signal<string>;
+    };
+    expect(appended.id.value).toBe(2);
+    expect(appended.title.value).toBe("second");
+  });
+
+  test("push で append された signalify 結果も leaf signal が reactive", () => {
+    const data = store<{ notes: { id: number; title: string }[] }>({ notes: [] });
+    data.notes.push(signalify({ id: 99, title: "draft" }));
+
+    const appended = data.notes[0] as unknown as {
+      id: Signal<number>;
+      title: Signal<string>;
+    };
+    const subscriber = vi.fn();
+    appended.title.subscribe(subscriber);
+    appended.title.value = "saved";
+    expect(appended.title.value).toBe("saved");
+    expect(subscriber).toHaveBeenCalledWith("saved");
+  });
+
+  test("既に Signal な値を渡しても runtime は defensive (= 型は別途弾く)", () => {
+    // ADR 0050 contract: 引数は plain のみ、Signal を渡すと型エラー (= NotSignal<T> guard)。
+    // ただし runtime の `wrap` は 2 重 wrap 防止のため Signal 受け取り時に passthrough する。
+    // この test は「型を escape して渡しても runtime が壊れない」defensive 挙動の確認。
+    const s = signal(42);
+    const result = signalify(s as unknown as number);
+    expect(result).toBe(s as unknown as Signal<number>);
   });
 });

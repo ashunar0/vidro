@@ -231,3 +231,21 @@ function wrapMutatingMethod(
 export function store<T>(initial: T): Store<T> {
   return wrap(initial) as Store<T>;
 }
+
+/** ADR 0050: 引数が既に Signal なら型エラーにするための guard。
+ *  「plain JSON-like value のみを Store に昇格する」という usage convention を型で強制する。
+ *  既存 Store (= 中間 proxy) は structural には plain object と区別が付かないため弾けないが、
+ *  少なくとも leaf Signal は弾ける。B 拡張 (= union で Store<E> も受ける) になったら緩める。 */
+type NotSignal<T> = T extends Signal<unknown> ? never : T;
+
+/** ADR 0050: plain JSON-like value を Store<T> に昇格する公開 API。
+ *  `store()` と内部実装 (= `wrap`) を共有するが、usage convention が違う:
+ *  - `store(plain)` = page-local state の起点宣言 (= primitive declaration)
+ *  - `signalify(plain)` = 既存 Store に append する一時 value の昇格 (= utility)
+ *  例: `data.notes.push(signalify({ id: -1, title }))`
+ *
+ *  引数は Signal 自体を受け付けない (= 型エラー)。runtime は `wrap` 内で defensive に
+ *  passthrough するが、API contract としては「plain を Store にする」専用。 */
+export function signalify<T>(value: NotSignal<T>): Store<T> {
+  return wrap(value) as Store<T>;
+}
