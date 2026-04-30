@@ -1,5 +1,5 @@
 import { computed, For, signal } from "@vidro/core";
-import { loaderData, submission, type PageProps } from "@vidro/router";
+import { loaderData, submission } from "@vidro/router";
 import type { action, loader } from "./server";
 
 // ADR 0049 dogfood — 痛み B (= action 後 page-local state が remount で reset される)
@@ -22,7 +22,7 @@ import type { action, loader } from "./server";
 //   4. **期待**: filter input は "Vidro" のまま、count は 5 のまま、notes 末尾に
 //      新 note が in-place で append される (= page remount してない証拠)
 
-export default function NotesPage(_props: PageProps<typeof loader>) {
+export default function NotesPage() {
   const data = loaderData<typeof loader>();
   const subCreate = submission<typeof action>("create");
 

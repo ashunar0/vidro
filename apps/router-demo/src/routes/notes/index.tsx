@@ -1,5 +1,5 @@
 import { Show } from "@vidro/core";
-import { loaderData, submission, type PageProps } from "@vidro/router";
+import { loaderData, submission } from "@vidro/router";
 import type { action, loader } from "./server";
 
 // ADR 0038 Phase 3 R-mid-1 + ADR 0040 Phase 4 step 1 の動作確認 demo。
@@ -13,7 +13,7 @@ import type { action, loader } from "./server";
 //
 // ADR 0049: PageProps.data 廃止 → loaderData<typeof loader>() で reactive store
 // を取得。`n.id.value` / `n.title.value` で leaf access (signal triad)。
-export default function NotesPage(_props: PageProps<typeof loader>) {
+export default function NotesPage() {
   const data = loaderData<typeof loader>();
   const subCreate = submission<typeof action>("create");
   const subDelete = submission<typeof action>("delete");
