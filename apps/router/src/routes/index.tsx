@@ -8,6 +8,12 @@ export default function Home() {
     <div>
       <h2 class="text-xl font-semibold">Hello, Vidro!</h2>
       <h3 class="mt-4 text-2xl">{count.value}</h3>
+      {/* ADR 0055 dogfood: text + dynamic + text の混在 boundary が hydrate clean か */}
+      <p class="mt-2 text-sm text-gray-600">残り {count.value} 秒なのだ</p>
+      {/* dynamic + " " + dynamic (= 単一空白 JSXText を boundary に含める検証) */}
+      <p class="mt-1 text-sm text-gray-600">
+        {count.value} : {count.value * 2}
+      </p>
       <div class="mt-2 flex gap-2">
         <button
           type="button"

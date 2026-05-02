@@ -122,6 +122,26 @@ export function _$text(value: unknown): Node {
 }
 
 /**
+ * adjacent text/expr boundary に server / client / hydrate 全 mode で同一の
+ * empty Comment Node を emit する helper (ADR 0055)。
+ *
+ * HTML parser は adjacent な text を 1 個の Text Node に merge する仕様があるため、
+ * `<button>foo {x}</button>` の SSR 出力 `<button>foo 0</button>` は browser 側で
+ * 1 Text Node にまとめられる。client は `_$text("foo ")` + `_$dynamicChild(() => x)`
+ * の **2 Text Node** を expect しているので post-order cursor がズレる。
+ *
+ * `@vidro/plugin` の jsx-transform.ts が intrinsic 親内の adjacent text/expr 隣接を
+ * 検知して、間に `_$marker()` を inject する。server は VComment "" → HTML `<!---->`、
+ * client は cursor で Comment Node 1 個を消費 → 両者一致。
+ *
+ * value="" の Comment は anchor 系 ("show", "switch" 等) と完全一致 check で衝突しない
+ * (ADR 0055 Open Question 1 参照)。
+ */
+export function _$marker(): Node {
+  return getRenderer().createComment("");
+}
+
+/**
  * JSX child position の `{expr}` (`<div>{count.value}</div>`) を transform が書き換えた
  * call 先 (ADR 0019)。peek + (Array / Node / primitive 判定) を h() より前に行い、
  * 必要なら effect で reactive 追従を仕掛けた上で Node を返す。

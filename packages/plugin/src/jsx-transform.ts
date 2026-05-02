@@ -81,6 +81,28 @@ export function jsxTransform(): Plugin {
 
       const needed = new Set<HelperName>();
 
+      // ADR 0055: intrinsic 親 (`<div>` 等) の children sequence を scan して、
+      // adjacent text/expr 境界に marker を inject する。HTML parser は adjacent
+      // text を 1 Text Node に merge するので、`Go to User #{count.value}` を
+      // `_$text(...)` + `_$dynamicChild(...)` の 2 Text Node として SSR すると
+      // browser parse 後に 1 Node に潰れて hydrate cursor がズレる。
+      //
+      // 間に `_$marker()` (= empty Comment) を挟むと server / client / browser parse
+      // すべてで「Text + Comment + Text」の 3 Node 構造が保たれて post-order が一致する。
+      //
+      // 走るのは JSXExpressionContainer / JSXText 個別 traversal の **前** に enter
+      // でやる。children の構造を書き換えてから個別 transform に渡すと、新規 inject
+      // した `_$marker()` の expression を再 transform 対象にしないよう
+      // `__vidroMarkerInjected` で skip する。
+      traverse(ast, {
+        JSXElement: {
+          enter(path) {
+            if (isComponentJSXElement(path.node)) return;
+            injectMarkers(path.node, needed);
+          },
+        },
+      });
+
       traverse(ast, {
         JSXExpressionContainer(path) {
           const parent = path.parent;
@@ -120,6 +142,15 @@ export function jsxTransform(): Plugin {
           if (t.isJSXElement(parent) || t.isJSXFragment(parent)) {
             const expr = path.node.expression;
             if (t.isJSXEmptyExpression(expr)) return;
+
+            // ADR 0055: injectMarkers が intrinsic 親の adjacent text/expr 境界に
+            // 挟んだ `_$marker()` call はそのまま素通す。`_$dynamicChild(() => _$marker())`
+            // で wrap すると Text Node 化されてしまい marker の意味が変わる。
+            //
+            // 識別子名で判定すると `import { _$marker as m } from "@vidro/core"` の
+            // alias 経由で skip が効かなくなるので、injectMarkers が node 自身に付けた
+            // VIDRO_MARKER_TAG flag (symbol-keyed) を見て binding-safe に判別する。
+            if (isInjectedMarkerNode(path.node)) return;
 
             // ArrowFunction / FunctionExpression は素通し (component 親でも intrinsic
             // 親でも同じ — ユーザーが書いた callback はそのまま値として渡す)
@@ -187,7 +218,106 @@ export function jsxTransform(): Plugin {
   };
 }
 
-type HelperName = "_reactive" | "_$text" | "_$dynamicChild";
+type HelperName = "_reactive" | "_$text" | "_$dynamicChild" | "_$marker";
+
+// ADR 0055: intrinsic 親の children を scan して、adjacent text/expr 境界に
+// `_$marker()` (= empty Comment) を inject する。HTML parser の adjacent text merge
+// で hydrate cursor がズレる問題を防ぐ。
+//
+// 挿入規則 (両側が「実行時に Text Node を生成する可能性がある」場合に挿入):
+//   - JSXText × JSXExpressionContainer (with non-Element expr) → 挿入
+//   - JSXExpressionContainer × JSXText → 挿入
+//   - JSXExpressionContainer × JSXExpressionContainer (両側 non-Element) → 挿入
+//   - JSXElement / JSXFragment が片方にあれば → 挿入不要 (Element は別 Node に展開)
+//   - whitespace-only JSXText は両側 boundary 判定から除外 (= sequence 上 prev 更新せず skip)
+//
+// JSXFragment 親は Fragment 自身が DOM fragment に展開されて peer の adjacent merge は
+// 問題にならない (= 各 child が parent intrinsic に individually append される)。本 pass
+// は JSXElement intrinsic 親のみで動かす。
+function injectMarkers(parent: t.JSXElement, needed: Set<HelperName>): void {
+  const children = parent.children;
+  if (children.length < 2) return;
+
+  const out: t.JSXElement["children"] = [];
+  let prev: t.JSXElement["children"][number] | null = null;
+
+  for (const c of children) {
+    if (isWhitespaceOnlyJSXText(c)) {
+      // whitespace-only text は SSR / runtime ともに emit されない (= JSXText handler
+      // で `value.trim() === ""` を捨てる)。boundary 判定からも除外して、prev は更新しない。
+      out.push(c);
+      continue;
+    }
+    if (prev !== null && needsMarker(prev, c)) {
+      out.push(makeMarkerExpressionContainer());
+      needed.add("_$marker");
+    }
+    out.push(c);
+    prev = c;
+  }
+  parent.children = out;
+}
+
+// JSX whitespace rule: oxc / babel cleanJSXElementLiteralChild は **改行を含む
+// whitespace-only JSXText** を formatting noise として drop する。一方、改行を
+// 含まない whitespace (= `<p>{a} {b}</p>` の " " 等) は preserve され、runtime で
+// Text Node として emit される。
+//
+// 後者を skip 扱いすると prev 更新が止まり「{a} の後ろに marker なしで続く { b}」
+// が SSR で `[a] [b]` (Text + Text) → browser が 1 Text に merge → cursor mismatch、
+// となる。preserved な whitespace text は textish と扱って boundary 判定に参加させ
+// る必要がある。
+//
+// 本関数は「実際には emit されない (= drop される) whitespace」のみ skip 対象として返す。
+function isWhitespaceOnlyJSXText(node: t.JSXElement["children"][number]): boolean {
+  if (!t.isJSXText(node)) return false;
+  if (node.value.trim() !== "") return false;
+  // 改行を含む whitespace は cleanJSX で drop される、preserve_whitespace 側に倒さない
+  return /[\n\r]/.test(node.value);
+}
+
+function needsMarker(
+  prev: t.JSXElement["children"][number],
+  next: t.JSXElement["children"][number],
+): boolean {
+  return isTextish(prev) && isTextish(next);
+}
+
+// 「実行時に Text Node を生成する可能性がある」を静的に判定する。安全側に倒し、
+// 確実に Element / Fragment になる場合 (= JSXElement / JSXFragment 直書き) のみ false。
+function isTextish(node: t.JSXElement["children"][number]): boolean {
+  if (t.isJSXText(node)) return true;
+  if (t.isJSXExpressionContainer(node)) {
+    const expr = node.expression;
+    if (t.isJSXEmptyExpression(expr)) return false;
+    // expr が JSXElement / JSXFragment 直書きなら Element Node 確定、boundary を作らない。
+    // それ以外 (識別子 / call / template literal / 演算 / 配列 / 三項 / 関数式 / Logical 等)
+    // は実行時に Text Node 化される可能性があるので marker 必要。
+    if (t.isJSXElement(expr) || t.isJSXFragment(expr)) return false;
+    return true;
+  }
+  // JSXElement / JSXFragment / JSXSpreadChild は Element 系、boundary を作らない
+  return false;
+}
+
+// injectMarkers が生成した JSXExpressionContainer に付ける internal flag。symbol を
+// 使うことで user 側 source code から偽装できない (= AST が symbol property を持つことは
+// parser からは起きない) + identifier 名 alias の影響も受けない。
+const VIDRO_MARKER_TAG = Symbol("vidro:marker");
+
+type MarkedNode = t.JSXExpressionContainer & { [VIDRO_MARKER_TAG]?: true };
+
+function isInjectedMarkerNode(node: t.JSXExpressionContainer): boolean {
+  return (node as MarkedNode)[VIDRO_MARKER_TAG] === true;
+}
+
+function makeMarkerExpressionContainer(): t.JSXExpressionContainer {
+  const node = t.jsxExpressionContainer(
+    t.callExpression(t.identifier("_$marker"), []),
+  ) as MarkedNode;
+  node[VIDRO_MARKER_TAG] = true;
+  return node;
+}
 
 // JSXElement の openingElement 名で component か intrinsic かを判別 (ADR 0025 論点 2-a)。
 //   - JSXIdentifier で先頭が大文字 → component (`<Foo>`)
