@@ -2,6 +2,12 @@ import { computed, effect, For, signal } from "@vidro/core";
 import { Link, loaderData, revalidate, searchParams, submissions } from "@vidro/router";
 import type { action, loader } from "./server";
 
+// classnames helper: false / null / undefined / "" を除去してスペース結合。
+// clsx 依存を入れず YAGNI で inline、object 形式が要るようになったら別 dep に。
+function cn(...args: (string | false | null | undefined)[]): string {
+  return args.filter(Boolean).join(" ");
+}
+
 // ADR 0051 dogfood — derive 派楽観更新 + intent pattern + 複数 in-flight。
 // ADR 0052 dogfood — searchParams() 経由 filter (= URL ↔ signal sync、Path Y)。
 // ADR 0053 dogfood — server-side filter + paginate (= loader が `request.url` から
@@ -156,9 +162,11 @@ export default function NotesPage() {
         <Link
           href={() => buildHref(currentPage.value - 1)}
           class={() =>
-            `rounded border px-3 py-1 ${
-              currentPage.value <= 1 ? "pointer-events-none opacity-30" : "hover:bg-gray-100"
-            }`
+            cn(
+              "rounded border px-3 py-1",
+              currentPage.value <= 1 && "pointer-events-none opacity-30",
+              currentPage.value > 1 && "hover:bg-gray-100",
+            )
           }
         >
           Prev
@@ -167,11 +175,11 @@ export default function NotesPage() {
         <Link
           href={() => buildHref(currentPage.value + 1)}
           class={() =>
-            `rounded border px-3 py-1 ${
-              currentPage.value >= data.totalPages.value
-                ? "pointer-events-none opacity-30"
-                : "hover:bg-gray-100"
-            }`
+            cn(
+              "rounded border px-3 py-1",
+              currentPage.value >= data.totalPages.value && "pointer-events-none opacity-30",
+              currentPage.value < data.totalPages.value && "hover:bg-gray-100",
+            )
           }
         >
           Next
