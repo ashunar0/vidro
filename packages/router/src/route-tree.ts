@@ -19,7 +19,8 @@ type RouteLoader = () => Promise<RouteModule>;
 // 共存する形 (Remix と同じ)。引数は { request, params }、戻り値は plain value
 // または `Response` (= redirect 用)。throw は SerializedError 形式で client に伝播。
 export type ServerModule = {
-  loader?: (args: { params: Record<string, string> }) => Promise<unknown>;
+  // ADR 0053: loader も { request, params } shape (= action と対称、WinterCG 流儀)。
+  loader?: (args: { request: Request; params: Record<string, string> }) => Promise<unknown>;
   // action は sync / async 両対応。`Promise<unknown>` は `unknown` に含まれるので
   // redundant union を避けて `unknown` 単独で受ける。
   action?: (args: { request: Request; params: Record<string, string> }) => unknown;

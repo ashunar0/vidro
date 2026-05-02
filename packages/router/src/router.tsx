@@ -370,7 +370,12 @@ export function Router(props: RouterProps): Node {
     form: HTMLFormElement,
     submitter: HTMLElement | null,
   ): Promise<void> {
-    const path = form.getAttribute("action") || currentPathname.value;
+    // ADR 0053: action attribute が無ければ現在の URL (= pathname + search) を使う。
+    // submit 後の loader 自動 revalidate で server-side loader が search を読めるよう、
+    // search を含めた URL に POST する (= action handleAction で revalidateRequest が
+    // この URL を継ぐ)。user が `<form action="/other">` を明示してれば user 意図を尊重。
+    const search = typeof window !== "undefined" ? window.location.search : "";
+    const path = form.getAttribute("action") || currentPathname.value + search;
     // FormData(form, submitter) で submit button の name/value も乗せる (= intent pattern)。
     const fd = new FormData(form, submitter);
     const input = normalizeSubmitInput(fd);
@@ -454,9 +459,19 @@ export function Router(props: RouterProps): Node {
       state.setResult(body.actionResult);
 
       if (body.loaderData) {
-        if (path === currentPathname.value) {
+        // ADR 0053: path に search 込み (= "/notes?q=Vidro&page=2") を許容するため、
+        // 同 page 判定は **pathname のみ** で行う。bootstrapData.pathname も search 抜き
+        // で保つ (fetchLoaders の bootstrap 比較と整合)。
+        const targetPathname = (() => {
+          try {
+            return new URL(path, window.location.origin).pathname;
+          } catch {
+            return path;
+          }
+        })();
+        if (targetPathname === currentPathname.value) {
           bootstrapData = {
-            pathname: path,
+            pathname: currentPathname.value,
             params: body.loaderData.params,
             layers: body.loaderData.layers,
           };
@@ -482,7 +497,15 @@ export function Router(props: RouterProps): Node {
     }
   }
 
-  async function fetchLoaders(pathname: string): Promise<Array<{ data: unknown; error: unknown }>> {
+  // ADR 0053: server-side loader が URL の search 部分 (= `?page=` / `?q=` 等) を
+  // 読めるようにするため、`/__loader?path=...` で送る path に **`pathname + search`**
+  // を入れる。bootstrap 比較は pathname のみ (= server inject 時に search 含めない
+  // 設計と整合、初回 hydrate は経路 1 = handleNavigation で search を server に
+  // 渡し済 → bootstrap data は search 抜きで pathname だけ判定して OK)。
+  async function fetchLoaders(
+    pathname: string,
+    search: string,
+  ): Promise<Array<{ data: unknown; error: unknown }>> {
     if (bootstrapData && bootstrapData.pathname === pathname) {
       const boot = bootstrapData;
       bootstrapData = null;
@@ -492,7 +515,8 @@ export function Router(props: RouterProps): Node {
       }));
     }
 
-    const res = await fetch(`/__loader?path=${encodeURIComponent(pathname)}`);
+    const path = pathname + search;
+    const res = await fetch(`/__loader?path=${encodeURIComponent(path)}`);
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
       // endpoint 自体が 4xx/5xx → 復旧できないので outer catch (default error) へ
@@ -534,7 +558,10 @@ export function Router(props: RouterProps): Node {
     // 並列 fetch の本体は server 側 (plugin の serverBoundary が Promise.all で
     // layer 並列実行する)。client は HTTP 1 回だけで、waterfall にならない。
     const loadComponents = Promise.all([...match.layouts.map((l) => l.load()), leafLoader()]);
-    const loadLoaderResults = fetchLoaders(pathname);
+    // ADR 0053: revalidate() / `<Link>` で同 page 内 navigate 時に server-side loader
+    // が `?page=` / `?q=` 等を読めるよう、現 URL の search を path に乗せて送る。
+    const search = typeof window !== "undefined" ? window.location.search : "";
+    const loadLoaderResults = fetchLoaders(pathname, search);
     // match.errors[i] と errorMods[i] は 1:1 対応 (深い → 浅い順)。個別 load 失敗は
     // null に fall back させ、selectErrorMod が自然に次の候補に skip する。
     const loadErrorMods = Promise.all(

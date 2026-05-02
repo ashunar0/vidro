@@ -1,9 +1,11 @@
-import { computed, For, signal } from "@vidro/core";
-import { loaderData, searchParams, submissions } from "@vidro/router";
+import { computed, effect, For, signal } from "@vidro/core";
+import { loaderData, navigate, revalidate, searchParams, submissions } from "@vidro/router";
 import type { action, loader } from "./server";
 
 // ADR 0051 dogfood — derive 派楽観更新 + intent pattern + 複数 in-flight。
 // ADR 0052 dogfood — searchParams() 経由 filter (= URL ↔ signal sync、Path Y)。
+// ADR 0053 dogfood — server-side filter + paginate (= loader が `request.url` から
+//                    `?page=` / `?q=` を読む経路)。
 //
 // 主要ポイント:
 //   - **canonical store (`data.notes`) には書き込まない**: 楽観行は `subs.value` から
@@ -13,44 +15,65 @@ import type { action, loader } from "./server";
 //   - **複数 in-flight 自然対応**: Add 連打で 3 つの楽観行が並行表示される
 //   - **loader 再 revalidate 完了で楽観行が auto-cleanup**: server 戻りで `data.notes`
 //     に本物が現れた瞬間、success な submission が array から remove → 楽観行が自然消滅
-//   - **filter は URL 反映 (= searchParams.q)**: `/notes?q=Vidro` 直打ちで pre-filtered
-//     HTML が server 側で生成される。input 入力は replaceState で URL 同期、history は
-//     汚さない (= ephemeral state)
+//   - **filter / paginate は server-side**: ADR 0053 で loader が `request.url` を受け
+//     取れるようになったので、`?q=Vidro&page=2` を server で filter+paginate して
+//     `data.notes` には slice 済の subset だけ届く。client-side filter は廃止
+//   - **`<Link href="?page=N">` は path Y の dogfood**: searchParam 変化で loader 自動
+//     再 fire は **しない**。下の `effect(() => { sp.q.value; sp.page.value; revalidate(); })`
+//     が user 側 explicit な bind 経路。
 //
-// ADR 0049 痛み B 解消 (= action 後 page-local state が remount で消える) も維持:
-//   count signal は loader revalidate を跨いで保持される。filter は searchParams
-//   経由になったので signal の同 page 永続性は不要 (= URL 自体が永続化媒体)。
-//
-// dogfood 検証手順:
-//   ADR 0051 (5 シナリオ):
-//     1. filter "Vidro" + count 5 + Add → filter / count 維持、新行が in-place 追加
-//     2. Add 連打 ("A" → Add → "B" → Add → "C" → Add) → 楽観行 3 つ並列、各々完了で消える
-//     3. Delete 並列 (2 行同時) → opacity-50 line-through、loader 戻りで両方消える
-//     4. server で throw → 楽観行が消えて data.notes は元のまま (= rollback コードゼロ)
-//   ADR 0052 (5 シナリオ):
-//     5. /notes?q=Vidro 直打ち → filter 適用済で表示 (= server で initial state 構築)
-//     6. filter input typing → URL の ?q= が同期更新 (replaceState、history 汚さない)
-//     7. ブラウザ戻るボタン → /notes は同 path 履歴を積まないので「前 page」へ戻る (= 仕様)
-//     8. sp.q.value = "" || undefined で URL から q が完全削除されるか目視
-//     9. SSR 整合: client hydrate 時に signal の値が server と一致 (mismatch なし)
+// dogfood 検証手順 (本セッション = ADR 0053):
+//   1. /notes 直打ち → page 1 (items 1-5) が pre-rendered HTML で表示
+//   2. /notes?page=2 直打ち → page 2 (items 6-10) が pre-rendered HTML
+//   3. Next click → URL `?page=2` 更新 → revalidate() → server fetch → diff merge で in-place 更新
+//   4. ブラウザ戻るボタン (popstate) → URL 戻り → revalidate() → server fetch → 戻る
+//   5. filter "Vidro" 入力 → URL `?q=Vidro` + page=1 reset → server で filter 適用された slice
+//   6. filter + page 2 で Delete 実行 → 同 URL (search 維持) で revalidate → page 2 の残り表示
 
 export default function NotesPage() {
   const data = loaderData<typeof loader>();
   const subs = submissions<typeof action>();
-  const sp = searchParams();
+  const sp = searchParams<{ q?: string; page?: string }>();
 
   const count = signal(0);
-
-  const filteredNotes = computed(() =>
-    data.notes.filter((n) =>
-      n.title.value.toLowerCase().includes((sp.q.value ?? "").toLowerCase()),
-    ),
-  );
 
   // intent === "create" な in-flight = 楽観行表示用
   const pendingCreates = computed(() =>
     subs.value.filter((s) => s.input.value?.intent === "create" && s.pending.value),
   );
+
+  // ADR 0052 path Y dogfood: searchParam 変化を loader 再 fire に user 側 explicit に bind。
+  // - 初回 mount 後の effect 実行は bootstrap data があれば既に最新なので skip
+  // - 以降は q / page どちらかが変わるたびに revalidate() で server fetch
+  // - typing は debounce 無し (= localhost なら即時、production で気になれば user 側で debounce)
+  let skipFirstRevalidate = true;
+  effect(() => {
+    void sp.q.value;
+    void sp.page.value;
+    if (skipFirstRevalidate) {
+      skipFirstRevalidate = false;
+      return;
+    }
+    void revalidate();
+  });
+
+  // 現 page index (1-based)。server 側で clamp 済の値が data.page で来る前提だが、
+  // typing 中の momentary な乖離 (= URL は ?page=2、data はまだ ?page=3 の戻り) でも
+  // UI が壊れないよう sp.page.value からも raw 値を読む。
+  const currentPage = computed(() => {
+    const raw = Number(sp.page.value ?? "1");
+    return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+  });
+
+  // pagination link 用 href builder。q を保ったまま page だけ変える。
+  // page=1 のときは ?page= を省略して綺麗な URL にする (search 全削除なら "")。
+  const buildHref = (page: number): string => {
+    const params = new URLSearchParams();
+    if (sp.q.value !== undefined && sp.q.value !== "") params.set("q", sp.q.value);
+    if (page > 1) params.set("page", String(page));
+    const qs = params.toString();
+    return qs ? `?${qs}` : "/notes";
+  };
 
   return (
     <div>
@@ -60,19 +83,22 @@ export default function NotesPage() {
         value={sp.q.value ?? ""}
         onInput={(e: InputEvent) => {
           // ADR 0052: 空文字を `undefined` に倒すと URL から `q=` が完全削除される。
-          // 残したい (= `?q=` を保持) なら value をそのまま代入。dogfood では削除側を採用。
+          // ADR 0053: filter 変更時は page=1 にリセット (= 検索結果の先頭を見せる UX)。
           const v = (e.currentTarget as HTMLInputElement).value;
           sp.q.value = v === "" ? undefined : v;
+          sp.page.value = undefined;
         }}
         placeholder="絞り込み..."
         class="mt-4 w-full rounded border px-3 py-2"
       />
 
-      {/* debug: searchParams.q が URL と同期更新される目視確認 */}
-      <p class="mt-1 text-xs text-gray-500">{`(debug) ?q=${sp.q.value ?? "(none)"}`}</p>
+      {/* debug: searchParams が URL と同期更新される目視確認 */}
+      <p class="mt-1 text-xs text-gray-500">
+        {`(debug) ?q=${sp.q.value ?? "(none)"} page=${sp.page.value ?? "(1)"} / total=${data.totalPages.value}`}
+      </p>
 
       <ul class="mt-2 space-y-1">
-        <For each={filteredNotes.value}>
+        <For each={data.notes}>
           {(n) => {
             // 各 note 行が「自分が delete 中か」を subs から peek。複数 delete 並列でも
             // 各行が独立に判定される (= ADR 0051 derive 派の per-item UX)。
@@ -120,6 +146,35 @@ export default function NotesPage() {
           }}
         </For>
       </ul>
+
+      {/* pagination UI (ADR 0053 dogfood)。<button onClick={navigate(...)}> で
+          search-only navigation する。<a> / <Link> を使うと props.href が snapshot
+          (= memory feedback_props_unification_preference) で reactive 追従しない。
+          Pathname は変わらないので Path Y → effect が revalidate() を発火 →
+          server-side で paginate → diff merge で in-place 更新。 */}
+      <nav class="mt-4 flex items-center gap-3 text-sm">
+        <button
+          type="button"
+          disabled={currentPage.value <= 1}
+          onClick={() => navigate(buildHref(currentPage.value - 1))}
+          class={`rounded border px-3 py-1 ${
+            currentPage.value <= 1 ? "opacity-30" : "hover:bg-gray-100"
+          }`}
+        >
+          Prev
+        </button>
+        <span class="text-gray-600">{`Page ${data.page.value} / ${data.totalPages.value}`}</span>
+        <button
+          type="button"
+          disabled={currentPage.value >= data.totalPages.value}
+          onClick={() => navigate(buildHref(currentPage.value + 1))}
+          class={`rounded border px-3 py-1 ${
+            currentPage.value >= data.totalPages.value ? "opacity-30" : "hover:bg-gray-100"
+          }`}
+        >
+          Next
+        </button>
+      </nav>
 
       <button
         type="button"

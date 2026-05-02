@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** — 2026-05-02 (44th session)
+**Accepted** — 2026-05-02 (44th session、dogfood + reviewer fix 込み)
 
 依存: ADR 0011 (LoaderArgs/ActionArgs の拡張は 1 箇所に閉じる) / ADR 0052 (`searchParams()` primitive)
 
@@ -162,10 +162,53 @@ callsite:
 
 `@vidro/plugin` の serverBoundary は `mod.loader` を直接呼ばず、`route-tree.ts` 経由 (= ServerModuleLoader) で routes を解決する。loader 引数 shape は `runLoader` (server.ts) 1 箇所でしか組まれていないので、変更点は最小。
 
-### test (`packages/router/tests/`)
+### dogfood 駆動で発覚した core / design hole
 
-- `server.test.ts`: loader が `request` を受けることを検証 (URL から `?page=` を読む test 追加)
-- `loader-args.test.ts` (新規 or 既存に追加): `LoaderArgs<"/path">` の型 narrow と request 受け取りを compile-time test
+ADR 0053 の dogfood で `<For each={data.notes}>` が pagination の Page 1→2 切替に追従しない bug が発覚。深堀りで以下 3 点が出た。本 ADR に **込みで** 修正する (= dogfood が ADR の検証なので、bug を放置すると ADR の意義が立たない)。
+
+#### 1. `@vidro/core/src/store.ts` — splice の length 不変ケースで subscriber に届かない
+
+- 現象: ADR 0049 diff merge の id-keyed reconcile で `splice(0, 5, ...new5)` 全置換が走るが、length が 5→5 で同じだと `lengthSignal` が `Object.is` 同値スキップで notify されない
+- 修正: 構造変化 nonce signal (`structureSignal`) を追加。`length` access 経路で両 signal を track、mutating method 後に `batch` で両方 update。length 不変の要素入れ替え (= splice 全置換 / sort / reverse) も subscriber に届く
+- test: `packages/core/tests/store.test.ts` に structural change で length 不変な test ケースを追加
+
+#### 2. `@vidro/core/src/for.ts` — initial run で dependency 未登録のまま return
+
+- 現象: For の effect 内で `initialEffect` フラグで初回スキップしてるが、その前に `each` の readReactiveSource しか呼んでない。`each` が **store array proxy 直接** (= plain T、関数 / Signal を介さない) だと subscribe が一度も成立せず、後続の splice / push でも再 fire しない
+- 修正: 初回 invocation でも `void list.length` を読んで dependency 登録。array proxy の length access が structure / length 両方を track するので、要素入れ替えも拾える
+- test: 既存 For の test は each に Signal / 関数を渡すケースが多く、plain array proxy 経路が未 cover。dogfood で初めて表面化
+
+#### 3. `<Link href={dynamic}>` は reactive 追従しない (= 仕様)
+
+- 現象: pagination の Prev/Next を `<Link href={buildHref(currentPage.value - 1)}>` で書くと、currentPage 変化で href が更新されない
+- 原因: memory `feedback_props_unification_preference` 通り **コンポーネントの props は snapshot**。`wrapComponentProps` (`packages/core/src/jsx.ts`) が transform marker 付き関数を即時評価で展開するので、Link 受け側で props.href は static
+- 解決: pagination は `<button onClick={() => navigate(buildHref(currentPage.value - 1))}>` にする。`disabled` / `class` 等の **DOM element 直接 attribute** は `applyProp` で reactive 化されるので追従する。`<a href>` 直書きでも transform 経由で reactive 化される
+- 含意: Link primitive で reactive href が欲しいケースは別 ADR 案件 (= primitive 側で href を Signal で受ける拡張)。今は user code で button + navigate に倒すのが Vidro 流。memory `feedback_dx_first_design` で書いた「DX-first」の限界 — props snapshot 哲学を保つなら `<Link>` は最もシンプルなケース用と割り切る
+
+### client → server の search 保持 (`packages/router/src/router.tsx`)
+
+dogfood で気付いた追加 scope。LoaderArgs に request を渡せても、**client 側が server に search を送ってないと loader が `?page=` / `?q=` を読めない**。3 経路あるうち初回 navigate 経路 (handleNavigation) は元から request 全体が server に届くが、以下 2 経路は path しか送っていなかった:
+
+- 経路 2 (= `revalidate()` / `<Link>` で同 page 内 navigate 後の loader 再 fire): `fetchLoaders(pathname)` が `/__loader?path=${pathname}` で送る → search が捨てられる
+- 経路 3 (= form submit 後の loader 自動 revalidate): `handleFormSubmit` で `path = action || currentPathname.value` → POST `/notes` で送る → search が捨てられる
+
+修正:
+
+- `fetchLoaders(pathname, search)` に search 引数を追加し、fetch URL を `/__loader?path=${encodeURIComponent(pathname + search)}` にする。bootstrap 比較は pathname のみ (= 初回 hydrate は経路 1 で search 込み HTML が来てるので、bootstrap data の pathname 一致だけで OK)
+- effect 内で `const search = window.location.search` を読んで fetchLoaders に渡す
+- `handleFormSubmit` で `path = action attr || (currentPathname.value + search)` にする (POST URL に search を載せる)
+- `dispatchSubmit` 内の同 path 判定を `new URL(path, origin).pathname === currentPathname.value` に書き換え (path に search を含めても same-page bootstrapData 上書き経路に正しく入る)
+
+これで pagination / filter / sort 等の URL 駆動 server-side state が、初回 navigate / 同 page 内 revalidate / form submit 後 revalidate **全 3 経路で保たれる**。
+
+### test (`packages/router/tests/server-loader.test.ts` 新規)
+
+4 ケース追加:
+
+1. `/__loader` endpoint: `path=/notes?q=Vidro&page=2` で loader.request.url が **route URL に偽装** されている (= `/__loader?...` の文字列を user の loader に晒さない)
+2. `/__loader` endpoint: headers (cookie / accept-language) は original request から forward される
+3. POST → loader 自動 revalidate: revalidate 時の loader.request.url は POST 先 URL (= search 込み) を保つ
+4. 引数を取らない loader (`async () => ({...})`) も互換 (= 関数 contravariance、既存 fixture 破壊しない)
 
 ### apps 側 dogfood (= 本 ADR のトリガー)
 
@@ -217,9 +260,9 @@ effect(() => {
 
 1. **loader が `request.formData()` を読むケース**: action と loader で同 request body を 2 回読むと第 2 回が空になる (`Body already used`)。ただし loader 経路で body を読むのは設計上不要 (= POST は action、GET は loader)。一応 doc で明記。
 
-2. **dev mode の `/__loader?path=X` endpoint で loader が受ける request**: `path` は query で来るので `request.url` は `/__loader?path=...`。user の loader は「自分が `/notes` の loader」と思って `request.url` を見ると `/__loader?...` が見える。これは混乱の元。
+2. **dev mode の `/__loader?path=X` endpoint で loader が受ける request** (Resolved): `path` は query で来るので `request.url` は `/__loader?path=...`。user の loader が `request.url` を見ると `/__loader?...` が見えて混乱の元。
 
-   解決案: handleLoaderEndpoint は **`new Request(new URL(path, base), { headers: request.headers })`** で **route の URL に偽装した request** を loader に渡す。本物の `/__loader` request を user に晒さない。
+   **着地**: handleLoaderEndpoint で **`new Request(new URL(path, base), { headers: request.headers })`** で **route の URL に偽装した request** を loader に渡す。本物の `/__loader` request を user に晒さない。`javascript:` / `data:` 等の non-http scheme は `new URL` で base 無視されるので 400 で早期に弾く (= unhandled 500 防止、reviewer fix)。
 
 3. **AsyncLocalStorage 化**: request を loader に渡すと、loader 内から fetch する際に headers (cookie / authorization) を forward したい場面が出る。toy 段階では「user が手で伝搬」する方針 (= Hono 流儀)、AsyncLocalStorage 経由の context は別 ADR (memory `project_pending_rewrites` の SSR concurrency 案件と連動)。
 

@@ -17,16 +17,19 @@ export type Routes = RouteMap;
 // の params の union になる (= 触るときに narrow が要る)。params を触らない
 // loader (layout でよくある) は省略 OK、触るなら必ず route path を明示する運用。
 //
-// 将来 `request` / worker context 等が増えたときもここ 1 箇所に足せば、helper
-// を使ってる全 loader が追従する (ADR 0011)。
+// ADR 0053: `request: Request` を受ける。ActionArgs と shape 完全一致 (= 学習
+// コスト 1 箇所)。WinterCG / Hono 流儀で headers / cookie / URL を `request` 経由で
+// 触れる。pagination / sort / lang detection 等の URL 由来 server-side state は
+// `new URL(request.url).searchParams.get(...)` で読む。
 export type LoaderArgs<R extends keyof Routes = keyof Routes> = {
+  request: Request;
   params: Routes[R]["params"];
 };
 
 // loader として受け入れる関数の最低条件。`PageProps<L>` / `LayoutProps<L>` の
 // generic 制約に使う。params shape は route ごとに異なるので `any` で受けて、
 // 本当の型は `Parameters<L>[0]["params"]` で個別に取り出す。
-type AnyLoader = (args: { params: any }) => Promise<unknown>;
+type AnyLoader = (args: { request: Request; params: any }) => Promise<unknown>;
 
 // route component が受け取る props 型。
 //

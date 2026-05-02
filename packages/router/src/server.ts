@@ -62,7 +62,7 @@ export function createServerHandler(options: CreateServerHandlerOptions): Server
     const url = new URL(request.url);
 
     if (url.pathname === endpoint) {
-      return handleLoaderEndpoint(url, compiled);
+      return handleLoaderEndpoint(url, request, compiled);
     }
 
     // POST は accept より method 優先で分岐 (form submit / programmatic 両対応)。
@@ -74,7 +74,7 @@ export function createServerHandler(options: CreateServerHandlerOptions): Server
 
     const accept = request.headers.get("accept") ?? "";
     if (ctx.assets && accept.includes("text/html")) {
-      return handleNavigation(url, ctx.assets, manifest, compiled);
+      return handleNavigation(url, request, ctx.assets, manifest, compiled);
     }
 
     return new Response(null, { status: 404 });
@@ -83,12 +83,35 @@ export function createServerHandler(options: CreateServerHandlerOptions): Server
 
 // --- handlers ---
 
-async function handleLoaderEndpoint(url: URL, compiled: CompiledFromRoutes): Promise<Response> {
+async function handleLoaderEndpoint(
+  url: URL,
+  request: Request,
+  compiled: CompiledFromRoutes,
+): Promise<Response> {
+  // `path` query は `/notes?q=Vidro&page=2` の形式 (= route 側 URL の pathname+search)。
+  // 単純な path だけでなく query も含む点に注意。
   const path = url.searchParams.get("path");
   if (!path) {
     return jsonResponse(400, { error: { message: "missing `path` query" } });
   }
-  const data = await gatherRouteData(path, compiled);
+  // ADR 0053 Open Question 2: loader が `request.url` を見たとき `/__loader?path=...`
+  // ではなく **route 自身の URL** に見えるよう request を偽装する。headers (cookie /
+  // accept-language 等) は original から forward。method は GET 固定 (= /__loader 経路は
+  // navigation 用 GET fetch と同等の意味付け)。
+  let routeUrl: URL;
+  try {
+    routeUrl = new URL(path, url.origin);
+  } catch {
+    return jsonResponse(400, { error: { message: "invalid path" } });
+  }
+  // `javascript:`, `data:`, `file:` 等の non-http scheme は `new URL(path, base)` で
+  // base 無視され non-http URL として解決される。そのまま `new Request` に渡すと
+  // TypeError で unhandled 500 になるので clean な 400 に倒す (= reviewer Issue (a))。
+  if (routeUrl.protocol !== "http:" && routeUrl.protocol !== "https:") {
+    return jsonResponse(400, { error: { message: "invalid path scheme" } });
+  }
+  const routeRequest = new Request(routeUrl, { headers: request.headers });
+  const data = await gatherRouteData(routeRequest, compiled);
   return jsonResponse(200, data);
 }
 
@@ -174,12 +197,17 @@ async function handleAction(
   if (result instanceof Response) return result;
 
   // plain value → action result + loader 自動 revalidate
-  const loaderData = await gatherRouteData(url.pathname, compiled);
+  // ADR 0053: loader 自動 revalidate は POST 直後の文脈なので、original POST request の
+  // body を消費せずに「同 URL で GET っぽく」見える request を偽装して loader に渡す。
+  // headers は forward (cookie / accept-language 等を保つ)、method は GET 固定。
+  const revalidateRequest = new Request(url.toString(), { headers: request.headers });
+  const loaderData = await gatherRouteData(revalidateRequest, compiled);
   return jsonResponse(200, { actionResult: result, loaderData });
 }
 
 async function handleNavigation(
   url: URL,
+  request: Request,
   assets: NonNullable<ServerContext["assets"]>,
   manifest: RouteRecord,
   compiled: CompiledFromRoutes,
@@ -187,7 +215,7 @@ async function handleNavigation(
   // loader 並列実行 と module 並列 load は独立なので Promise.all で並列化。
   // どちらも pathname のみに依存し、互いを参照しない。
   const [data, resolvedModules, indexRes] = await Promise.all([
-    gatherRouteData(url.pathname, compiled),
+    gatherRouteData(request, compiled),
     preloadRouteComponents(manifest, url.pathname),
     assets.fetch(new Request(new URL("/index.html", url.origin).toString())),
   ]);
@@ -304,17 +332,22 @@ function composeResponseStream(
 type CompiledFromRoutes = ReturnType<typeof compileRoutes>;
 
 /**
- * pathname から全 layer の loader を並列実行し、`{params, layers}` を返す。
+ * request から全 layer の loader を並列実行し、`{params, layers}` を返す。
  * loader endpoint / navigation の両方が同じ形で data を得るための共通関数。
+ *
+ * ADR 0053: pathname (string) でなく Request を受ける。loader に request を渡せる
+ * ようにした (= URL search / headers / cookie を user 側で読める)。pathname は
+ * matchRoute 用に request.url から内部で抽出する。
  */
 async function gatherRouteData(
-  path: string,
+  request: Request,
   compiled: CompiledFromRoutes,
 ): Promise<{ params: Record<string, string>; layers: LayerResult[] }> {
-  const match = matchRoute(path, compiled);
+  const pathname = new URL(request.url).pathname;
+  const match = matchRoute(pathname, compiled);
   const layerLoads: Promise<LayerResult>[] = [
-    ...match.layouts.map((l) => runLoader(l.serverLoad, match.params)),
-    runLoader(match.server ? match.server.load : null, match.params),
+    ...match.layouts.map((l) => runLoader(l.serverLoad, request, match.params)),
+    runLoader(match.server ? match.server.load : null, request, match.params),
   ];
   const layers = await Promise.all(layerLoads);
   return { params: match.params, layers };
@@ -325,13 +358,14 @@ type LayerResult = { data?: unknown; error?: SerializedError };
 
 async function runLoader(
   loadFn: ServerModuleLoader | null,
+  request: Request,
   params: Record<string, string>,
 ): Promise<LayerResult> {
   if (!loadFn) return { data: undefined };
   try {
     const mod = (await loadFn()) as ServerModule;
     if (!mod.loader) return { data: undefined };
-    const data = await mod.loader({ params });
+    const data = await mod.loader({ request, params });
     return { data };
   } catch (err) {
     return { error: serializeError(err) };
