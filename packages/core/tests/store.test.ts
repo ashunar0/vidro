@@ -186,6 +186,44 @@ describe("store (path F: leaf signal + 中間 proxy)", () => {
       e.dispose();
     });
 
+    test("splice で length 不変の全要素入れ替えでも length effect が再実行される (ADR 0049 / 0053 dogfood で発見)", () => {
+      // ADR 0049 diff merge の id-keyed reconcile で、Page 1 (id 1-5) の array を
+      // Page 2 (id 6-10) で全置換するときに splice(0, 5, ...new5) が走る。
+      // length は 5 → 5 で不変だが「要素 identity が変わった」事実を subscriber に
+      // 伝える必要がある。structureSignal が無いと For が page 切替に追従できない。
+      const data = store<{ id: number; title: string }[]>([
+        { id: 1, title: "a" },
+        { id: 2, title: "b" },
+        { id: 3, title: "c" },
+      ]);
+      const fn = vi.fn();
+      const e = effect(() => {
+        // length と各要素 id を集約する形で iterate (= For の典型的な dependency 取り方)
+        const ids: number[] = [];
+        for (let i = 0; i < data.length; i++) {
+          // biome-ignore lint/suspicious/noExplicitAny: write-side 型は別論点
+          const id = (data[i] as any).id as Signal<number>;
+          ids.push(id.value);
+        }
+        fn(ids.join(","));
+      });
+      expect(fn).toHaveBeenLastCalledWith("1,2,3");
+
+      // 全 3 要素を別 id の 3 要素に置換 (length 不変)
+      // biome-ignore lint/suspicious/noExplicitAny: write-side 型は別論点
+      (data as any).splice(
+        0,
+        3,
+        { id: 4, title: "d" },
+        { id: 5, title: "e" },
+        { id: 6, title: "f" },
+      );
+
+      // length は 3→3 だが、structureSignal の inc で effect は走り、新 ids が見える
+      expect(fn).toHaveBeenLastCalledWith("4,5,6");
+      e.dispose();
+    });
+
     test("既存要素の field 更新では length effect は再実行されない (= fine-grained 確認)", () => {
       const data = store([{ id: 1, title: "a" }]);
       const lengthFn = vi.fn();

@@ -1,3 +1,4 @@
+import { batch } from "./batch";
 import { Signal, signal } from "./signal";
 
 // ADR 0047 path F: deep reactive container。leaf (primitive) は Signal で自動 wrap、
@@ -120,25 +121,34 @@ function createArrayProxy(target: unknown[]): unknown[] {
     target[i] = wrap(target[i]);
   }
 
-  // 配列の structural change (length / 要素追加削除) を観測する Signal
+  // 配列の length を保持する Signal (= 要素追加 / 削除を notify)。
   const lengthSignal = signal(target.length);
+  // 構造変化 nonce。length 不変でも要素 identity が入れ替わるケース (ADR 0049
+  // diff merge の id-keyed splice 等) で subscriber に変化を伝えるための単調増加
+  // signal。lengthSignal は Object.is で同値スキップされるため、length 5→5 の
+  // splice では observer が再 fire しない問題への補完。
+  const structureSignal = signal(0);
 
   const proxy = new Proxy(target, {
     get(t, key, receiver) {
       if (key === STORE_RAW) return t;
-      if (key === "length") return lengthSignal.value;
-      // 変更系メソッドを wrap (= 引数を wrap + length notify)
-      if (typeof key === "string" && MUTATING_METHODS.has(key)) {
-        return wrapMutatingMethod(t, lengthSignal, key);
+      if (key === "length") {
+        // length を読む経路で structure も track。length 不変でも splice 等で
+        // 要素入れ替えが起きたら effect が再 fire する。
+        void structureSignal.value;
+        return lengthSignal.value;
       }
-      // それ以外のメソッド (find/filter/map/forEach/...) は length を track して透過
+      // 変更系メソッドを wrap (= 引数を wrap + length / structure notify)
+      if (typeof key === "string" && MUTATING_METHODS.has(key)) {
+        return wrapMutatingMethod(t, lengthSignal, structureSignal, key);
+      }
+      // それ以外のメソッド (find/filter/map/forEach/...) は length / structure を
+      // track して透過。要素 identity 入れ替えのみのケースでも reactivity を保つ。
       const value = Reflect.get(t, key, receiver);
       if (typeof value === "function") {
         return function (this: unknown, ...args: unknown[]): unknown {
-          // length を track することで「配列を iterate する effect」が
-          // 構造変化で再実行される。要素自体の変化は要素 (signal/proxy) 側の
-          // track で拾われる。
           void lengthSignal.value;
+          void structureSignal.value;
           // biome-ignore lint/complexity/noUselessThisAlias: native method needs the array as `this`
           const arrayThis = this === proxy ? t : this;
           return Reflect.apply(value, arrayThis, args);
@@ -188,10 +198,11 @@ function createArrayProxy(target: unknown[]): unknown[] {
   return proxy;
 }
 
-/** push / splice / pop 等の mutating method を wrap。引数を wrap してから storage を mutate し、length を notify。 */
+/** push / splice / pop 等の mutating method を wrap。引数を wrap してから storage を mutate し、length / structure を batch で notify。 */
 function wrapMutatingMethod(
   target: unknown[],
   lengthSignal: Signal<number>,
+  structureSignal: Signal<number>,
   method: string,
 ): (...args: unknown[]) => unknown {
   return function (...args: unknown[]): unknown {
@@ -222,7 +233,13 @@ function wrapMutatingMethod(
         );
       }
     }
-    lengthSignal.value = target.length;
+    // length 変化と structural change の両方を 1 batch で notify。length 不変だが
+    // 要素入れ替えが起きたケース (= ADR 0049 diff merge の id-keyed splice で
+    // 旧 5 件を新 5 件に置換等) でも structureSignal の inc で observer 再 fire。
+    batch(() => {
+      lengthSignal.value = target.length;
+      structureSignal.value = structureSignal.peek() + 1;
+    });
     return result;
   };
 }

@@ -101,6 +101,13 @@ export function For<T>(props: ForProps<T>): Node {
     // readReactiveSource で 3 形式 (T[] / Signal<T[]> / () => T[]) を吸収。
     // Signal / 関数なら effect の observer に subscribe され、変化に追従する。
     const list = readReactiveSource(props.each);
+    // 初回 invocation でも `list.length` を読んで dependency を登録する。これがないと
+    // each に **store array proxy を直接渡した場合** (= 関数 / Signal を介さない、
+    // plain T として readReactiveSource を素通り) に subscribe が一度も成立せず、
+    // 後続の splice / push などでも effect が再 fire しない (ADR 0049 / 0053 dogfood
+    // で発覚)。array proxy の length access は length / structure 両方を track する
+    // ので、要素入れ替え (length 不変) も拾える。
+    void list.length;
     if (initialEffect) {
       initialEffect = false;
       return;
