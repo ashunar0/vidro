@@ -1,8 +1,9 @@
 import { computed, For, signal } from "@vidro/core";
-import { loaderData, submissions } from "@vidro/router";
+import { loaderData, searchParams, submissions } from "@vidro/router";
 import type { action, loader } from "./server";
 
 // ADR 0051 dogfood — derive 派楽観更新 + intent pattern + 複数 in-flight。
+// ADR 0052 dogfood — searchParams() 経由 filter (= URL ↔ signal sync、Path Y)。
 //
 // 主要ポイント:
 //   - **canonical store (`data.notes`) には書き込まない**: 楽観行は `subs.value` から
@@ -12,25 +13,38 @@ import type { action, loader } from "./server";
 //   - **複数 in-flight 自然対応**: Add 連打で 3 つの楽観行が並行表示される
 //   - **loader 再 revalidate 完了で楽観行が auto-cleanup**: server 戻りで `data.notes`
 //     に本物が現れた瞬間、success な submission が array から remove → 楽観行が自然消滅
+//   - **filter は URL 反映 (= searchParams.q)**: `/notes?q=Vidro` 直打ちで pre-filtered
+//     HTML が server 側で生成される。input 入力は replaceState で URL 同期、history は
+//     汚さない (= ephemeral state)
 //
 // ADR 0049 痛み B 解消 (= action 後 page-local state が remount で消える) も維持:
-//   filter signal / count signal は loader revalidate を跨いで保持される。
+//   count signal は loader revalidate を跨いで保持される。filter は searchParams
+//   経由になったので signal の同 page 永続性は不要 (= URL 自体が永続化媒体)。
 //
-// dogfood 検証手順 (= ADR 0051 Consequences の 5 シナリオ):
-//   1. filter "Vidro" + count 5 + Add → filter / count 維持、新行が in-place 追加
-//   2. Add 連打 ("A" → Add → "B" → Add → "C" → Add) → 楽観行 3 つ並列、各々完了で消える
-//   3. Delete 並列 (2 行同時) → opacity-50 line-through、loader 戻りで両方消える
-//   4. server で throw → 楽観行が消えて data.notes は元のまま (= rollback コードゼロ)
+// dogfood 検証手順:
+//   ADR 0051 (5 シナリオ):
+//     1. filter "Vidro" + count 5 + Add → filter / count 維持、新行が in-place 追加
+//     2. Add 連打 ("A" → Add → "B" → Add → "C" → Add) → 楽観行 3 つ並列、各々完了で消える
+//     3. Delete 並列 (2 行同時) → opacity-50 line-through、loader 戻りで両方消える
+//     4. server で throw → 楽観行が消えて data.notes は元のまま (= rollback コードゼロ)
+//   ADR 0052 (5 シナリオ):
+//     5. /notes?q=Vidro 直打ち → filter 適用済で表示 (= server で initial state 構築)
+//     6. filter input typing → URL の ?q= が同期更新 (replaceState、history 汚さない)
+//     7. ブラウザ戻るボタン → /notes は同 path 履歴を積まないので「前 page」へ戻る (= 仕様)
+//     8. sp.q.value = "" || undefined で URL から q が完全削除されるか目視
+//     9. SSR 整合: client hydrate 時に signal の値が server と一致 (mismatch なし)
 
 export default function NotesPage() {
   const data = loaderData<typeof loader>();
   const subs = submissions<typeof action>();
+  const sp = searchParams();
 
   const count = signal(0);
-  const filter = signal("");
 
   const filteredNotes = computed(() =>
-    data.notes.filter((n) => n.title.value.toLowerCase().includes(filter.value.toLowerCase())),
+    data.notes.filter((n) =>
+      n.title.value.toLowerCase().includes((sp.q.value ?? "").toLowerCase()),
+    ),
   );
 
   // intent === "create" な in-flight = 楽観行表示用
@@ -43,16 +57,19 @@ export default function NotesPage() {
       <h2 class="text-xl font-semibold">Notes</h2>
 
       <input
-        value={filter.value}
+        value={sp.q.value ?? ""}
         onInput={(e: InputEvent) => {
-          filter.value = (e.currentTarget as HTMLInputElement).value;
+          // ADR 0052: 空文字を `undefined` に倒すと URL から `q=` が完全削除される。
+          // 残したい (= `?q=` を保持) なら value をそのまま代入。dogfood では削除側を採用。
+          const v = (e.currentTarget as HTMLInputElement).value;
+          sp.q.value = v === "" ? undefined : v;
         }}
         placeholder="絞り込み..."
         class="mt-4 w-full rounded border px-3 py-2"
       />
 
-      {/* debug: filter signal が action 後も維持される目視確認 */}
-      <p class="mt-1 text-xs text-gray-500">{`(debug) filter: "${filter.value}"`}</p>
+      {/* debug: searchParams.q が URL と同期更新される目視確認 */}
+      <p class="mt-1 text-xs text-gray-500">{`(debug) ?q=${sp.q.value ?? "(none)"}`}</p>
 
       <ul class="mt-2 space-y-1">
         <For each={filteredNotes.value}>

@@ -201,8 +201,14 @@ async function handleNavigation(
   // bootstrap data router 部分のみ。resources は core の renderToReadableStream
   // が tail で `__vidroSetResources(...)` patch script を出すので、shell には
   // 含めない。client 側 Resource は patch 後の `__vidro_data` を hydrate 時に読む。
+  //
+  // ADR 0052: `search` (= `?q=Vidro` 含む URL の search 部分、無ければ "") を渡し、
+  // Router server mode が `_initServerSearch()` でこれを per-request initial 値に
+  // 立てる。これで `/notes?q=Vidro` 直打ちで `searchParams().q.value === "Vidro"`
+  // が server 側でも成立し、pre-filtered HTML が描画される。
   const routerBootstrap = {
     pathname: url.pathname,
+    search: url.search,
     params: data.params,
     layers: data.layers,
   };

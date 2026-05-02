@@ -45,3 +45,6 @@ export type {
 // ADR 0049 — loaderData() primitive。loader 戻りを reactive store として取得。
 // internal helpers (`_setLayerIndex` 等) は router.tsx の foldRouteTree が呼ぶ。
 export { loaderData } from "./loader-data";
+// ADR 0052 — searchParams() primitive。URL search 部分を reactive store として扱う
+// client URL state primitive。`revalidate()` は Path Y で必要な loader 再 fire 経路。
+export { searchParams, revalidate } from "./search-params";

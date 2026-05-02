@@ -26,6 +26,15 @@ import {
   _restoreLayerIndex,
   _setLayerIndex,
 } from "./loader-data";
+// ADR 0052 — searchParams() primitive 関連の internal API。
+// SSR で per-request initial search を立て、popstate / navigation で signals を
+// URL から書き戻す。client mode では revalidate() を Router の reset 経路に紐付ける。
+import {
+  _endServerSearchScope,
+  _initServerSearch,
+  _registerRevalidator,
+  _syncSearchParamsFromUrl,
+} from "./search-params";
 
 // ADR 0051: dispatcher が受ける引数 shape は action.ts の SubmissionState を流用。
 // router.tsx の dispatchSubmit / handleFormSubmit はこの interface 経由で
@@ -37,7 +46,15 @@ import {
 // 初期 loader data を module load 時に 1 回だけ取り出す。最初の render で
 // consume し、以降の navigation では従来通り /__loader を fetch する。
 type BootstrapLayer = { data?: unknown; error?: { name: string; message: string; stack?: string } };
-type BootstrapData = { pathname: string; params: Record<string, string>; layers: BootstrapLayer[] };
+// ADR 0052: SSR 経路で URL の search 部分 (= "?q=Vidro" 含む or "") を per-request
+// で渡す。client 側は window.location.search が SoT なので bootstrap には載せない
+// (= 古い navigation で生成された bootstrap が新 URL と乖離するリスクを避ける)。
+type BootstrapData = {
+  pathname: string;
+  search?: string;
+  params: Record<string, string>;
+  layers: BootstrapLayer[];
+};
 
 let bootstrapData: BootstrapData | null = readBootstrapData();
 
@@ -128,7 +145,12 @@ export function Router(props: RouterProps): Node {
 
   // popstate (戻る/進む) で pathname signal を同期。Router が mount されてる間だけ
   // listener を張り、dispose で剥がす。
+  //
+  // ADR 0052: searchParams() で取得済の signals も URL の search 部分と同期させる
+  // ため、_syncSearchParamsFromUrl() を pathname 更新の前に呼ぶ。これで pathname
+  // 変化を trigger に effect が再 fire する時点で signals は既に新値を持つ。
   const onPopState = () => {
+    _syncSearchParamsFromUrl();
     currentPathname.value = window.location.pathname;
   };
   window.addEventListener("popstate", onPopState);
@@ -140,6 +162,30 @@ export function Router(props: RouterProps): Node {
   const reset = (): void => {
     reloadCounter.value += 1;
   };
+
+  // ADR 0052 revalidate(): user が `await revalidate()` で loader 再 fire 完了を待つ
+  // 経路。effect の Promise.all 解決 (or reject) 時に flushPendingRevalidations() で
+  // 全 resolver を発火する。複数 revalidate() が短時間に呼ばれると同じ次の effect で
+  // まとめて resolve される (= 同 pathname で deduplicate しない、一律「次の解決」を
+  // 待つだけのシンプル仕様)。
+  let pendingRevalidations: Array<() => void> = [];
+  const flushPendingRevalidations = (): void => {
+    const resolvers = pendingRevalidations;
+    pendingRevalidations = [];
+    for (const r of resolvers) r();
+  };
+  const unregisterRevalidator = _registerRevalidator(
+    () =>
+      new Promise<void>((resolve) => {
+        pendingRevalidations.push(resolve);
+        reset();
+      }),
+  );
+  onCleanup(() => {
+    unregisterRevalidator();
+    // mount 中に await されてた pending を全部解決して await 側 を leak させない。
+    flushPendingRevalidations();
+  });
 
   // ---- form submit delegation (ADR 0051) ----
   // method="post" の form を Web 標準のまま hijack して action 経路に流す。
@@ -521,6 +567,10 @@ export function Router(props: RouterProps): Node {
           // から auto-remove する (= 楽観行が server 戻りで自動消滅、derive 派の核体験)。
           // errored submission は残留 (= retry / clear で操作)。
           _cleanupSuccessfulSubmissions(pathname);
+          // ADR 0052: 同 page revalidate ブランチでも `await revalidate()` の awaiter
+          // を解決する。これを忘れると同 path 内で revalidate() を await した user
+          // コードが永遠に止まる (= reviewer 指摘 Issue 2)。
+          flushPendingRevalidations();
           // pathname / params 同値、currentParams は前回 set 済のまま継続でよい。
           return;
         }
@@ -550,6 +600,8 @@ export function Router(props: RouterProps): Node {
         } else {
           lastSuccessRender = { pathname, layerCount: loaderResults.length };
         }
+        // ADR 0052: revalidate() の awaiter (= `await revalidate()`) を解決。
+        flushPendingRevalidations();
       })
       .catch((err) => {
         // component module の load 失敗 (network failure 等)。error.tsx modules の
@@ -559,6 +611,9 @@ export function Router(props: RouterProps): Node {
         console.error("[router] module load error:", err);
         swap(defaultErrorNode(err));
         lastSuccessRender = null;
+        // ADR 0052: 失敗ケースでも awaiter は解決させる (= leak 防止)。失敗の
+        // signal は user 側で別途 (例えば error.tsx の reset()) 取り扱う。
+        flushPendingRevalidations();
       });
   });
 
@@ -598,6 +653,13 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
   currentPathname.value = ssr.bootstrapData.pathname;
   currentParams.value = match.params;
 
+  // ADR 0052: SSR 経路で URL の search 部分を per-request scope として立てる。
+  // `searchParams()` の lazy access が server 側でも window なしで request URL の
+  // 値を返せる (= `/notes?q=Vidro` 直打ちで pre-filtered HTML が出る)。SSR 終了で
+  // _endServerSearchScope() が finally で flush する。bootstrapData.search が
+  // undefined なら空文字 (= search なし) で初期化。
+  _initServerSearch(ssr.bootstrapData.search ?? "");
+
   try {
     if (!ssr.resolvedModules.route) {
       return r.createText("404 Not Found") as unknown as Node;
@@ -636,6 +698,8 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
     // 内で並行 request が走った時、こちらの request の loaderRaws が混入しない
     // ように最低限の safety net (= AsyncLocalStorage 化は project_pending_rewrites)。
     _resetAllForServer();
+    // ADR 0052: searchParams 用の per-request scope も同タイミングで flush。
+    _endServerSearchScope();
   }
 }
 

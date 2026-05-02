@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** — 2026-05-02 (43rd session)
+**Accepted** — 2026-05-02 (43rd session)
 
 依存: ADR 0047 (store primitive) / ADR 0048 (props snapshot 規則) / ADR 0049 (`loaderData()`) / ADR 0051 (derive 楽観更新)
 
