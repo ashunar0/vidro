@@ -1,5 +1,5 @@
 import { computed, effect, For, signal } from "@vidro/core";
-import { loaderData, navigate, revalidate, searchParams, submissions } from "@vidro/router";
+import { Link, loaderData, revalidate, searchParams, submissions } from "@vidro/router";
 import type { action, loader } from "./server";
 
 // ADR 0051 dogfood — derive 派楽観更新 + intent pattern + 複数 in-flight。
@@ -147,33 +147,35 @@ export default function NotesPage() {
         </For>
       </ul>
 
-      {/* pagination UI (ADR 0053 dogfood)。<button onClick={navigate(...)}> で
-          search-only navigation する。<a> / <Link> を使うと props.href が snapshot
-          (= memory feedback_props_unification_preference) で reactive 追従しない。
-          Pathname は変わらないので Path Y → effect が revalidate() を発火 →
-          server-side で paginate → diff merge で in-place 更新。 */}
+      {/* pagination UI (ADR 0053 + 0054 dogfood)。ADR 0054 で <Link href> / <Link class>
+          が `() => string` 関数渡しに対応したので、currentPage に追従する dynamic href
+          を Link で書ける。pointer-events-none で disabled 相当を表現 (a 要素には
+          disabled 属性が無いため)。Pathname は変わらないので Path Y → effect が
+          revalidate() を発火 → server-side で paginate → diff merge で in-place 更新。 */}
       <nav class="mt-4 flex items-center gap-3 text-sm">
-        <button
-          type="button"
-          disabled={currentPage.value <= 1}
-          onClick={() => navigate(buildHref(currentPage.value - 1))}
-          class={`rounded border px-3 py-1 ${
-            currentPage.value <= 1 ? "opacity-30" : "hover:bg-gray-100"
-          }`}
+        <Link
+          href={() => buildHref(currentPage.value - 1)}
+          class={() =>
+            `rounded border px-3 py-1 ${
+              currentPage.value <= 1 ? "pointer-events-none opacity-30" : "hover:bg-gray-100"
+            }`
+          }
         >
           Prev
-        </button>
+        </Link>
         <span class="text-gray-600">{`Page ${data.page.value} / ${data.totalPages.value}`}</span>
-        <button
-          type="button"
-          disabled={currentPage.value >= data.totalPages.value}
-          onClick={() => navigate(buildHref(currentPage.value + 1))}
-          class={`rounded border px-3 py-1 ${
-            currentPage.value >= data.totalPages.value ? "opacity-30" : "hover:bg-gray-100"
-          }`}
+        <Link
+          href={() => buildHref(currentPage.value + 1)}
+          class={() =>
+            `rounded border px-3 py-1 ${
+              currentPage.value >= data.totalPages.value
+                ? "pointer-events-none opacity-30"
+                : "hover:bg-gray-100"
+            }`
+          }
         >
           Next
-        </button>
+        </Link>
       </nav>
 
       <button

@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** — 2026-05-02 (45th session)
+**Accepted** — 2026-05-02 (45th session、dogfood 検証済)
 
 依存: ADR 0048 (props snapshot + explicit reactive primitive)、ADR 0052 (`searchParams()` primitive)、ADR 0053 (`LoaderArgs.request`)
 
