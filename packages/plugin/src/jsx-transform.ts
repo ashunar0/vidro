@@ -181,9 +181,17 @@ export function jsxTransform(): Plugin {
         JSXText(path) {
           const parent = path.parent;
           if (!t.isJSXElement(parent) && !t.isJSXFragment(parent)) return;
-          const value = path.node.value;
-          // 改行 + indent のみは JSX formatting で出る noise なので捨てる
-          if (value.trim() === "") return;
+          // babel/oxc cleanJSXElementLiteralChild と同じ rule で JSXText を normalize する。
+          // 改行 + indent な formatting whitespace を捨てつつ、`<p>foo {x} bar</p>` の
+          // `foo ` `' bar'` 等の意味ある text は preserve する。これをやらないと
+          // `<p>foo\n        {x}</p>` を `_$text("foo\n        ")` で emit してしまい、
+          // browser whitespace collapse 後でも余分な空白が visible に残る。
+          const value = cleanJSXText(path.node.value);
+          if (value === "") {
+            // formatting noise → AST から完全削除して oxc にも見えないようにする
+            path.remove();
+            return;
+          }
 
           const isComponentParent = t.isJSXElement(parent) && isComponentJSXElement(parent);
 
@@ -258,22 +266,48 @@ function injectMarkers(parent: t.JSXElement, needed: Set<HelperName>): void {
   parent.children = out;
 }
 
-// JSX whitespace rule: oxc / babel cleanJSXElementLiteralChild は **改行を含む
-// whitespace-only JSXText** を formatting noise として drop する。一方、改行を
-// 含まない whitespace (= `<p>{a} {b}</p>` の " " 等) は preserve され、runtime で
-// Text Node として emit される。
-//
-// 後者を skip 扱いすると prev 更新が止まり「{a} の後ろに marker なしで続く { b}」
-// が SSR で `[a] [b]` (Text + Text) → browser が 1 Text に merge → cursor mismatch、
-// となる。preserved な whitespace text は textish と扱って boundary 判定に参加させ
-// る必要がある。
-//
-// 本関数は「実際には emit されない (= drop される) whitespace」のみ skip 対象として返す。
+// JSXText の cleanJSXText 結果が空なら「実際には emit されない formatting noise」
+// として skip 対象。改行を含む whitespace-only や、tab + 改行 のみ等が該当。
+// 単一行 whitespace (= " " のみ) は cleanJSXText が " " を返すので textish として
+// boundary 判定に参加させる必要があり、ここで false を返す。
 function isWhitespaceOnlyJSXText(node: t.JSXElement["children"][number]): boolean {
   if (!t.isJSXText(node)) return false;
-  if (node.value.trim() !== "") return false;
-  // 改行を含む whitespace は cleanJSX で drop される、preserve_whitespace 側に倒さない
-  return /[\n\r]/.test(node.value);
+  return cleanJSXText(node.value) === "";
+}
+
+// babel/oxc の cleanJSXElementLiteralChild と同じ rule で JSXText を normalize する。
+// 各行の leading/trailing whitespace を改行に隣接する範囲で trim、tabs を space 置換、
+// 中間行は 1 space 区切りで join。formatting whitespace (= 改行 + indent のみ) は
+// 完全に消える、意味ある text は preserve される。
+//
+// 例:
+//   "\n  foo\n  bar\n"           → "foo bar"
+//   "\n  "                        → ""
+//   " "                           → " "
+//   "foo bar"                     → "foo bar"
+//   "\n        (debug) ?q="       → "(debug) ?q="
+//   " / total=\n        "         → " / total="
+function cleanJSXText(raw: string): string {
+  const lines = raw.split(/\r\n|\n|\r/);
+  let lastNonEmptyLine = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (/[^ \t]/.test(lines[i]!)) lastNonEmptyLine = i;
+  }
+  let str = "";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const isFirstLine = i === 0;
+    const isLastLine = i === lines.length - 1;
+    const isLastNonEmptyLine = i === lastNonEmptyLine;
+    let trimmedLine = line.replace(/\t/g, " ");
+    if (!isFirstLine) trimmedLine = trimmedLine.replace(/^ +/g, "");
+    if (!isLastLine) trimmedLine = trimmedLine.replace(/ +$/g, "");
+    if (trimmedLine) {
+      if (!isLastNonEmptyLine) trimmedLine += " ";
+      str += trimmedLine;
+    }
+  }
+  return str;
 }
 
 function needsMarker(
