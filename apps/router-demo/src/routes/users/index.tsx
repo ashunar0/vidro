@@ -34,7 +34,7 @@ export default function Users() {
       <Show when={sub.value.value}>
         {() => (
           <p data-testid="mark-success" style="color: green;">
-            {`OK: marked at ${(sub.value.value as { markedAt: string } | undefined)?.markedAt ?? ""}`}
+            OK: marked at {(sub.value.value as { markedAt: string } | undefined)?.markedAt ?? ""}
           </p>
         )}
       </Show>

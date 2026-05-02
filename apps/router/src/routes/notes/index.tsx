@@ -100,7 +100,8 @@ export default function NotesPage() {
 
       {/* debug: searchParams が URL と同期更新される目視確認 */}
       <p class="mt-1 text-xs text-gray-500">
-        {`(debug) ?q=${sp.q.value ?? "(none)"} page=${sp.page.value ?? "(1)"} / total=${data.totalPages.value}`}
+        (debug) ?q={sp.q.value ?? "(none)"} page={sp.page.value ?? "(1)"} / total=
+        {data.totalPages.value}
       </p>
 
       <ul class="mt-2 space-y-1">
@@ -118,11 +119,14 @@ export default function NotesPage() {
             );
             return (
               <li
-                class={`flex items-center justify-between rounded border px-3 py-2 ${
-                  isDeleting.value ? "opacity-50 line-through" : ""
-                }`}
+                class={cn(
+                  "flex items-center justify-between rounded border px-3 py-2",
+                  isDeleting.value && "opacity-50 line-through",
+                )}
               >
-                <span>{`#${n.id.value}: ${n.title.value}`}</span>
+                <span>
+                  #{n.id.value}: {n.title.value}
+                </span>
                 {/* note ごとに小さい delete form。intent + id を hidden で持つ。 */}
                 <form method="post" class="ml-2">
                   <input type="hidden" name="id" value={String(n.id.value)} />
@@ -146,7 +150,7 @@ export default function NotesPage() {
             const titleStr = typeof title === "string" ? title : "";
             return (
               <li class="rounded border border-dashed px-3 py-2 italic opacity-50">
-                {`#?: ${titleStr} (...adding)`}
+                #?: {titleStr} (...adding)
               </li>
             );
           }}
@@ -171,7 +175,9 @@ export default function NotesPage() {
         >
           Prev
         </Link>
-        <span class="text-gray-600">{`Page ${data.page.value} / ${data.totalPages.value}`}</span>
+        <span class="text-gray-600">
+          Page {data.page.value} / {data.totalPages.value}
+        </span>
         <Link
           href={() => buildHref(currentPage.value + 1)}
           class={() =>
@@ -191,7 +197,7 @@ export default function NotesPage() {
         onClick={() => count.value++}
         class="mt-4 rounded bg-gray-200 px-3 py-1 hover:bg-gray-300"
       >
-        {`Click me (${count.value})`}
+        Click me ({count.value})
       </button>
 
       {/* 全体の create form。submit 時に Router が intercept して action へ送る。 */}

@@ -46,7 +46,9 @@ export default function NotesPage() {
           );
           return (
             <li style={isDeleting.value ? "opacity: 0.5; text-decoration: line-through;" : ""}>
-              <span>{`#${n.id.value}: ${n.title.value} `}</span>
+              <span>
+                #{n.id.value}: {n.title.value}{" "}
+              </span>
               <form method="post" style="display: inline;">
                 <input type="hidden" name="id" value={String(n.id.value)} />
                 <button name="intent" value="delete" data-testid={`delete-${n.id.value}`}>
@@ -59,7 +61,7 @@ export default function NotesPage() {
         {/* 楽観行: pending な create を仮表示。loader revalidate 完了で auto-cleanup → 自然消滅 */}
         {pendingCreates.value.map((s) => (
           <li style="opacity: 0.5;" data-testid="pending-note">
-            {`(adding) ${(s.input.value?.title as string | undefined) ?? ""}`}
+            (adding) {(s.input.value?.title as string | undefined) ?? ""}
           </li>
         ))}
       </ul>
@@ -81,7 +83,9 @@ export default function NotesPage() {
       >
         {() => (
           <p data-testid="create-success" style="color: green;">
-            {`Added: ${(lastCreate.value?.value.value as { addedNote: { title: string } } | undefined)?.addedNote.title ?? ""}`}
+            Added:{" "}
+            {(lastCreate.value?.value.value as { addedNote: { title: string } } | undefined)
+              ?.addedNote.title ?? ""}
           </p>
         )}
       </Show>
@@ -89,7 +93,7 @@ export default function NotesPage() {
       <Show when={lastCreate.value?.error.value}>
         {() => (
           <p data-testid="create-error" style="color: red;">
-            {`Create error: ${lastCreate.value?.error.value?.message ?? ""}`}
+            Create error: {lastCreate.value?.error.value?.message ?? ""}
           </p>
         )}
       </Show>
@@ -99,7 +103,9 @@ export default function NotesPage() {
       >
         {() => (
           <p data-testid="delete-success" style="color: orange;">
-            {`Deleted: ${(lastDelete.value?.value.value as { removedNote: { title: string } } | undefined)?.removedNote.title ?? ""}`}
+            Deleted:{" "}
+            {(lastDelete.value?.value.value as { removedNote: { title: string } } | undefined)
+              ?.removedNote.title ?? ""}
           </p>
         )}
       </Show>
@@ -107,7 +113,7 @@ export default function NotesPage() {
       <Show when={lastDelete.value?.error.value}>
         {() => (
           <p data-testid="delete-error" style="color: red;">
-            {`Delete error: ${lastDelete.value?.error.value?.message ?? ""}`}
+            Delete error: {lastDelete.value?.error.value?.message ?? ""}
           </p>
         )}
       </Show>

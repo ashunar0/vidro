@@ -10,11 +10,9 @@ export default function UsersLayout({ data, children }: LayoutProps<typeof loade
       data-testid="users-layout"
       style="border: 1px dashed #888; padding: 0.75rem; border-radius: 4px;"
     >
-      {/* dynamic を 1 つ (template literal で構成) にまとめないと、`<strong>` 等の
-          static element と dynamic expression が混在し post-order の hydrate cursor
-          が崩れる (ADR 0026 の cursor 整合制約)。元の `<strong>` 装飾を捨てて簡潔化。 */}
       <p style="margin: 0 0 0.5rem; font-size: 0.85rem; color: #666;">
-        {`users layout (nested) — ${data.users.length} users in list${data.markedAt ? ` · marked at ${data.markedAt}` : ""}`}
+        <strong>users layout (nested)</strong> — {data.users.length} users in list
+        {data.markedAt ? ` · marked at ${data.markedAt}` : ""}
       </p>
       {children}
     </div>
