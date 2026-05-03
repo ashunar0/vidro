@@ -181,7 +181,11 @@ export function _$dynamicChild(thunk: () => unknown): Node {
   if (peeked != null && r.isNode(peeked)) return peeked;
 
   if (peeked instanceof Signal) {
-    const text = r.createText(toText(peeked.value));
+    const initial = toText(peeked.value);
+    if (initial === "") {
+      return _emptyDynamicSlot(r, () => peeked.value);
+    }
+    const text = r.createText(initial);
     effect(() => {
       r.setText(text, toText(peeked.value));
     });
@@ -190,6 +194,14 @@ export function _$dynamicChild(thunk: () => unknown): Node {
 
   // primitive 値 or unknown → dynamic text。peek した値を初期 text にすることで
   // hydration の cursor 先頭から既存 SSR text content と value 一致しやすい。
+  //
+  // ADR 0056: 初期値が toText で "" になるケース (LogicalExpression `x && <p/>` の
+  // x falsy 時 / null / undefined / boolean / 空文字 など) は、SSR で escapeText("") = ""
+  // になり HTML markup に Text Node が現れないので hydrate cursor mismatch する。
+  // empty Comment placeholder (`<!---->`) で SSR/hydrate を symmetric にする。
+  if (toText(peeked) === "") {
+    return _emptyDynamicSlot(r, thunk);
+  }
   const text = r.createText(toText(peeked));
   effect(() => {
     let v = thunk();
@@ -200,6 +212,49 @@ export function _$dynamicChild(thunk: () => unknown): Node {
     r.setText(text, toText(v));
   });
   return text;
+}
+
+// ADR 0056: 初期値 empty な dynamic slot 用 helper。Comment placeholder を return し、
+// client/hydrate では effect 内で comment ↔ text を DOM swap して reactivity を維持する。
+// server は effect が untrack 状態で 1 回走るだけで以降 fire しないので、Comment が
+// そのまま serialize されて `<!---->` が emit される。
+//
+// effect 内では `getRenderer()` を毎回呼んで「実行時点の active renderer」を取る。
+// hydrate 中に install された effect は、hydrate 完了後 (= setRenderer で browserRenderer
+// に戻った後) に signal 変化で re-run される。引数の `r` (= HydrationRenderer) を
+// closure で掴んでしまうと、後発の `r.createText` が cursor 消費を試みて
+// "[hydrate] cursor exhausted" で throw する (review #2 で発見)。
+function _emptyDynamicSlot(r: ReturnType<typeof getRenderer>, thunk: () => unknown): Node {
+  const placeholder = r.createComment("");
+  if (r.isServer) return placeholder;
+
+  let current: Node = placeholder;
+  effect(() => {
+    let v = thunk();
+    if (typeof v === "function" && (v as Function).length === 0) v = (v as () => unknown)();
+    if (v instanceof Signal) v = v.value;
+    const next = toText(v);
+    const isComment = current.nodeType === 8 /* Node.COMMENT_NODE */;
+    const active = getRenderer();
+    if (next === "") {
+      if (!isComment) {
+        const replacement = active.createComment("");
+        const parent = current.parentNode;
+        if (parent) parent.replaceChild(replacement, current);
+        current = replacement;
+      }
+      return;
+    }
+    if (isComment) {
+      const replacement = active.createText(next);
+      const parent = current.parentNode;
+      if (parent) parent.replaceChild(replacement, current);
+      current = replacement;
+    } else {
+      active.setText(current as Text, next);
+    }
+  });
+  return current;
 }
 
 // Component に渡す props を Proxy でラップする。getter アクセス時に transform 由来

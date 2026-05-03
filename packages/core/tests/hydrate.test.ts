@@ -454,4 +454,51 @@ describe("hydrate", () => {
     expect(warns.length).toBe(1);
     expect(String(warns[0]?.[0])).toContain("text mismatch");
   });
+
+  // ADR 0056: empty な dynamic child を Comment placeholder で吸収する。
+  test("LogicalExpression が falsy のとき empty Comment で hydrate が cursor 整合する", () => {
+    const flag = signal(false);
+    const App = () =>
+      h(
+        "div",
+        null,
+        _$text("before "),
+        _$dynamicChild(() => flag.value && h("span", null, _$text("hidden"))),
+        h("button", null, _$text("after")),
+      );
+    const container = ssrInto(App);
+    // SSR HTML に empty Comment placeholder が emit されている
+    expect(container.firstElementChild?.innerHTML).toBe("before <!----><button>after</button>");
+
+    // hydrate が cursor mismatch なく成立する (= 0056 fix なしなら throw)
+    expect(() => hydrate(App, container)).not.toThrow();
+  });
+
+  // ADR 0056 review #2: hydrate 完了後に signal が "" → 非空に遷移したとき、
+  // effect 内の swap が getRenderer() の active renderer (= browserRenderer) を
+  // 使わないと、HydrationRenderer の cursor exhausted で throw する regression。
+  test('hydrate 後 signal が "" → 非空 に遷移しても cursor exhausted で throw しない', () => {
+    const message = signal("");
+    const App = () =>
+      h(
+        "p",
+        null,
+        _$dynamicChild(() => message.value),
+      );
+    const container = ssrInto(App);
+    expect(container.firstElementChild?.innerHTML).toBe("<!---->");
+
+    hydrate(App, container);
+    // hydrate 完了後に signal を非空にする (= effect re-run、comment → text swap)
+    expect(() => {
+      message.value = "hello";
+    }).not.toThrow();
+    expect(container.textContent).toBe("hello");
+
+    // text → "" に戻す (= text → comment swap) も安全
+    expect(() => {
+      message.value = "";
+    }).not.toThrow();
+    expect(container.firstElementChild?.innerHTML).toBe("<!---->");
+  });
 });
