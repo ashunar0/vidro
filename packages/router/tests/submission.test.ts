@@ -46,6 +46,7 @@ describe("submission / submissions / submit (ADR 0051)", () => {
     expect(sub.value.value).toBeUndefined();
     expect(sub.pending.value).toBe(false);
     expect(sub.error.value).toBeUndefined();
+    expect(sub.fieldError.value).toBeUndefined();
     expect(sub.input.value).toBeUndefined();
   });
 
@@ -535,6 +536,68 @@ describe("submission / submissions / submit (ADR 0051)", () => {
     state.setPending(false);
     expect(inst.value.value).toEqual({ ok: true });
     expect(inst.pending.value).toBe(false);
+  });
+
+  // ---- ADR 0059: validation error (fieldError) ----
+
+  test("ADR 0059: setFieldError で fieldError 設定 + value/error は undefined", async () => {
+    const view = submission();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setFieldError({ email: "Invalid email", password: "Min 8 chars" });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({ email: "abc", password: "short" });
+      expect(view.fieldError.value).toEqual({
+        email: "Invalid email",
+        password: "Min 8 chars",
+      });
+      expect(view.value.value).toBeUndefined();
+      expect(view.error.value).toBeUndefined();
+      expect(view.pending.value).toBe(false);
+    } finally {
+      unregister();
+    }
+  });
+
+  test("ADR 0059: setError は fieldError を undefined にする (= 排他性)", async () => {
+    const view = submission();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setFieldError({ email: "x" });
+        state.setError({ name: "NetworkError", message: "boom" });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({});
+      expect(view.error.value).toEqual({ name: "NetworkError", message: "boom" });
+      expect(view.fieldError.value).toBeUndefined();
+      expect(view.value.value).toBeUndefined();
+    } finally {
+      unregister();
+    }
+  });
+
+  test("ADR 0059: setResult は fieldError を undefined にする", async () => {
+    const view = submission();
+    const unregister = _registerDispatcher({
+      dispatch: async (_path, state) => {
+        state.setFieldError({ email: "x" });
+        state.setResult({ ok: true });
+        state.setPending(false);
+      },
+    });
+    try {
+      await submit({});
+      expect(view.value.value).toEqual({ ok: true });
+      expect(view.fieldError.value).toBeUndefined();
+      expect(view.error.value).toBeUndefined();
+    } finally {
+      unregister();
+    }
   });
 
   // ---- multi-route isolation ----

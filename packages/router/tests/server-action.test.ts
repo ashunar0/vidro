@@ -62,6 +62,30 @@ describe("createServerHandler — POST handler (ADR 0037 Phase 3 R-min)", () => 
     expect(res.headers.get("location")).toBe("/done");
   });
 
+  test("ADR 0059: action が throw new Response → そのまま return (validation error 422 等)", async () => {
+    const manifest: RouteRecord = {
+      "/routes/signup/index.tsx": noopRoute,
+      "/routes/signup/server.ts": () =>
+        Promise.resolve({
+          action: async () => {
+            throw new Response(JSON.stringify({ fields: { email: "Invalid" } }), {
+              status: 422,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/signup", { method: "POST", body: new FormData() }),
+    );
+
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { fields: { email: string } };
+    expect(body.fields.email).toBe("Invalid");
+  });
+
   test("action throw → 500 + SerializedError JSON", async () => {
     const manifest: RouteRecord = {
       "/routes/notes/index.tsx": noopRoute,

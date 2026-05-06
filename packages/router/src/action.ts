@@ -90,6 +90,13 @@ export type Submission<T> = {
   readonly value: Signal<T | undefined>;
   readonly pending: Signal<boolean>;
   readonly error: Signal<SubmissionError | undefined>;
+  /**
+   * ADR 0059: validation error (= 4xx + JSON + body has `fields`)。action 内で
+   * `throw new Response(JSON.stringify({fields: {...}}), {status: 422})` した時に
+   * body.fields が設定される。system error (5xx 等) は `error` signal に流れる
+   * (= 4xx/5xx 分け)。
+   */
+  readonly fieldError: Signal<Record<string, string> | undefined>;
   readonly input: Signal<Record<string, unknown> | undefined>;
   /** 同 input / 同 path で再 submit。pending 中は no-op。 */
   retry(): Promise<void>;
@@ -111,6 +118,8 @@ export type LatestSubmission<T> = {
   readonly value: Signal<T | undefined>;
   readonly pending: Signal<boolean>;
   readonly error: Signal<SubmissionError | undefined>;
+  /** ADR 0059: validation error。詳細は `Submission.fieldError` 参照。 */
+  readonly fieldError: Signal<Record<string, string> | undefined>;
   readonly input: Signal<Record<string, unknown> | undefined>;
 };
 
@@ -120,6 +129,8 @@ export type LatestSubmission<T> = {
 export type SubmissionState = {
   setResult: (r: unknown) => void;
   setError: (e: SubmissionError) => void;
+  /** ADR 0059: validation error (= 4xx + JSON + body has `fields`) を設定。 */
+  setFieldError: (f: Record<string, string>) => void;
   setPending: (v: boolean) => void;
   setInput: (v: Record<string, unknown> | undefined) => void;
   isPending: () => boolean;
@@ -127,6 +138,7 @@ export type SubmissionState = {
   readonly _value: Signal<unknown>;
   readonly _pending: Signal<boolean>;
   readonly _error: Signal<SubmissionError | undefined>;
+  readonly _fieldError: Signal<Record<string, string> | undefined>;
   readonly _input: Signal<Record<string, unknown> | undefined>;
 };
 
@@ -240,16 +252,25 @@ export function _createSubmissionInstance(
   // pending=true で生成 (= 即 in-flight として現れる)。
   const pendingSig = signal(true);
   const errorSig = signal<SubmissionError | undefined>(undefined);
+  // ADR 0059: validation error (= 4xx + JSON + body has `fields`) 用 signal。
+  const fieldErrorSig = signal<Record<string, string> | undefined>(undefined);
   const inputSig = signal<Record<string, unknown> | undefined>(input);
 
   const state: SubmissionState = {
     setResult(r) {
       valueSig.value = r;
       errorSig.value = undefined;
+      fieldErrorSig.value = undefined;
     },
     setError(e) {
       errorSig.value = e;
       valueSig.value = undefined;
+      fieldErrorSig.value = undefined;
+    },
+    setFieldError(f) {
+      fieldErrorSig.value = f;
+      valueSig.value = undefined;
+      errorSig.value = undefined;
     },
     setPending(v) {
       pendingSig.value = v;
@@ -263,6 +284,7 @@ export function _createSubmissionInstance(
     _value: valueSig,
     _pending: pendingSig,
     _error: errorSig,
+    _fieldError: fieldErrorSig,
     _input: inputSig,
   };
 
@@ -271,6 +293,7 @@ export function _createSubmissionInstance(
     value: valueSig,
     pending: pendingSig,
     error: errorSig,
+    fieldError: fieldErrorSig,
     input: inputSig,
     retry: async () => {
       if (pendingSig.value) return;
@@ -282,6 +305,7 @@ export function _createSubmissionInstance(
       // array 内の identity (id) は維持する (= UI の `<For key={s.id}>` が壊れない)。
       pendingSig.value = true;
       errorSig.value = undefined;
+      fieldErrorSig.value = undefined;
       await _dispatcher.dispatch(routePath, state, { body, headers });
     },
     clear: () => {
@@ -324,6 +348,10 @@ export function submission<A extends AnyAction = AnyAction>(): LatestSubmission<
       const last = slot.active.value[slot.active.value.length - 1];
       return last ? last.error.value : undefined;
     }) as unknown as Signal<SubmissionError | undefined>,
+    fieldError: computed(() => {
+      const last = slot.active.value[slot.active.value.length - 1];
+      return last ? last.fieldError.value : undefined;
+    }) as unknown as Signal<Record<string, string> | undefined>,
     input: computed(() => {
       const last = slot.active.value[slot.active.value.length - 1];
       return last ? last.input.value : undefined;

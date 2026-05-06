@@ -438,6 +438,30 @@ export function Router(props: RouterProps): Node {
       }
 
       const ctype = res.headers.get("content-type") ?? "";
+
+      // ADR 0059: 4xx + JSON + body has `fields` → validation error 扱い、
+      // sub.fieldError に流す。それ以外の 4xx (= 401/403 等で fields 無し) や
+      // JSON parse 失敗は system error path に fall through。
+      if (res.status >= 400 && res.status < 500 && ctype.includes("application/json")) {
+        try {
+          const validationBody = (await res.clone().json()) as { fields?: unknown };
+          if (
+            validationBody &&
+            typeof validationBody === "object" &&
+            "fields" in validationBody &&
+            validationBody.fields &&
+            typeof validationBody.fields === "object"
+          ) {
+            // body parse の await 後にもう一度 path 変化を確認 (= 二重 await の安全網)
+            if (!stillOnOriginPath()) return;
+            state.setFieldError(validationBody.fields as Record<string, string>);
+            return;
+          }
+        } catch {
+          // JSON parse 失敗 → system error path に fall through
+        }
+      }
+
       if (!ctype.includes("application/json")) {
         state.setError({
           name: "NetworkError",

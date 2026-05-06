@@ -190,6 +190,11 @@ async function handleAction(
   try {
     result = await actionFn({ request, params: match.params });
   } catch (err) {
+    // ADR 0059: action が `throw new Response(...)` した場合 (= validation error
+    // 等の意図的 status code) は serialize せずそのまま return する。client 側
+    // dispatchSubmit が 4xx + JSON + body has `fields` を判定して sub.fieldError に
+    // 流す。
+    if (err instanceof Response) return err;
     return jsonResponse(500, { error: serializeError(err) });
   }
 
