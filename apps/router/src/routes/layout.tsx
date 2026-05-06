@@ -29,6 +29,9 @@ export default function RootLayout({ children }: LayoutProps) {
         <Link href="/broken" class={linkClass}>
           Broken
         </Link>
+        <Link href="/broken-server" class={linkClass}>
+          BrokenServer
+        </Link>
         <Link href="/does-not-exist" class={linkClass}>
           404
         </Link>
