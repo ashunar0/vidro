@@ -320,6 +320,14 @@ async function flushBoundary(
  * fill が後で来たら登録済み runner が走り、boundary 内が hydrate される。fill が
  * shell hydrate より先に来たケースは `flushPending` (hydrate.ts) が即時 walk + 実行。
  *
+ * `__vidroIslandHydrate = []` (ADR 0060): partial hydration の island queue。
+ * `<!--vi-${name}-${seq}-start:{...}-->` ... `<!--vi-${name}-${seq}-end-->` で
+ * 囲まれた island 範囲を hydrate するための entry を server が push 経路で push、
+ * client runtime (`@vidro/router`) が walker で順に hydrate する。boundary registry
+ * (`__vidroPendingHydrate`) の `vb-` map shape と完全に namespace 分離 (= reviewer
+ * C-1)。entry shape は `{ type: "island", name, seq, key, routeFile, props }`。
+ * walker / hydrate 実装は本 ADR Phase 2 (= router 改修 + plugin transform) で着地。
+ *
  * 旧仕様 (ADR 0033 初版) は `<script id="__vidro_data">` の textContent を
  * 直接書き換えていたが、`readVidroData()` が `el.remove()` した後に届く partial
  * patch が silent drop される race があった。ADR 0034 で window object 経由に
@@ -332,6 +340,7 @@ export const VIDRO_STREAMING_RUNTIME = `
 window.__vidroResources=window.__vidroResources||{};
 window.__vidroAddResources=function(r){for(var k in r)window.__vidroResources[k]=r[k];};
 window.__vidroPendingHydrate=window.__vidroPendingHydrate||{};
+window.__vidroIslandHydrate=window.__vidroIslandHydrate||[];
 window.__vidroFill=function(id){
 var iter=document.createNodeIterator(document.body,NodeFilter.SHOW_COMMENT),s=null,e=null,n;
 while((n=iter.nextNode())){if(n.nodeValue==="vb-"+id+"-start")s=n;else if(n.nodeValue==="vb-"+id+"-end")e=n;if(s&&e)break;}

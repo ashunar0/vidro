@@ -39,15 +39,20 @@ export function serverBoundary(_options: ServerBoundaryOptions = {}): Plugin {
 
 // client 側で stub に差し替える id 判定。query string (`?import` / `?url` 等) を
 // 剥がしてから basename を見る。Vidro の routes 下では:
-//   - leaf route loader: `server.ts` / `server.tsx`
-//   - layout loader: `layout.server.ts` / `layout.server.tsx`
-// route 規約 (route-types.ts ROUTE_FILE_KIND) は現状 `.ts` のみだが、user が
-// `.tsx` で書いた場合に silent に client bundle へ漏らさないため両方カバー。
-// 加えて `*.server.{ts,tsx,js,jsx}` (設計書の `.server.ts` 拡張子規約) も保険で拾う。
+//   - leaf route loader: `server.ts`
+//   - layout loader: `layout.server.ts`
+// route 規約 (route-types.ts ROUTE_FILE_KIND) は現状 `.ts` のみ。
+//
+// **`.server.tsx` (component file) は serverComponent plugin (ADR 0060) が
+// stub virtual module 化を担当するので本 plugin では除外**。logic file
+// (= `.server.{ts,js,jsx}`) のみ責務とする。
 function isServerOnlyId(id: string): boolean {
   const clean = id.split("?")[0] ?? id;
   const name = clean.replace(/^.*[\\/]/, "");
-  if (name === "server.ts" || name === "server.tsx") return true;
-  if (name === "layout.server.ts" || name === "layout.server.tsx") return true;
-  return /\.server\.(ts|tsx|js|jsx)$/.test(clean);
+  // .server.tsx は serverComponent plugin (ADR 0060) が担当
+  if (clean.endsWith(".server.tsx")) return false;
+  if (name === "server.ts") return true;
+  if (name === "layout.server.ts") return true;
+  // 設計書の拡張子規約: .server.{ts,js,jsx} は logic file として空 stub 化
+  return /\.server\.(ts|js|jsx)$/.test(clean);
 }
