@@ -166,7 +166,10 @@ export function compileRoutes(modules: RouteRecord): CompiledRoutes {
       servers.push({ path, load: rawLoad as ServerModuleLoader });
       continue;
     }
-    if (!filePath.endsWith("/index.tsx")) continue;
+    // ADR 0058 / ADR 0060: `.server.tsx` (server-only component file) も leaf route
+    // として認識する。`index.tsx` と同じ URL pattern にマッチさせ、client bundle で
+    // は server-component plugin (Phase 1) が stub 化するので bundle に乗らない。
+    if (!filePath.endsWith("/index.tsx") && !filePath.endsWith("/index.server.tsx")) continue;
 
     const path = filePathToRoutePath(filePath);
     const { pattern, paramNames } = pathToPattern(path);
@@ -243,9 +246,12 @@ function isNotFoundFile(filePath: string): boolean {
 }
 
 // "./routes/users/[id]/index.tsx" → "/users/:id"
+// ADR 0058 + ADR 0060: `index.server.tsx` (server-only) も同じ URL pattern に揃える
 function filePathToRoutePath(filePath: string): string {
-  // "routes/" 以降を取り出し、"/index.tsx" を落とす
-  const afterRoutes = filePath.replace(/^.*?\/routes/, "").replace(/\/index\.tsx$/, "");
+  // "routes/" 以降を取り出し、"/index.tsx" or "/index.server.tsx" を落とす
+  const afterRoutes = filePath
+    .replace(/^.*?\/routes/, "")
+    .replace(/\/index(?:\.server)?\.tsx$/, "");
   const path = afterRoutes === "" ? "/" : afterRoutes;
   // [name] → :name
   return path.replace(/\[([^\]]+)\]/g, ":$1");

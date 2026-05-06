@@ -20,6 +20,9 @@ export default function RootLayout({ children }: LayoutProps) {
         <Link href="/notes" class={linkClass}>
           Notes
         </Link>
+        <Link href="/posts" match="prefix" class={linkClass}>
+          Posts
+        </Link>
         <Link href="/signup" class={linkClass}>
           Signup
         </Link>

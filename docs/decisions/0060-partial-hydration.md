@@ -4,6 +4,8 @@
 
 **Accepted** — 2026-05-06 (52nd session、議論完了 / user 合意取得 / reviewer agent finding 反映済)
 
+**Phase 2 implementation landed** — 2026-05-06 (54th session、機構 A/B/C + dogfood + static span skip 機構を追加して end-to-end 完成)
+
 依存: ADR 0058 (.server.tsx semantics)、ADR 0035 (progressive hydration foundation)、ADR 0030 (renderToStringAsync)、ADR 0027 (B-3d main hydrate)、ADR 0036 (TTI improvement)
 関連: ADR 0057 (FW design stance)、ADR 0015 (Phase A bootstrap)
 注: ADR 0058 文中で「ADR 0059 候補 = partial hydration」と予告したが、ADR 0059 は validation error primitive で先取り。partial hydration impl は ADR 0060 として起票。
@@ -303,6 +305,31 @@ Vite の manifest 機能 (`build.manifest = true`) を有効化、build 後の `
 
 **Cloudflare Workers 統合での 2-pass build 整合**: `@cloudflare/vite-plugin` は `viteEnvironment: { name: "ssr" }` で client + ssr の dual environment build を管理する。client manifest を SSR build hook が読む方式 (= cf-plugin の build order 依存) が成立するか、実装着手前に **spike が必要** (= reviewer M-2 反映、Open Questions に詳細)。
 
+### Static span skip 機構 (= 54th 追加 Decision)
+
+ADR 当初の Decision には書いてなかったが、Phase 2 dogfood で「`.server.tsx` を leaf route の page として使うと shell hydrate cursor が SSR markup と整合しない」issue を踏んだ。原因: client bundle で `.server.tsx` は stub `() => null` に置換されるが、shell hydrate は Router の `<main>{page}</main>` を walk するので、page = null と SSR HTML の `<div>...</div>` の不一致で cursor mismatch する。
+
+Astro は client app entry が島 mount だけで shell hydrate しない設計なのでこの issue を踏まないが、Vidro は Router で shell hydrate する設計のため対応が必要。
+
+**Decision**: ADR 0035 (streaming hydrate) の `HydrationRenderer.skipToComment(value)` API を流用し、`.server.tsx` page output 全体を `<!--vs-1-start-->...<!--vs-1-end-->` で囲む。shell hydrate cursor は span 全体を skip し、内部の島 marker (`<!--vi-X-N-->`) は別経路 (= setupIslandHydration) で hydrate する。
+
+#### 実装
+
+1. **`@vidro/core` に `__VidroServerOnlySection` component 追加** (`packages/core/src/island.ts`)
+   - server: page output を `<!--vs-1-start-->...<!--vs-1-end-->` で囲む fragment を出力
+   - client (= shell hydrate cursor active = `skipToComment` API 存在): `skipToComment("vs-1-end")` で span を skip + `createComment` 1 回で end marker 消費 (children = stub `() => null` は呼ばない、pure skip)
+   - `streaming` flag 判定でなく `skipToComment` 関数の存在 で判別: streaming flag は SSR が Suspense を使った時だけ true なので `.server.tsx` page (Suspense 不使用) では立たない
+
+2. **`@vidro/router` foldRouteTree で leaf route が `.server.tsx` か判定して wrap** (`packages/router/src/router.tsx`)
+   - `match.route?.filePath.endsWith(".server.tsx")` で判定
+   - 該当時、leaf invoke を `__VidroServerOnlySection({ children: invokeLeaf })` で wrap
+   - module に flag inject 不要 (= 既存 `RouteEntry.filePath` を流用、plugin 改修最小)
+
+#### スコープ
+
+- **id 固定 `vs-1`、1 page = 1 span 前提**。layout も `.server.tsx` 化する nested ケースは scope 外
+- nested 対応するなら per-render counter 化 (= ADR 0035 streaming context の id 採番と同 pattern)。dogfood で踏んだら拡張する
+
 ### Validation の境界
 
 | 項目                                                     | 本 ADR で扱う                 | 別 ADR / 別 task                               |
@@ -343,6 +370,12 @@ Vite の manifest 機能 (`build.manifest = true`) を有効化、build 後の `
 - **dogfood routes のサイズ** = `apps/router/posts/` が新規 5 ファイル + `data/posts.ts`、route 数増。ADR 0058 dogfood 不在の現状を埋めるので投資価値あり
 - **既存 routes の migration** = `notes/` / `users/` の `.server.tsx` 化は本 ADR scope 外。dogfood で効果実測後、別 task で個別判断
 - **Owner leak (= ADR 0035 既知残課題)** = `tryHydrateBoundary` が root Owner (parent=null) を作るので、navigation で island が破棄されずに effect が GC されない可能性。dogfood の Browser 検証手順で navigate away → re-visit を確認、踏んだら ADR 0035 残課題と一緒に着地 (= reviewer W-2)
+
+### 54th dogfood で見つかった未対応 issue (= 別 task で着地)
+
+- **`<Link>` 複数 thunk children が空文字化** = `<Link>{a}: {b}</Link>` のように複数 expression を Link の children に並べると jsx-transform で配列 of thunk になり、`_$dynamicChild` の Array branch が配列内 function を auto-invoke しないため空 `<a></a>` になる。今回は template literal 回避、本来策は `_$dynamicChild` Array branch の修正 (= `project_pending_rewrites` 追記済)
+- **`async function Component()` 未対応** = ADR 0058 の使用例 `async function PostPage() { const post = await db.x() }` は core h() が sync 呼出のため未サポート。今回は sync function で回避、本来策は server renderer の async component path 追加 or Resource + Suspense pattern の `.server.tsx` 内許可 (= `project_pending_rewrites` 追記済)
+- **`.server.tsx` page への SPA navigation で真っ白** = `<Link href="/posts">` click で SPA navigation すると client bundle の stub `() => null` で page が空になる。reload (= URL 直打ちの SSR 経路) で見える。本来策は Router の `navigate(path)` で target route の filePath が `.server.tsx` なら `window.location.assign(path)` で full reload 切替 (= `project_pending_rewrites` 追記済、Astro 等他 FW も同様の標準動作)
 
 ### 既存 ADR との関係
 

@@ -41,7 +41,8 @@ export function serverComponent(_options: ServerComponentOptions = {}): Plugin {
 
       const source = await readFile(clean, "utf-8");
       assertNoReactivePrimitive(source, clean);
-      const islands = scanIslandImports(source);
+      // clean = absolute path、isIslandImportPath が拡張子省略 import の隣接 .tsx 実在判定に使う
+      const islands = scanIslandImports(source, clean);
 
       return generateStub(islands);
     },
@@ -51,8 +52,24 @@ export function serverComponent(_options: ServerComponentOptions = {}): Plugin {
 function generateStub(islands: IslandImport[]): string {
   // import 文を出して Vite に「これらの .tsx は client bundle に必要」と教える。
   // bundler が import tree を辿って自然に bundle 入りする (= ADR 0060 stub 化)。
+  //
+  // aliased import (`import { A as B }`) を正しく再現する (= reviewer M-1):
+  //   - default import: `import { default as B } from "./..."`
+  //   - non-aliased: `import { A } from "./..."`
+  //   - aliased: `import { A as B } from "./..."`
+  // local binding (= name) で `__islands` map に詰めるので、stub 内の局所名と JSX 内の
+  // identifier が一致する形になる。
   const importLines = islands
-    .map(({ name, path }) => `import { ${name} } from ${JSON.stringify(path)};`)
+    .map(({ name, importedName, path }) => {
+      const pathLit = JSON.stringify(path);
+      if (importedName === "default") {
+        return `import { default as ${name} } from ${pathLit};`;
+      }
+      if (importedName === name) {
+        return `import { ${name} } from ${pathLit};`;
+      }
+      return `import { ${importedName} as ${name} } from ${pathLit};`;
+    })
     .join("\n");
 
   // named map で stub から取り出せるようにする (= ADR 0060 C-α / M-1)。

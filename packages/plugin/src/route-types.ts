@@ -85,15 +85,25 @@ export function routeTypes(options: RouteTypesOptions = {}): Plugin {
 
 // --- internal helpers ---
 
-type RouteFileKind = "index" | "layout" | "server" | "layout.server" | "error" | "not-found";
+type RouteFileKind =
+  | "index"
+  | "index.server"
+  | "layout"
+  | "server"
+  | "layout.server"
+  | "error"
+  | "not-found";
 
 type RouteFile = {
   kind: RouteFileKind;
   absPath: string;
 };
 
+// ADR 0058 + ADR 0060: `index.server.tsx` (= server-only component file) も leaf
+// route として扱う。`index.tsx` と URL pattern は同じで dedupe される。
 const ROUTE_FILE_KIND: Record<string, RouteFileKind> = {
   "index.tsx": "index",
+  "index.server.tsx": "index.server",
   "layout.tsx": "layout",
   "server.ts": "server",
   "layout.server.ts": "layout.server",
@@ -160,10 +170,11 @@ function extractParams(path: string): string[] {
 // --- renderers ---
 
 function renderDts(files: RouteFile[], routesDirAbs: string): string {
-  // index.tsx / layout.tsx が存在する dir の URL pattern を dir 単位で dedupe。
+  // index.tsx / index.server.tsx / layout.tsx が存在する dir の URL pattern を
+  // dir 単位で dedupe。ADR 0058 + ADR 0060: `index.server.tsx` も同じ URL pattern。
   const set = new Set<string>();
   for (const f of files) {
-    if (f.kind !== "index" && f.kind !== "layout") continue;
+    if (f.kind !== "index" && f.kind !== "index.server" && f.kind !== "layout") continue;
     const relDir = relative(routesDirAbs, dirname(f.absPath));
     set.add(dirToRoutePath(relDir));
   }

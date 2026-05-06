@@ -1,6 +1,7 @@
 import { hydrate } from "@vidro/core";
 import { Router } from "./router";
 import type { RouteRecord } from "./route-tree";
+import { setupIslandHydration } from "./island";
 
 // `<head>` 経由の inline trigger と client bundle の load 順序競合を捌く registry
 // (ADR 0036)。boot() がここに登録 / 参照する。
@@ -46,6 +47,11 @@ export function boot(eagerModules: Record<string, unknown>): void {
     // 通らないため直接呼ぶ。fine-grained reactive では `h()` か直呼出しかは挙動
     // 同等 (内部で同じ Component(props) を実行する)。
     hydrate(() => Router({ routes, eagerModules }), root);
+    // ADR 0060 partial hydration: shell hydrate 完了後に island queue を drain + hook。
+    // Router hydrate より後に呼ぶことで、shell hydrate 中に作られた DOM の上に重ねて
+    // island marker range を探せる (= shell hydrate が終わる前に呼ぶと marker range の
+    // 親 element がまだ未確定で、findMarkerRange が見つからないリスク)。
+    setupIslandHydration(eagerModules);
   };
 
   window.__vidroBoot = fire;

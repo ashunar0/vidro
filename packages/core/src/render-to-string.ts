@@ -30,6 +30,7 @@ import {
   type SerializedError,
 } from "./resource-scope";
 import { StreamingContext, runWithStream } from "./streaming-scope";
+import { runWithIslandScope } from "./island-scope";
 
 export function renderToString(fn: () => Node): string {
   const previous = getRenderer();
@@ -38,7 +39,10 @@ export function renderToString(fn: () => Node): string {
   setRenderer(serverRenderer as unknown as Renderer<Node, Element, Text>);
   const owner = new Owner(null);
   try {
-    const root = runWithMountScope(() => owner.run(fn));
+    // ADR 0060 partial hydration: per-render の island seq counter scope を立てる。
+    // `__VidroIsland` (= jsx-transform で `.server.tsx` 内 island JSX を wrap した
+    // helper) が同 component 複数 instance を区別するための per-name counter を引く。
+    const root = runWithIslandScope(() => runWithMountScope(() => owner.run(fn)));
     // root は VNode だが戻り型が Node のまま (jsx.ts の h が Node で返す)。
     // cast で server 側形式として扱う。
     return serialize(root as unknown as VNode);

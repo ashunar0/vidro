@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { parse } from "@babel/parser";
 import _traverse from "@babel/traverse";
 
@@ -16,23 +18,37 @@ const REACTIVE_PRIMITIVES = new Set([
   "Suspense",
 ]);
 
-export type IslandImport = { name: string; path: string };
+// name = local binding (= 親の JSX 内で使われる identifier、`<X .../>` の X)
+// importedName = import 元の export name (default / named original) — aliased 経路で
+//   stub を再現するため必要 (= reviewer M-1)。`import { A as B }` なら local=B / imported=A
+export type IslandImport = { name: string; importedName: string; path: string };
 
-// island 候補の判定: 相対 path (./ or ../) で、.ts / .css / .json 等の non-island 拡張子で
-// 終わってないもの。拡張子省略 OK (Vite resolver に任せる)、明示 .tsx も拾う。
-// non-relative import (= 'react' / '@vidro/core' 等) はライブラリなので island ではない。
-function isIslandImportPath(source: string): boolean {
+// island 候補の判定:
+//   - 相対 path (./ or ../) のみ (non-relative はライブラリなので skip)
+//   - 明示 `.tsx` extension は即 island 確定
+//   - 既知 non-island 拡張子 (.ts / .css / .json 等) は即 skip
+//   - 拡張子省略 (= ./counter / ./server) は **隣接 .tsx file が実在するかで判定**
+//     これで `from "./server"` (= server.ts logic file) と `from "./counter"` (= counter.tsx
+//     island) を file system 上で正しく区別できる。`fromFile` (= 呼び出し元 .server.tsx
+//     の absolute path) を基点に dirname + resolve で同階層の `${importPath}.tsx` を check
+function isIslandImportPath(source: string, fromFileAbs: string): boolean {
   if (!source.startsWith("./") && !source.startsWith("../")) return false;
   if (source.endsWith(".tsx")) return true;
   // 既知 non-island 拡張子は除外
   if (/\.(ts|css|json|js|mjs|cjs|svg|png|jpg|jpeg|webp|gif|woff2?)$/.test(source)) return false;
-  // 拡張子省略 (= ./counter) は island 候補。後で Vite が .tsx 以外に解決したら build error で気付く
-  return !/\.[a-z0-9]+$/i.test(source);
+  // 拡張子に見える suffix がある (= 想定外 extension) は skip
+  if (/\.[a-z0-9]+$/i.test(source)) return false;
+  // 拡張子省略 (= ./counter) は隣接 `.tsx` file 実在で判定
+  const dir = dirname(fromFileAbs);
+  const candidate = resolve(dir, source + ".tsx");
+  return existsSync(candidate);
 }
 
 // .server.tsx を AST scan して、内部から import している .tsx (= island candidate) を named で抽出。
 // 結果が stub virtual module の `__islands` named map (= ADR 0060 C-α / M-1) になる。
-export function scanIslandImports(source: string): IslandImport[] {
+//
+// fromFileAbs: 呼び出し元 file の absolute path (= 拡張子省略 import の隣接 file 判定用)
+export function scanIslandImports(source: string, fromFileAbs: string): IslandImport[] {
   const ast = parse(source, {
     sourceType: "module",
     plugins: ["jsx", "typescript"],
@@ -47,16 +63,21 @@ export function scanIslandImports(source: string): IslandImport[] {
       if (node.importKind === "type") return;
 
       const importPath = node.source.value;
-      if (!isIslandImportPath(importPath)) return;
+      if (!isIslandImportPath(importPath, fromFileAbs)) return;
 
       for (const spec of node.specifiers) {
         // import { type X } from "..." の type-only specifier も skip
         if ((spec as { importKind?: string }).importKind === "type") continue;
 
         if (spec.type === "ImportSpecifier") {
-          islands.push({ name: spec.local.name, path: importPath });
+          // imported は Identifier (= 普通) or StringLiteral (= 'foo bar' 等の特殊 named)
+          const imported =
+            spec.imported.type === "Identifier" ? spec.imported.name : spec.imported.value;
+          islands.push({ name: spec.local.name, importedName: imported, path: importPath });
         } else if (spec.type === "ImportDefaultSpecifier") {
-          islands.push({ name: spec.local.name, path: importPath });
+          // default import は import 元での名前として "default" を使う (= ESM 規約)。
+          // stub 生成側で `import { default as X }` 形式に展開する。
+          islands.push({ name: spec.local.name, importedName: "default", path: importPath });
         }
         // namespace import (* as X) は __islands[name] lookup と相性悪いので skip
       }

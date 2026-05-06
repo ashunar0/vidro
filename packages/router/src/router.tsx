@@ -1,4 +1,12 @@
-import { effect, ErrorBoundary, getRenderer, onCleanup, readVidroData, signal } from "@vidro/core";
+import {
+  __VidroServerOnlySection,
+  effect,
+  ErrorBoundary,
+  getRenderer,
+  onCleanup,
+  readVidroData,
+  signal,
+} from "@vidro/core";
 import {
   compileRoutes,
   matchRoute,
@@ -852,21 +860,37 @@ function foldRouteTree(input: FoldInput): Node {
     // ADR 0049: leaf の layer index は layouts.length 番目 (= 最後の layer)。
     const leafLayerIdx = layoutMods.length;
 
+    // ADR 0060 partial hydration: leaf route の filePath が `.server.tsx` で終わる場合、
+    // page output 全体を `__VidroServerOnlySection` で囲む。これで server は
+    // `<!--vs-1-start-->...<!--vs-1-end-->` で page を囲んだ HTML を出し、client shell
+    // hydrate cursor は span を skip する。内部の島 marker は別経路 (= setupIslandHydration)
+    // で hydrate される。
+    const isServerOnlyLeaf = match.route?.filePath.endsWith(".server.tsx") === true;
+
+    const invokeLeaf = (): Node => {
+      // ADR 0049 step 6: PageProps から data field を削除した。runtime でも
+      // leaf に data prop は渡さず、user は loaderData<typeof loader>() で
+      // reactive に取得する。layouts は LayoutProps が依然 data 持ちなので
+      // wrapLayout 側は維持。
+      const prev = _setLayerIndex(leafLayerIdx);
+      try {
+        return leafMod.default({ params: match.params });
+      } finally {
+        _restoreLayerIndex(prev);
+      }
+    };
+
     nodeFn = () =>
       ErrorBoundary({
         fallback: (err) => renderError(err, selectErrorMod(null), match.params, reset),
         onError: (err) => console.error("[router] render error:", err),
         children: () => {
-          // ADR 0049 step 6: PageProps から data field を削除した。runtime でも
-          // leaf に data prop は渡さず、user は loaderData<typeof loader>() で
-          // reactive に取得する。layouts は LayoutProps が依然 data 持ちなので
-          // wrapLayout 側は維持。
-          const prev = _setLayerIndex(leafLayerIdx);
-          try {
-            return leafMod.default({ params: match.params });
-          } finally {
-            _restoreLayerIndex(prev);
+          if (isServerOnlyLeaf) {
+            // children は thunk で渡す: server pass で実体評価、client (shell hydrate) では
+            // 呼ばずに skip する設計を __VidroServerOnlySection が引き受ける。
+            return __VidroServerOnlySection({ children: invokeLeaf }) as Node;
           }
+          return invokeLeaf();
         },
       });
     for (let i = layoutMods.length - 1; i >= 0; i--) {

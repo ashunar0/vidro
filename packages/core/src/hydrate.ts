@@ -30,6 +30,44 @@ import {
   type StreamingHydrationEntry,
 } from "./streaming-hydration";
 
+/**
+ * 既存の DOM range (= 2 個の Comment marker 間) を target 範囲として hydrate する。
+ * `tryHydrateBoundary` の中身を generic 化したもの。boundary 単位 hydrate (ADR 0035)
+ * と island 単位 hydrate (ADR 0060) の両方の callsite に同じ機構を提供する。
+ *
+ * range.start の親 Element を Renderer の root として、range 内 Node を post-order
+ * cursor で消費する HydrationRenderer を立てる。`streaming: false` 固定で内側
+ * Suspense は通常 client mode で children を直接評価する (= nested boundary は
+ * 外側 boundary の一部扱い、ADR 0035 / 0060 共通の trade-off)。
+ *
+ * 戻り値の dispose は Owner 配下の effect / listener を解放するが、target DOM は
+ * そのまま残す (= caller 側で必要なら range を remove する)。
+ */
+export function hydrateRange(fn: () => Node, range: { start: Comment; end: Comment }): () => void {
+  const parent = range.start.parentNode;
+  if (!parent || parent.nodeType !== Node.ELEMENT_NODE) {
+    throw new Error("[vidro] hydrateRange: range.start has no element parent");
+  }
+  const previous = getRenderer();
+  const renderer = createHydrationRenderer(parent as Element, {
+    streaming: false,
+    range,
+  });
+  setRenderer(renderer as unknown as Renderer<Node, Element, Text>);
+
+  const owner = new Owner(null);
+  try {
+    runWithMountScope(() => owner.run(fn));
+    flushMountQueue();
+  } finally {
+    setRenderer(previous);
+  }
+
+  return () => {
+    owner.dispose();
+  };
+}
+
 export function hydrate(fn: () => Node, target: Element): () => void {
   const previous = getRenderer();
   const streaming = hasStreamingMarker(target);

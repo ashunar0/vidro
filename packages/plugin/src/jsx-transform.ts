@@ -3,6 +3,7 @@ import _traverse, { type NodePath } from "@babel/traverse";
 import _generate from "@babel/generator";
 import * as t from "@babel/types";
 import type { Plugin } from "vite";
+import { scanIslandImports } from "./scan-imports";
 
 // @babel/traverse / @babel/generator は ESM 互換性のために default.default を持つことがある
 const traverse = (_traverse as unknown as { default?: typeof _traverse }).default ?? _traverse;
@@ -74,12 +75,27 @@ export function jsxTransform(): Plugin {
       if (!id.endsWith(".tsx")) return null;
       if (id.includes("node_modules")) return null;
 
+      // ADR 0060: `.server.tsx` だけ特別扱い (= server-only component file)。
+      //   - JSX 内の `.tsx` import (= island) を `<__VidroIsland>` で wrap して
+      //     SSR で marker emit + registry push が走る形にする
+      //   - attribute 位置の `_reactive(() => expr)` wrap は skip。`.server.tsx` は
+      //     invoke-once な server-only 評価モデルで subscribe が無意味なため (= ADR 0060 F-α
+      //     で signal/computed/effect 等は import 禁止)。child 位置の `_$dynamicChild` /
+      //     `_$text` 等は server renderer 内で 1 回 evaluate される形で動くので維持
+      const isServerComponent = id.endsWith(".server.tsx");
+
       const ast = parse(code, {
         sourceType: "module",
         plugins: ["typescript", "jsx"],
       });
 
       const needed = new Set<HelperName>();
+
+      // .server.tsx 内の island name set (= AST scan で .tsx import を named 抽出)。
+      // id (absolute path) を渡して、拡張子省略 import の隣接 .tsx 実在判定に使う。
+      const islandNames: Set<string> = isServerComponent
+        ? new Set(scanIslandImports(code, id).map((i) => i.name))
+        : new Set();
 
       // ADR 0055: intrinsic 親 (`<div>` 等) の children sequence を scan して、
       // adjacent text/expr 境界に marker を inject する。HTML parser は adjacent
@@ -103,12 +119,36 @@ export function jsxTransform(): Plugin {
         },
       });
 
+      // ADR 0060: `.server.tsx` 内の island JSX を `<__VidroIsland>` で wrap する pass。
+      // 既存 attribute / child position pass の **前** に走らせる:
+      //   1. 元 `<Counter initial={0} />` の attribute から props ObjectExpression を
+      //      抽出 (= `_reactive(() => 0)` 化される前の素直な値が取れる)
+      //   2. `<__VidroIsland name="Counter" props={{initial: 0}}><Counter initial={0}/></__VidroIsland>`
+      //      に置換、自身に処理済 flag を立てる
+      //   3. 後続の attribute pass は `.server.tsx` 内では skip するので、props object も
+      //      island 自身の attribute も `_reactive(...)` に包まれない (= server で素直に評価)
+      //
+      // 前提: `.server.tsx` 専用 pass (= `isServerComponent` 限定)。後続 attribute pass が
+      // `isServerComponent` で skip 入る設計に依存している (= reviewer m-2)。`.server.tsx`
+      // 以外で本 pass を走らせると `<__VidroIsland>` の `props={...}` が `_reactive(...)` に
+      // wrap されて意図しない reactive 化が起きる、その前提が変わる時は再考が必要。
+      if (isServerComponent && islandNames.size > 0) {
+        wrapIslandsForServer(ast, islandNames, needed);
+      }
+
       traverse(ast, {
         JSXExpressionContainer(path) {
           const parent = path.parent;
 
           // attribute 位置: on* は素通し、それ以外は親 JSX が component かどうかで分岐
           if (t.isJSXAttribute(parent)) {
+            // ADR 0060: `.server.tsx` 内では attribute reactive wrap を skip する。
+            // server-only invoke-once 評価モデルで subscribe が無意味 + ADR 0060 F-α で
+            // reactive primitive import 禁止なので、`_reactive(() => expr)` で包む
+            // 意味がない。child 位置 (= `_$dynamicChild` / `_$text` 等) は server
+            // renderer で 1 回 evaluate されて Node 化されるので維持。
+            if (isServerComponent) return;
+
             if (
               t.isJSXIdentifier(parent.name) &&
               parent.name.name.startsWith("on") &&
@@ -226,7 +266,7 @@ export function jsxTransform(): Plugin {
   };
 }
 
-type HelperName = "_reactive" | "_$text" | "_$dynamicChild" | "_$marker";
+type HelperName = "_reactive" | "_$text" | "_$dynamicChild" | "_$marker" | "__VidroIsland";
 
 // ADR 0055: intrinsic 親の children を scan して、adjacent text/expr 境界に
 // `_$marker()` (= empty Comment) を inject する。HTML parser の adjacent text merge
@@ -351,6 +391,113 @@ function makeMarkerExpressionContainer(): t.JSXExpressionContainer {
   ) as MarkedNode;
   node[VIDRO_MARKER_TAG] = true;
   return node;
+}
+
+// ADR 0060: `.server.tsx` 内の island JSX (= `.tsx` import に対応する identifier の JSX)
+// を `<__VidroIsland name="X" props={{...}}><X {...}/></__VidroIsland>` で wrap する。
+//
+// 設計の理由:
+//   - `__VidroIsland` は core が提供する SSR 専用 helper component。SSR 時に
+//     `<!--vi-${name}-${seq}-start:{props_json}-->` marker emit + registry push、
+//     children = 元 island JSX の評価を内部で行う (= server で島の HTML も焼く)
+//   - props は JSON serialize して marker に inline 埋め込み (= ADR 0060 D-α)。
+//     `props={...}` attribute として ObjectExpression を渡し、`__VidroIsland` 側で
+//     `JSON.stringify` する
+//   - seq (= 同 component の出現順) は build-time でなく runtime で per-render
+//     counter する (= map で複数 instance 化されるケースに対応するため、build-time
+//     scan の出現順では足りない)。`__VidroIsland` 内で per-request の name → counter
+//     state を引いて seq を決める
+//   - wrap 自身に `VIDRO_ISLAND_TAG` flag を立てて再 wrap 防止 + path.skip() で
+//     children traversal も止める
+//
+// 注意:
+//   - JSXMemberExpression (`<Foo.Bar />`) は wrap 対象外 (= scan-imports.ts でも skip)
+//   - spread attr は ObjectExpression に SpreadElement として転写
+//   - boolean attr (= 属性値省略) は `true` literal に
+//   - JSXElement / JSXFragment 直書きの attribute 値は island に渡せない → 警告 or skip
+//     (toy 段階では skip して props object に含めない、実用化時に build error 化検討)
+const VIDRO_ISLAND_TAG = Symbol("vidro:island");
+
+type IslandWrappedNode = t.JSXElement & { [VIDRO_ISLAND_TAG]?: true };
+
+function wrapIslandsForServer(
+  ast: ReturnType<typeof parse>,
+  islandNames: Set<string>,
+  needed: Set<HelperName>,
+): void {
+  traverse(ast, {
+    JSXElement(path) {
+      const node = path.node;
+      // 既に wrap 済 (= `<__VidroIsland>` 自身) は skip
+      if ((node as IslandWrappedNode)[VIDRO_ISLAND_TAG] === true) return;
+
+      const opening = node.openingElement.name;
+      // `<X />` の identifier ベースのみ wrap (`<X.Y />` / `<svg:rect />` は対象外)
+      if (!t.isJSXIdentifier(opening)) return;
+      if (!islandNames.has(opening.name)) return;
+
+      const propsObj = buildPropsObjectFromAttributes(node.openingElement.attributes);
+
+      const wrapper = t.jsxElement(
+        t.jsxOpeningElement(t.jsxIdentifier("__VidroIsland"), [
+          t.jsxAttribute(t.jsxIdentifier("name"), t.stringLiteral(opening.name)),
+          t.jsxAttribute(t.jsxIdentifier("props"), t.jsxExpressionContainer(propsObj)),
+        ]),
+        t.jsxClosingElement(t.jsxIdentifier("__VidroIsland")),
+        [node],
+      ) as IslandWrappedNode;
+      wrapper[VIDRO_ISLAND_TAG] = true;
+
+      path.replaceWith(wrapper);
+      needed.add("__VidroIsland");
+      // 自身の children (= 元 island JSX) を再 traversal すると同じ identifier が
+      // 再 match して無限 wrap する。skip で children walk を止める。
+      path.skip();
+    },
+  });
+}
+
+// JSXOpeningElement.attributes を ObjectExpression に変換する。
+// SpreadElement / boolean / string literal / expression を素直に転写。JSX 直書き
+// (= attribute 値が `<X/>`) は island に props として渡す意味が薄いので skip。
+function buildPropsObjectFromAttributes(
+  attrs: t.JSXOpeningElement["attributes"],
+): t.ObjectExpression {
+  const properties: (t.ObjectProperty | t.SpreadElement)[] = [];
+  for (const attr of attrs) {
+    if (t.isJSXSpreadAttribute(attr)) {
+      properties.push(t.spreadElement(attr.argument));
+      continue;
+    }
+    if (!t.isJSXAttribute(attr)) continue;
+    const name = attr.name;
+    // namespace attr (`<x ns:attr="..."/>`) は island では考慮外
+    if (!t.isJSXIdentifier(name)) continue;
+    const key = t.identifier(name.name);
+
+    let value: t.Expression;
+    if (attr.value === null || attr.value === undefined) {
+      value = t.booleanLiteral(true);
+    } else if (t.isStringLiteral(attr.value)) {
+      value = attr.value;
+    } else if (t.isJSXExpressionContainer(attr.value)) {
+      const expr = attr.value.expression;
+      if (t.isJSXEmptyExpression(expr)) {
+        value = t.booleanLiteral(true);
+      } else if (t.isJSXElement(expr) || t.isJSXFragment(expr)) {
+        // JSX element を island の prop に渡すのは serialize 不能なので skip
+        continue;
+      } else {
+        value = expr;
+      }
+    } else {
+      // JSXFragment 直書き等の rare case は skip
+      continue;
+    }
+
+    properties.push(t.objectProperty(key, value));
+  }
+  return t.objectExpression(properties);
 }
 
 // JSXElement の openingElement 名で component か intrinsic かを判別 (ADR 0025 論点 2-a)。
