@@ -41,6 +41,11 @@ type IslandQueue = IslandEntry[];
 
 type ComponentFn = (props: Record<string, unknown>) => Node;
 
+// ADR 0061 Phase 2: partial swap 後の `hydrateIslandsInRange` が boot 時の islandMap を
+// 流用するため、setup 時に module scope に持ち上げる。boot 経路で 1 回だけ書き込まれて、
+// 以降の navigation はこの map を read-only に参照する。
+let islandMap: Record<string, ComponentFn> = {};
+
 /**
  * boot 経路から呼ばれる setup。eagerModules を walk して island name → component の
  * global map を作り、`__vidroIslandHydrate` queue を drain + hook する。
@@ -60,7 +65,7 @@ export function setupIslandHydration(eagerModules: Record<string, unknown>): voi
   if (queueWithFlag.__vidroHooked) return;
   queueWithFlag.__vidroHooked = true;
 
-  const islandMap = buildIslandMap(eagerModules);
+  islandMap = buildIslandMap(eagerModules);
 
   // 既存 entry を drain して即時 hydrate (= shell hydrate より早く到着していた entry)
   const existing = queue.splice(0, queue.length);
@@ -77,6 +82,63 @@ export function setupIslandHydration(eagerModules: Record<string, unknown>): voi
   // origPush 参照を捨てないでおく (= debug で push 経路を直接呼びたい場合に使う、
   // 通常 path では未使用)
   void origPush;
+}
+
+/**
+ * ADR 0061 Phase 2 (C-α): partial swap 後に変わった layer N の DOM range を walker で
+ * 走査して、見つかった island marker (`<!--vi-${name}-${seq}-start:{json}-->` /
+ * `<!--vi-${name}-${seq}-end-->`) を順次 hydrate する。push hook には頼らない
+ * (= ADR 0061 D-2 / reviewer M-3): partial fragment は <template> で parse される
+ * ため内部 <script> が実行されず、registry push が来ないため。
+ *
+ * `rangeStart` / `rangeEnd` は `<!--vl-N-start-->` / `<!--vl-N-end-->` の Comment 参照。
+ * range walker は両端 layer marker そのものを skip し、内部の island marker のみ拾う。
+ */
+export function hydrateIslandsInRange(rangeStart: Comment, rangeEnd: Comment): void {
+  if (typeof document === "undefined") return;
+  const root = rangeStart.parentNode;
+  if (!root) return;
+  // 対象 layer N の DOM 内に islands は **nested** で出現する (`<article><div><!--vi-...-->`)
+  // ので flat sibling walk は不可。NodeIterator (= 深さ優先 walk) で root 全体を舐めて、
+  // rangeStart に到達したら inRange=true → rangeEnd で break、で「window 内 Comment」だけ
+  // 拾う。rangeStart 前の prefix 走査コストは toy 規模では許容 (= reviewer #3 指摘、性能
+  // 問題で correctness ではない)。共通 prefix layer 内の他 island marker は inRange=false
+  // で skip される (= 既 hydrate なので重複触る心配はない)。
+  const iter = document.createNodeIterator(root, NodeFilter.SHOW_COMMENT);
+  let inRange = false;
+  const islandStarts: Comment[] = [];
+  const islandEnds: Map<string, Comment> = new Map();
+  let n: Node | null;
+  while ((n = iter.nextNode())) {
+    const c = n as Comment;
+    if (c === rangeStart) {
+      inRange = true;
+      continue;
+    }
+    if (c === rangeEnd) break;
+    if (!inRange) continue;
+    const value = c.nodeValue ?? "";
+    if (/^vi-[A-Za-z0-9_$]+-\d+-start:/.test(value)) {
+      islandStarts.push(c);
+    } else {
+      const endMatch = /^(vi-[A-Za-z0-9_$]+-\d+)-end$/.exec(value);
+      if (endMatch) islandEnds.set(endMatch[1]!, c);
+    }
+  }
+  // 集めた island marker pairs を hydrateEntry で順次 hydrate。
+  for (const startComment of islandStarts) {
+    const startValue = startComment.nodeValue ?? "";
+    const m = /^(vi-([A-Za-z0-9_$]+)-(\d+))-start:/.exec(startValue);
+    if (!m) continue;
+    const key = m[1]!;
+    const name = m[2]!;
+    const seq = Number.parseInt(m[3]!, 10);
+    if (!islandEnds.has(key)) {
+      console.warn(`[vidro] island '${key}' end marker missing in partial range`);
+      continue;
+    }
+    hydrateEntry({ key, name, seq }, islandMap);
+  }
 }
 
 // eagerModules から全 .server.tsx stub の __islands を集めて global lookup map を作る。

@@ -8,7 +8,7 @@
 // を持たない (= ADR 0058 D-α-iii) ので PageProps generic は不要、{ params } 直書きで OK。
 
 import { Link } from "@vidro/router";
-import { getPostById } from "../server";
+import { getAllPosts, getPostById } from "../server";
 import { LikeButton } from "../like-button";
 
 // 注: 今は sync (ADR 0058 想定の async component は core 側未対応)
@@ -26,6 +26,12 @@ export default function PostDetail({ params }: { params: { id: string } }) {
       </div>
     );
   }
+  // ADR 0061 Phase 2 dogfood — 隣接 post への <Link> で `.server.tsx` 同士の SPA
+  // navigation (= partial 経路、共通 layout 据置 + leaf range だけ swap) を実機検証する。
+  const all = getAllPosts();
+  const idx = all.findIndex((p) => p.id === post.id);
+  const prev = idx > 0 ? all[idx - 1] : null;
+  const next = idx < all.length - 1 ? all[idx + 1] : null;
   return (
     <article>
       <p class="mb-2">
@@ -43,6 +49,23 @@ export default function PostDetail({ params }: { params: { id: string } }) {
         {/* island #2: 初期値 10 (= 同 component 複数 instance を区別する dogfood) */}
         <LikeButton initial={10} />
       </div>
+
+      <nav class="mt-8 flex justify-between border-t pt-4 text-sm">
+        {prev ? (
+          <Link href={`/posts/${prev.id}`} class="text-blue-500 hover:underline">
+            {`← ${prev.title}`}
+          </Link>
+        ) : (
+          <span />
+        )}
+        {next ? (
+          <Link href={`/posts/${next.id}`} class="text-blue-500 hover:underline">
+            {`${next.title} →`}
+          </Link>
+        ) : (
+          <span />
+        )}
+      </nav>
     </article>
   );
 }

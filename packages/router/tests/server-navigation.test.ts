@@ -46,9 +46,10 @@ describe("createServerHandler — navigation HTML (Phase C streaming SSR)", () =
     expect(body).toContain("__vidroFill");
     expect(body).toContain("__vidroAddResources");
 
-    // shell html が #app 内に流れる (B-3b の `<!--router-->` + B-3c-1 の error-boundary anchors)
+    // shell html が #app 内に流れる (B-3b の `<!--router-->` + B-3c-1 の error-boundary anchors)。
+    // ADR 0061 Phase 2 で各 layer 出力が `<!--vl-N-start-->` / `<!--vl-N-end-->` で囲まれる。
     expect(body).toContain(
-      '<div id="app"><div class="root"><h1>Home</h1><!--error-boundary--></div><!--error-boundary--><!--router-->',
+      '<div id="app"><!--vl-0-start--><div class="root"><!--vl-1-start--><h1>Home</h1><!--error-boundary--><!--vl-1-end--></div><!--error-boundary--><!--vl-0-end--><!--router-->',
     );
 
     // root pseudo-boundary patch (ADR 0033 論点 9): Suspense / bootstrapKey resource

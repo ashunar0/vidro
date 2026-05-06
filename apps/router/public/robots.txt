@@ -1,0 +1,5 @@
+User-agent: *
+# ADR 0061 Phase 3 (reviewer W-1): /__partial / /__loader は internal infrastructure
+# endpoint。bot crawl による 400 noise + SEO 上の意味のない URL を避けるため Disallow。
+Disallow: /__partial
+Disallow: /__loader

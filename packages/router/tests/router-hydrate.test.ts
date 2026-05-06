@@ -70,17 +70,21 @@ describe("Router hydrate (eagerModules + bootstrapData 経路)", () => {
     const appRoot = document.getElementById("app") as HTMLDivElement;
     appRoot.innerHTML = ssrHtml;
 
-    // hydrate 前の DOM Node を捕まえる (identity 比較用)
-    const divBefore = appRoot.firstChild as HTMLElement;
-    const h1Before = divBefore.firstChild as HTMLElement;
+    // hydrate 前の DOM Node を捕まえる (identity 比較用)。ADR 0061 Phase 2 で
+    // 各 layer の出力が `<!--vl-N-start-->` / `<!--vl-N-end-->` で囲まれるため、
+    // appRoot.firstChild は最外 layer marker。div / h1 は querySelector で取る。
+    const divBefore = appRoot.querySelector("div.root") as HTMLElement;
+    const h1Before = divBefore.querySelector("h1") as HTMLElement;
 
     // 4. hydrate: eagerModules + bootstrapData で sync fold が走り、cursor が
     //    SSR markup と整合して既存 Node を再利用するはず。
     hydrate(() => Router({ routes: manifest, eagerModules }), appRoot);
 
     // 同じ Node が再利用されている (mount だと innerHTML が捨てられて新規 Node)
-    expect(appRoot.firstChild).toBe(divBefore);
-    expect(divBefore.firstChild).toBe(h1Before);
-    expect(divBefore.outerHTML).toBe('<div class="root"><h1>Home</h1><!--error-boundary--></div>');
+    expect(appRoot.querySelector("div.root")).toBe(divBefore);
+    expect(divBefore.querySelector("h1")).toBe(h1Before);
+    expect(divBefore.outerHTML).toBe(
+      '<div class="root"><!--vl-1-start--><h1>Home</h1><!--error-boundary--><!--vl-1-end--></div>',
+    );
   });
 });

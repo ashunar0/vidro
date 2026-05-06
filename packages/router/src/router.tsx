@@ -43,6 +43,7 @@ import {
   _registerRevalidator,
   _syncSearchParamsFromUrl,
 } from "./search-params";
+import { hydrateIslandsInRange } from "./island";
 
 // ADR 0051: dispatcher が受ける引数 shape は action.ts の SubmissionState を流用。
 // router.tsx の dispatchSubmit / handleFormSubmit はこの interface 経由で
@@ -279,6 +280,7 @@ export function Router(props: RouterProps): Node {
   let lastSuccessRender: { pathname: string; layerCount: number } | null = null;
 
   let initialNode: Node | null = null;
+  let initialLayerRanges: Map<number, LayerRange> | null = null;
   if (canSyncBootstrap) {
     const eager = props.eagerModules!;
     const boot = bootstrapData!;
@@ -298,13 +300,15 @@ export function Router(props: RouterProps): Node {
       // route component が sync に loaderData() を呼んだ時、現 layer の raw を
       // 引き当てて store として返せるようにする。
       _resetPageLoaderData(loaderResults.map((r) => r.data));
-      initialNode = foldRouteTree({
+      const folded = foldRouteTree({
         match: initialMatch,
         componentMods: resolved.layouts.concat(resolved.route ? [resolved.route] : []),
         loaderResults,
         errorMods: resolved.errors,
         reset,
       });
+      initialNode = folded.node;
+      initialLayerRanges = folded.layerRanges;
       // 成功 render を記録: 後続 effect が「同 pathname への revalidate」を判定する。
       const hasError = loaderResults.some((r) => r.error !== undefined);
       if (!hasError) {
@@ -318,7 +322,7 @@ export function Router(props: RouterProps): Node {
   if (initialNode) r.appendChild(fragment, initialNode);
   r.appendChild(fragment, anchor);
 
-  // 前回 swap 時の DOM Node 群。次の swap で removeChild するため記録。
+  // 前回 swap 時の DOM Node 群。next swap (full) で removeChild するため記録。
   //
   // hydrate 経路 (anchor.parentNode が non-null = 既に target 内に居る) では
   // HydrationRenderer の appendChild が「target 内の既存 Node を fragment に
@@ -343,6 +347,16 @@ export function Router(props: RouterProps): Node {
         : [initialNode];
   }
 
+  // ADR 0061 Phase 2: 各 layer の DOM range marker (= `<!--vl-N-start-->` /
+  // `<!--vl-N-end-->`) への参照を絶対 layerIdx でキー付け。partial swap (= layer N
+  // の range だけ入れ替え) の identity として使う。
+  //
+  // - hydrate 経路: HydrationRenderer.createComment が SSR Comment への live ref
+  //   を返すので、initialLayerRanges の Comment は DOM 上の SSR Comment 参照。
+  // - mount 経路: foldRouteTree が新規作成した Comment が後ほど anchor 前に
+  //   insertBefore で DOM 連結される (= effect 経路の swap 経由)。Task #3 で対応。
+  let currentLayerRanges: Map<number, LayerRange> = initialLayerRanges ?? new Map();
+
   // hydrate 経路で sync 初期化を行ったので、effect 初回は skip して 2 回目以降
   // (= navigation) のみ async load を回す。skipNext を 1 つ立てておけば、effect
   // 初回 invocation で early return。pathname / reloadCounter は依然 dependency
@@ -351,7 +365,13 @@ export function Router(props: RouterProps): Node {
   // route 切替時の stale resolve 対策: token が一致した resolve のみ DOM に反映。
   let loadToken = 0;
 
-  function swap(next: Node): void {
+  /**
+   * full swap: 旧 currentNodes 全部を removeChild → 新 fragment を anchor 前に insert。
+   * page 切替 (= layout 数違い / loader error / 別 path) で使う経路。
+   * `nextLayerRanges` を渡せば currentLayerRanges を全置換。partial fragment と
+   * 区別するため optional (= 省略時は currentLayerRanges を空に reset)。
+   */
+  function swap(next: Node, nextLayerRanges?: Map<number, LayerRange>): void {
     for (const node of currentNodes) {
       node.parentNode?.removeChild(node);
     }
@@ -361,6 +381,155 @@ export function Router(props: RouterProps): Node {
       next.nodeType === Node.DOCUMENT_FRAGMENT_NODE ? Array.from(next.childNodes) : [next];
     (anchor as unknown as Node).parentNode?.insertBefore(next, anchor as unknown as Node);
     currentNodes = nextNodes;
+    currentLayerRanges = nextLayerRanges ?? new Map();
+  }
+
+  /**
+   * ADR 0061 Phase 2: partial swap。指定 layer N の `<!--vl-N-start-->` から
+   * `<!--vl-N-end-->` までの range (両端含む) を削除し、partial fragment を旧 start
+   * の位置に insertBefore で挿入する。共通 prefix layer (= 0..layerIdx-1) はそのまま
+   * DOM に残るので flash なし、layout 据置で島 hydrate も維持される。
+   *
+   * - `partial`: server `/__partial` から fetch + parse した partial fragment。
+   *    内部に `<!--vl-${layerIdx}-start-->` 〜 `<!--vl-${leafLayerIdx}-end-->` の
+   *    range marker を持つ前提。
+   * - `partialLayerRanges`: 新 partial fragment 内の各 layer (絶対 index) → range
+   *    の Map。partial fragment が DOM に挿入された後、Comment 参照は live。
+   */
+  function swapLayer(
+    layerIdx: number,
+    partial: Node,
+    partialLayerRanges: Map<number, LayerRange>,
+  ): void {
+    const oldRange = currentLayerRanges.get(layerIdx);
+    if (!oldRange || !oldRange.start.parentNode) {
+      // range が見つからない / DOM 上に無い (= 想定外) → 安全側に倒して full reload。
+      // 上位 (navigate) で fetch reject 同等の F-α 経路を踏ませる。
+      throw new Error(`[router] swapLayer: layer ${layerIdx} range not found`);
+    }
+    const parent = oldRange.start.parentNode;
+    // start と end が同 parent でないと range が壊れている (= 別経路の DOM 操作で end が
+    // 外された等)。anchor までの誤削除事故を防ぐため early throw して F-α 経路に倒す。
+    if (oldRange.end.parentNode !== parent) {
+      throw new Error(`[router] swapLayer: layer ${layerIdx} end detached from start parent`);
+    }
+    // 旧 range 内の sibling を start から end まで集めて remove。end に到達せず sibling
+    // が尽きた場合 (= end が外れていた等) は anchor まで巻き込む事故になるので throw。
+    const toRemove: Node[] = [];
+    let n: Node | null = oldRange.start;
+    let reachedEnd = false;
+    while (n) {
+      toRemove.push(n);
+      if (n === oldRange.end) {
+        reachedEnd = true;
+        break;
+      }
+      n = n.nextSibling;
+    }
+    if (!reachedEnd) {
+      throw new Error(`[router] swapLayer: layer ${layerIdx} end not found by sibling walk`);
+    }
+    parent.insertBefore(partial, oldRange.start);
+    for (const node of toRemove) {
+      node.parentNode?.removeChild(node);
+    }
+    // currentLayerRanges を更新: 共通 prefix (= 0..layerIdx-1) はそのまま、
+    // layerIdx 以降を partialLayerRanges で置換。
+    for (const idx of Array.from(currentLayerRanges.keys())) {
+      if (idx >= layerIdx) currentLayerRanges.delete(idx);
+    }
+    for (const [idx, r] of partialLayerRanges) {
+      currentLayerRanges.set(idx, r);
+    }
+    // currentNodes は anchor 直前を逆走査して再構築 (= 共通 prefix Comment + 新 partial
+    // の Node 全部を集める)。partial swap は full swap と違って共通 prefix が DOM 上に
+    // 残るため、走査で集まる Node 群が「次回 full swap で removeChild すべき対象」。
+    if (anchor.parentNode) {
+      const collected: Node[] = [];
+      let p = (anchor as Node).previousSibling;
+      while (p) {
+        collected.unshift(p);
+        p = p.previousSibling;
+      }
+      currentNodes = collected;
+    }
+  }
+
+  /**
+   * ADR 0061 Phase 2: `.server.tsx` leaf への navigation を `/__partial` 経由で
+   * 実行する経路。client bundle に leaf component module が居ない (= ADR 0060 stub)
+   * ため、server で render 済の HTML fragment を取得して `swapLayer` で DOM 注入する。
+   *
+   * - F-α (= ADR 0061): fetch reject / 4xx / 5xx / parse 失敗 → `window.location.assign`
+   *   で full reload。partial swap は state を信用できる時だけ実行する。
+   * - C-α (= ADR 0061): swap 後に `hydrateIslandsInRange` で partial fragment 範囲内の
+   *   island marker を walk して hydrate (Task #5 で実装)。
+   * - loadToken: effect 経由で発行された token と一致しない場合 (= 別 navigation が
+   *   後発で割り込んだ) は処理捨て (既存 async load 経路と同 race 対策)。
+   */
+  async function runPartialNavigation(
+    token: number,
+    fromUrl: string,
+    toUrl: string,
+    match: MatchResult,
+  ): Promise<void> {
+    const url = `/__partial?to=${encodeURIComponent(toUrl)}&from=${encodeURIComponent(fromUrl)}`;
+    let res: Response;
+    try {
+      res = await fetch(url);
+    } catch (err) {
+      if (token !== loadToken) return;
+      console.error("[router] partial fetch failed:", err);
+      window.location.assign(toUrl);
+      return;
+    }
+    if (token !== loadToken) return;
+    if (!res.ok) {
+      console.error(`[router] partial fetch returned ${res.status}`);
+      window.location.assign(toUrl);
+      return;
+    }
+    const divergeHeader = res.headers.get("x-vidro-diverge-index") ?? "";
+    const divergeIndex = Number.parseInt(divergeHeader, 10);
+    const html = await res.text();
+    if (token !== loadToken) return;
+    if (Number.isNaN(divergeIndex) || divergeIndex < 0) {
+      console.error(`[router] invalid x-vidro-diverge-index: ${divergeHeader}`);
+      window.location.assign(toUrl);
+      return;
+    }
+
+    // partial HTML を <template> で parse → DocumentFragment。template content は
+    // inert tree なので内部 <script> は実行されない (= push hook 経由の hydrate に
+    // 依存しない設計、ADR 0061 D-2 reviewer M-3 と整合)。
+    const tpl = document.createElement("template");
+    tpl.innerHTML = html;
+    const partialFragment = tpl.content;
+    const partialLayerRanges = collectLayerRanges(partialFragment);
+
+    try {
+      swapLayer(divergeIndex, partialFragment, partialLayerRanges);
+    } catch (err) {
+      console.error("[router] partial swap failed:", err);
+      window.location.assign(toUrl);
+      return;
+    }
+
+    // 共通 prefix layer の effect / Link 等が新 params を読めるよう同期。
+    currentParams.value = match.params;
+
+    // ADR 0061 C-α: swap 後に partial 範囲内の island marker を walk して hydrate。
+    // 新 layer N の range marker (= partialLayerRanges.get(divergeIndex)) を起点に。
+    const newRange = currentLayerRanges.get(divergeIndex);
+    if (newRange) {
+      hydrateIslandsInRange(newRange.start, newRange.end);
+    }
+
+    // 通常経路の diff merge 判定 (= 同 pathname revalidate) は client fold 用なので、
+    // partial 経路後は lastSuccessRender を null にして state machine を分離する。
+    // 次に通常経路 page (= 通常 .tsx) に navigate した時は full remount で動く。
+    lastSuccessRender = null;
+    flushPendingRevalidations();
   }
 
   // `/__loader?path=...` を叩いて全 layer の loader 結果を 1 回の HTTP で取得する
@@ -571,15 +740,33 @@ export function Router(props: RouterProps): Node {
     }));
   }
 
+  // ADR 0061 Phase 2: partial fetch (= /__partial) で送る `from` の seal 用。effect 開始時に
+  // 「from = prevPathname + prevSearch、to = pathname + search」を計算して partial URL を組む。
+  // navigate() / popstate 直後の effect 内で window.location は **新 URL** に同期済 (= browser
+  // が pushState / popstate より前に URL を反映)、よって prev は別途 closure で記録する必要がある。
+  let prevPathname = currentPathname.value;
+  let prevSearch = typeof window !== "undefined" ? window.location.search : "";
+
   effect(() => {
     // reload trigger を dependency に登録 (reset() で再実行されるため)。
     // `void` は「副作用として読むだけ」の意図表明 (lint の no-unused-expressions 回避)。
     void reloadCounter.value;
     const pathname = currentPathname.value;
+    const search = typeof window !== "undefined" ? window.location.search : "";
     if (skipNextEffect) {
       skipNextEffect = false;
+      prevPathname = pathname;
+      prevSearch = search;
       return;
     }
+    // ADR 0061 G-α: partial 経路の `from` / `to` 用 URL を effect 開始時に seal。
+    // 失敗時の full reload は to URL に行うため、prev 更新は経路成功と独立に
+    // ここでまとめて行う (= reload で effect 自体が消える前提)。
+    const fromUrl = prevPathname + prevSearch;
+    const toUrl = pathname + search;
+    prevPathname = pathname;
+    prevSearch = search;
+
     const match = matchRoute(pathname, compiled);
     const token = ++loadToken;
 
@@ -587,6 +774,20 @@ export function Router(props: RouterProps): Node {
     if (!leafLoader) {
       // not-found.tsx なし、かつ route match なし → 素朴にテキスト
       swap(r.createText("404 Not Found") as unknown as Node);
+      return;
+    }
+
+    // ADR 0061 Phase 2: leaf が `.server.tsx` の場合は client bundle 上で stub 化されて
+    // いる (= ADR 0060 Phase 2)。client fold すると stub default が空を返して真っ白
+    // 問題が起きる → /__partial 経由で server 側 render 済 HTML を取得して swap する。
+    //
+    // 同 URL (= reloadCounter 経由 revalidate / fromUrl === toUrl) でも partial fetch
+    // を走らせる: `.server.tsx` page で `revalidate()` が呼ばれた意図 = server で
+    // render し直して新 state を取り込む、と素直に解釈する。divergeIndex は leaf only
+    // で server から返り、leaf range だけが swap される (= island state は再 hydrate)。
+    const isServerOnlyTarget = match.route?.filePath.endsWith(".server.tsx") === true;
+    if (isServerOnlyTarget) {
+      void runPartialNavigation(token, fromUrl, toUrl, match);
       return;
     }
 
@@ -599,7 +800,7 @@ export function Router(props: RouterProps): Node {
     const loadComponents = Promise.all([...match.layouts.map((l) => l.load()), leafLoader()]);
     // ADR 0053: revalidate() / `<Link>` で同 page 内 navigate 時に server-side loader
     // が `?page=` / `?q=` 等を読めるよう、現 URL の search を path に乗せて送る。
-    const search = typeof window !== "undefined" ? window.location.search : "";
+    // (search は effect 上部で seal 済の値を再利用)
     const loadLoaderResults = fetchLoaders(pathname, search);
     // match.errors[i] と errorMods[i] は 1:1 対応 (深い → 浅い順)。個別 load 失敗は
     // null に fall back させ、selectErrorMod が自然に次の候補に skip する。
@@ -649,14 +850,14 @@ export function Router(props: RouterProps): Node {
         // foldRouteTree で各 layer の loaderData() が新しい raw を wrap する。
         _resetPageLoaderData(loaderResults.map((r) => r.data));
         const componentMods = rawMods as RouteModule[];
-        const node = foldRouteTree({
+        const folded = foldRouteTree({
           match,
           componentMods,
           loaderResults,
           errorMods,
           reset,
         });
-        swap(node);
+        swap(folded.node, folded.layerRanges);
 
         // 次回 effect で revalidate 判定するための state 更新。loader error が
         // 起きていたら "成功 render" 扱いしない (= 次に成功した瞬間に diff merge
@@ -753,7 +954,7 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
         : loaderResults.map((r) => r.data);
     _resetPageLoaderData(paddedRaws);
 
-    const node = foldRouteTree(
+    const { node } = foldRouteTree(
       {
         match,
         componentMods: ssr.resolvedModules.layouts.concat([ssr.resolvedModules.route]),
@@ -802,6 +1003,21 @@ type FoldInput = {
 };
 
 /**
+ * ADR 0061 Phase 2: 各 layer の出力を `<!--vl-${layerIdx}-start-->` /
+ * `<!--vl-${layerIdx}-end-->` で囲む。partial swap 時に「layer N の DOM range
+ * だけ入れ替え」を成立させるため、SSR HTML / client mount / hydrate のどの
+ * 経路でも同じ marker が出る。Map は closure local で hidden global を回避
+ * (= Open Q2: 案 a)。
+ */
+type LayerRange = { start: Comment; end: Comment };
+type FoldOutput = {
+  node: Node;
+  /** 絶対 layerIdx (= startIdx + partial-relative i) → range marker の Map。
+   *  fold 後に呼び出し元が pull して `currentLayerRanges` に格納する。 */
+  layerRanges: Map<number, LayerRange>;
+};
+
+/**
  * ADR 0061: partial render 経路では `componentMods` / `loaderResults` を
  * **partial slice** (= startIdx 以降の layer + leaf だけ) で受け取る。fold loop の
  * partial-relative `i` から絶対 layerIdx を出すため `startIdx` を加算する。既存呼び出し
@@ -809,10 +1025,37 @@ type FoldInput = {
  *
  * 設計判定: 案 a (拡張引数) を採用 (= 案 b の専用関数分離より変更最小)。
  * 内部 loop の startIdx 加算は薄い差し込みで済むため。
+ *
+ * Phase 2 で戻り値を `{ node, layerRanges }` に変更 (= Open Q2 案 a)。各 layer の
+ * 出力を fragment 内で `<!--vl-N-start-->` / `<!--vl-N-end-->` の Comment marker で
+ * 囲み、Map に登録する。partial swap 時の DOM range 特定はこの Map を pull する。
  */
-function foldRouteTree(input: FoldInput, options?: { startIdx?: number }): Node {
+function foldRouteTree(input: FoldInput, options?: { startIdx?: number }): FoldOutput {
   const startIdx = options?.startIdx ?? 0;
   const { match, componentMods, loaderResults, errorMods, reset } = input;
+  const renderer = getRenderer();
+  const layerRanges = new Map<number, LayerRange>();
+
+  // 各 layer の出力 Node を `<!--vl-N-start-->` / `<!--vl-N-end-->` で囲んで
+  // fragment にまとめる。SSR / client mount / hydrate どの経路でも renderer 経由
+  // で createComment / createFragment を呼ぶので marker 文字列 + 出現順が一致し、
+  // hydrate cursor が SSR markup と整合する。
+  //
+  // content は **thunk で受け取る** (= eager evaluation 防止)。引数 eager 評価だと
+  // content の renderer 操作が start Comment より先に走って cursor 順が壊れる。
+  // 順序保証: createComment(start) → contentFn() (= 内部で更に renderer 操作) →
+  // createComment(end) で SSR と client hydrate で同じ post-order を踏む。
+  const wrapInRange = (layerIdx: number, contentFn: () => Node): Node => {
+    const start = renderer.createComment(`vl-${layerIdx}-start`) as unknown as Comment;
+    const content = contentFn();
+    const end = renderer.createComment(`vl-${layerIdx}-end`) as unknown as Comment;
+    layerRanges.set(layerIdx, { start, end });
+    const frag = renderer.createFragment();
+    renderer.appendChild(frag, start as unknown as Node);
+    renderer.appendChild(frag, content);
+    renderer.appendChild(frag, end as unknown as Node);
+    return frag as unknown as Node;
+  };
 
   // layer の pathPrefix (null = leaf) に応じて使う error.tsx を選ぶ。
   //   leaf → 最寄り (match.errors[0])
@@ -881,7 +1124,12 @@ function foldRouteTree(input: FoldInput, options?: { startIdx?: number }): Node 
     const absErrorIdx = startIdx + errorIndex;
     const errorLayerPrefix =
       absErrorIdx < match.layouts.length ? match.layouts[absErrorIdx]!.pathPrefix : null;
-    nodeFn = () => renderError(loaderError, selectErrorMod(errorLayerPrefix), match.params, reset);
+    // error 表示 layer も range marker で囲む (= partial swap で error layer ごと
+    // 入れ替え可能にする)。range key は絶対 layerIdx。
+    nodeFn = () =>
+      wrapInRange(absErrorIdx, () =>
+        renderError(loaderError, selectErrorMod(errorLayerPrefix), match.params, reset),
+      );
     // error layer より外側の (partial slice 内の) layouts で fold。外側 layouts も
     // render error を起こしうるので wrapLayout で個別 ErrorBoundary wrap する。
     for (let i = errorIndex - 1; i >= 0; i--) {
@@ -890,7 +1138,10 @@ function foldRouteTree(input: FoldInput, options?: { startIdx?: number }): Node 
       const data = loaderResults[i]!.data;
       const absLayerIdx = startIdx + i;
       const layerPathPrefix = match.layouts[absLayerIdx]!.pathPrefix;
-      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner, absLayerIdx);
+      nodeFn = () =>
+        wrapInRange(absLayerIdx, () =>
+          wrapLayout(layoutMod, layerPathPrefix, data, inner, absLayerIdx),
+        );
     }
   } else {
     // 全 loader 成功 → 通常経路。leaf は render error catch のため ErrorBoundary
@@ -922,28 +1173,33 @@ function foldRouteTree(input: FoldInput, options?: { startIdx?: number }): Node 
     };
 
     nodeFn = () =>
-      ErrorBoundary({
-        fallback: (err) => renderError(err, selectErrorMod(null), match.params, reset),
-        onError: (err) => console.error("[router] render error:", err),
-        children: () => {
-          if (isServerOnlyLeaf) {
-            // children は thunk で渡す: server pass で実体評価、client (shell hydrate) では
-            // 呼ばずに skip する設計を __VidroServerOnlySection が引き受ける。
-            return __VidroServerOnlySection({ children: invokeLeaf }) as Node;
-          }
-          return invokeLeaf();
-        },
-      });
+      wrapInRange(leafLayerIdx, () =>
+        ErrorBoundary({
+          fallback: (err) => renderError(err, selectErrorMod(null), match.params, reset),
+          onError: (err) => console.error("[router] render error:", err),
+          children: () => {
+            if (isServerOnlyLeaf) {
+              // children は thunk で渡す: server pass で実体評価、client (shell hydrate) では
+              // 呼ばずに skip する設計を __VidroServerOnlySection が引き受ける。
+              return __VidroServerOnlySection({ children: invokeLeaf }) as Node;
+            }
+            return invokeLeaf();
+          },
+        }),
+      );
     for (let i = layoutMods.length - 1; i >= 0; i--) {
       const inner = nodeFn;
       const layoutMod = layoutMods[i]!;
       const data = loaderResults[i]!.data;
       const absLayerIdx = startIdx + i;
       const layerPathPrefix = match.layouts[absLayerIdx]!.pathPrefix;
-      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner, absLayerIdx);
+      nodeFn = () =>
+        wrapInRange(absLayerIdx, () =>
+          wrapLayout(layoutMod, layerPathPrefix, data, inner, absLayerIdx),
+        );
     }
   }
-  return nodeFn();
+  return { node: nodeFn(), layerRanges };
 }
 
 // ---- error helpers (renderer 経由) ----
@@ -1018,4 +1274,44 @@ function resolveModulesSync(
   }
 
   return { route: routeMod, layouts, errors };
+}
+
+/**
+ * ADR 0061 Phase 2: partial fragment 内の `<!--vl-N-start-->` / `<!--vl-N-end-->`
+ * Comment marker を walk して、絶対 layerIdx → range の Map を構築する。
+ *
+ * 前提: server `renderPartialHTML` (server.ts) が divergeIndex 以降の各 layer に対して
+ * `wrapInRange` で start/end Comment を出している (= foldRouteTree が同 marker shape
+ * で SSR markup を生成する)。
+ *
+ * 不正な markup (= 同 layerIdx 重複 / start/end mismatch / 空 fragment) は warning して
+ * 部分的な map を返す (= 上位の swapLayer で range 不在として throw → full reload 経路)。
+ */
+function collectLayerRanges(
+  fragment: DocumentFragment | Element,
+): Map<number, { start: Comment; end: Comment }> {
+  const map = new Map<number, { start: Comment; end: Comment }>();
+  if (typeof document === "undefined") return map;
+  const iter = document.createNodeIterator(fragment, NodeFilter.SHOW_COMMENT);
+  const starts = new Map<number, Comment>();
+  let n: Node | null;
+  while ((n = iter.nextNode())) {
+    const c = n as Comment;
+    const v = c.nodeValue ?? "";
+    const startMatch = /^vl-(\d+)-start$/.exec(v);
+    if (startMatch) {
+      starts.set(Number.parseInt(startMatch[1]!, 10), c);
+      continue;
+    }
+    const endMatch = /^vl-(\d+)-end$/.exec(v);
+    if (endMatch) {
+      const idx = Number.parseInt(endMatch[1]!, 10);
+      const start = starts.get(idx);
+      if (start) {
+        map.set(idx, { start, end: c });
+        starts.delete(idx);
+      }
+    }
+  }
+  return map;
 }

@@ -37,9 +37,10 @@ describe("Router SSR (server mode)", () => {
     );
 
     // anchor: B-3b で `<!--router-->`、B-3c-1 で各 ErrorBoundary 出力に
-    // `<!--error-boundary-->`。leaf + root layout の 2 層 wrap になる。
+    // `<!--error-boundary-->`。ADR 0061 Phase 2 で各 layer 出力が `<!--vl-N-start-->` /
+    // `<!--vl-N-end-->` で囲まれる (= layer 0 = root layout、layer 1 = leaf)。
     expect(html).toBe(
-      '<div class="root"><h1>Home</h1><!--error-boundary--></div><!--error-boundary--><!--router-->',
+      '<!--vl-0-start--><div class="root"><!--vl-1-start--><h1>Home</h1><!--error-boundary--><!--vl-1-end--></div><!--error-boundary--><!--vl-0-end--><!--router-->',
     );
   });
 
@@ -63,7 +64,9 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe("<h1>About us</h1><!--error-boundary--><!--router-->");
+    expect(html).toBe(
+      "<!--vl-0-start--><h1>About us</h1><!--error-boundary--><!--vl-0-end--><!--router-->",
+    );
   });
 
   test("loader data が loaderData() store として届く (ADR 0049)", async () => {
@@ -95,7 +98,9 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe("<p>Hello zundamon</p><!--error-boundary--><!--router-->");
+    expect(html).toBe(
+      "<!--vl-0-start--><p>Hello zundamon</p><!--error-boundary--><!--vl-0-end--><!--router-->",
+    );
   });
 
   test("loader error → 最寄り error.tsx で置換される", async () => {
@@ -129,8 +134,11 @@ describe("Router SSR (server mode)", () => {
     );
 
     // loader error 経路は ErrorBoundary で wrap されない (foldRouteTree が
-    // 自分で renderError を呼ぶ。layouts も無いので Router anchor のみ)
-    expect(html).toBe('<div class="error">failed: boom</div><!--router-->');
+    // 自分で renderError を呼ぶ。layouts も無いので Router anchor のみ)。
+    // ADR 0061 Phase 2 で error layer も wrapInRange で囲まれる。
+    expect(html).toBe(
+      '<!--vl-0-start--><div class="error">failed: boom</div><!--vl-0-end--><!--router-->',
+    );
   });
 
   test("render error → ErrorBoundary で fallback に置換", async () => {
@@ -163,7 +171,7 @@ describe("Router SSR (server mode)", () => {
 
     // render error 経路は leaf を ErrorBoundary で wrap、fallback が anchor 内に入る
     expect(html).toBe(
-      '<div class="error">caught: render crash</div><!--error-boundary--><!--router-->',
+      '<!--vl-0-start--><div class="error">caught: render crash</div><!--error-boundary--><!--vl-0-end--><!--router-->',
     );
   });
 
@@ -212,6 +220,8 @@ describe("Router SSR (server mode)", () => {
       }),
     );
 
-    expect(html).toBe('<p class="nf">No such page</p><!--error-boundary--><!--router-->');
+    expect(html).toBe(
+      '<!--vl-0-start--><p class="nf">No such page</p><!--error-boundary--><!--vl-0-end--><!--router-->',
+    );
   });
 });
