@@ -228,6 +228,35 @@ export function Router(props: RouterProps): Node {
   window.addEventListener("submit", onSubmit, true);
   onCleanup(() => window.removeEventListener("submit", onSubmit, true));
 
+  // ---- link click delegation (ADR 0062) ----
+  // ADR 0060 で `.server.tsx` は client bundle 上で stub 化されるため、その内側に
+  // 書かれた `<Link>` は client で render されず onClick が attach されない。結果
+  // として leaf 内 Link は browser default の full reload に倒れて ADR 0061 の
+  // partial swap 経路に乗らない。document level で `<a>` クリックを一括 intercept
+  // することで、leaf / layout どちらに居る Link でも均等に SPA 経路に流す。
+  //
+  // `<Link>` 内の onClick は ADR 0062 で削除済 (= aria-current 糖衣だけに縮退)。
+  // 生 `<a href="/foo">` も同経路で SPA 化される (= Hono 的透明性、設計書 5 哲学)。
+  const onLinkClick = (e: MouseEvent): void => {
+    if (e.defaultPrevented) return;
+    if (e.button !== 0) return;
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    const target = e.target;
+    if (!(target instanceof Element)) return;
+    const a = target.closest("a[href]");
+    if (!(a instanceof HTMLAnchorElement)) return;
+    // target="_blank" / "_top" / 名前付き frame は browser に任せる ("_self" のみ intercept)
+    if (a.target !== "" && a.target !== "_self") return;
+    if (a.hasAttribute("download")) return;
+    // 異 origin / `mailto:` / `tel:` / `javascript:` 等は HTMLAnchorElement.origin が
+    // 現 origin と一致しないので origin check 1 本で除外可能
+    if (a.origin !== window.location.origin) return;
+    e.preventDefault();
+    navigate(a.pathname + a.search + a.hash);
+  };
+  window.addEventListener("click", onLinkClick);
+  onCleanup(() => window.removeEventListener("click", onLinkClick));
+
   // ---- dispatcher 登録 (programmatic submit 用、ADR 0051) ----
   // 公開 `submit()` (top-level) と Submission.retry() が呼ぶ経路。form delegation と
   // 同じ dispatchSubmit を共有して、loader 自動 revalidate / redirect / error handling

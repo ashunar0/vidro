@@ -1,5 +1,5 @@
 import { _$dynamicChild, effect, getRenderer, h } from "@vidro/core";
-import { currentPathname, navigate } from "./navigation";
+import { currentPathname } from "./navigation";
 
 type LinkProps = {
   // ADR 0054: string なら static (snapshot)、`() => string` なら reactive (= 関数を渡すと
@@ -24,8 +24,11 @@ function resolveValue(value: string | (() => string)): string {
 }
 
 /**
- * SPA 遷移用の `<a>` ラッパー。左クリックのみ preventDefault して navigate() に委譲し、
- * Ctrl/Cmd/Shift/Alt 併用やミドルクリックはブラウザ標準の挙動 (新タブ等) に任せる。
+ * SPA 遷移用の `<a>` ラッパー。click intercept は ADR 0062 で **document level
+ * delegation** に一本化したので、本 component 自体は onClick を持たない (= 生
+ * `<a href="/foo">` を書いても同じ経路で SPA 遷移する)。`<Link>` の役割は
+ * `aria-current` の reactive 切替と、`href` / `class` の reactive prop (ADR 0054)
+ * の糖衣のみ。
  *
  * **reactive escape hatch (ADR 0054)**: `href` / `class` は `string` だけでなく
  * `() => string` も受け付ける。関数を渡すと Link 内部の `applyProp` (= h() が呼ぶ)
@@ -47,21 +50,14 @@ function resolveValue(value: string | (() => string)): string {
  * 手書き形式で post-order を保証する (B-3d)。
  */
 export function Link(props: LinkProps): Node {
-  const handleClick = (e: MouseEvent) => {
-    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
-    if (e.button !== 0) return;
-    e.preventDefault();
-    // click 時に最新の href を resolve する (関数なら呼び出して string 化)。
-    navigate(resolveValue(props.href));
-  };
-
   // h() の applyProp が関数 / string 両方を handle する (jsx.ts:293-307):
   //   - string → 直接 setAttribute (snapshot)
   //   - function → effect で wrap して reactive 化
   // なので props.href / props.class をそのまま渡せば適切に分岐する。
+  // onClick は付けない (= ADR 0062: router 側 document delegate に一本化)
   const node = h(
     "a",
-    { href: props.href, class: props.class, onClick: handleClick },
+    { href: props.href, class: props.class },
     _$dynamicChild(() => props.children),
   );
 
