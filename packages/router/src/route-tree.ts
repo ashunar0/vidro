@@ -238,6 +238,36 @@ export function matchRoute(pathname: string, compiled: CompiledRoutes): MatchRes
   };
 }
 
+/**
+ * ADR 0061: partial HTML navigation の中核計算。from / to の MatchResult を受け取り、
+ * layout chain (= 浅い → 深い順の layouts[].filePath) を先頭から比較して、
+ * **共通 prefix の長さ** を `divergeIndex` として返す。
+ *
+ * 意味論:
+ * - `divergeIndex === N` は「先頭 N layer が共通、layer N 以降を再 render する」を意味する。
+ * - leaf (route) は filePath 一致でも params が違いうるので **常に diverge 扱い**。
+ *   そのため divergeIndex の上限は `min(fromLayouts.length, toLayouts.length)` まで。
+ * - 完全一致 (全 layouts が同じ + 同 leaf URL) でも divergeIndex = layouts.length となり、
+ *   leaf は必ず再 render される (= revalidate 相当の挙動)。
+ *
+ * 例:
+ * - `/posts/1` → `/posts/2`: layouts 全一致 → divergeIndex = 2 (= layouts.length) → leaf のみ再 render
+ * - `/posts/1` → `/users/1`: 共通は root layout のみ → divergeIndex = 1 → users/layout 以下 再 render
+ * - `/` → `/posts/1`: 共通は root layout → divergeIndex = 1 → posts/layout + post page 再 render
+ */
+export function diffLayoutChain(
+  fromMatch: MatchResult,
+  toMatch: MatchResult,
+): { divergeIndex: number } {
+  const fromLayouts = fromMatch.layouts.map((l) => l.filePath);
+  const toLayouts = toMatch.layouts.map((l) => l.filePath);
+  let i = 0;
+  while (i < fromLayouts.length && i < toLayouts.length && fromLayouts[i] === toLayouts[i]) {
+    i++;
+  }
+  return { divergeIndex: i };
+}
+
 // --- internal helpers ---
 
 function isNotFoundFile(filePath: string): boolean {

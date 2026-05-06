@@ -102,10 +102,17 @@ export type ResolvedModules = {
 };
 
 export type SSRProps = {
-  /** server 側で gatherRouteData した結果 (pathname / params / layers を含む) */
+  /** server 側で gatherRouteData した結果 (pathname / params / layers を含む)。
+   *  partial render の場合 layers は **divergeIndex 以降の layer + leaf** だけを含む。 */
   bootstrapData: BootstrapData;
-  /** preloadRouteComponents で事前解決した component 群 */
+  /** preloadRouteComponents で事前解決した component 群。
+   *  partial render の場合 layouts は **divergeIndex 以降の slice**。 */
   resolvedModules: ResolvedModules;
+  /** ADR 0061: partial HTML render mode。`startIdx` は共通 prefix の長さ (= 共通 layout 数)。
+   *  指定されると foldRouteTree に startIdx を渡して layer N 以降だけ render し、anchor
+   *  Comment を fragment に含めない (= partial fragment は client の既存 layer N の DOM
+   *  range にそのまま挿入される)。 */
+  partial?: { startIdx: number };
 };
 
 type RouterProps = {
@@ -733,19 +740,40 @@ function renderServerSide(compiled: CompiledRoutes, ssr: SSRProps): Node {
     // ADR 0049: server render でも foldRouteTree 前に layer-indexed raw を確定。
     // user の sync `loaderData()` が server 側でも raw を引き当てて store として
     // 動く (= SSR で `<For each={data.notes}>` が成立する)。
-    _resetPageLoaderData(loaderResults.map((r) => r.data));
+    //
+    // ADR 0061 partial mode: loaderResults は partial slice (= divergeIndex 以降)
+    // だが loaderData() lookup は **絶対 layerIdx** で行うため、divergeIndex 個分の
+    // undefined を先頭に padding して raws を absolute index 化する。共通 prefix
+    // layer の loaderData() は呼ばれない前提 (= partial fragment 内に共通 layout
+    // component は居ない)。
+    const startIdx = ssr.partial?.startIdx ?? 0;
+    const paddedRaws =
+      startIdx > 0
+        ? [...Array.from<unknown>({ length: startIdx }), ...loaderResults.map((r) => r.data)]
+        : loaderResults.map((r) => r.data);
+    _resetPageLoaderData(paddedRaws);
 
-    const node = foldRouteTree({
-      match,
-      componentMods: ssr.resolvedModules.layouts.concat([ssr.resolvedModules.route]),
-      loaderResults,
-      errorMods: ssr.resolvedModules.errors,
-      reset: () => {
-        // server では reset 発火不可。client hydration で再発火する前提。
+    const node = foldRouteTree(
+      {
+        match,
+        componentMods: ssr.resolvedModules.layouts.concat([ssr.resolvedModules.route]),
+        loaderResults,
+        errorMods: ssr.resolvedModules.errors,
+        reset: () => {
+          // server では reset 発火不可。client hydration で再発火する前提。
+        },
       },
-    });
+      { startIdx },
+    );
 
-    // client と同 shape: fragment.children = [route_node, anchor]
+    // ADR 0061 partial mode: fragment ではなく Node 単体を返す (= anchor 無し)。
+    // partial fragment は client の既存 layer N の DOM range にそのまま挿入される
+    // 設計なので、router anchor の Comment は不要。
+    if (ssr.partial) {
+      return node;
+    }
+
+    // full mode: client と同 shape (= fragment.children = [route_node, anchor])
     const fragment = r.createFragment();
     r.appendChild(fragment, node);
     r.appendChild(fragment, r.createComment("router"));
@@ -773,7 +801,17 @@ type FoldInput = {
   reset: () => void;
 };
 
-function foldRouteTree(input: FoldInput): Node {
+/**
+ * ADR 0061: partial render 経路では `componentMods` / `loaderResults` を
+ * **partial slice** (= startIdx 以降の layer + leaf だけ) で受け取る。fold loop の
+ * partial-relative `i` から絶対 layerIdx を出すため `startIdx` を加算する。既存呼び出し
+ * 元 (renderServerSide / hydrate sync / async effect) は startIdx 省略で従来動作。
+ *
+ * 設計判定: 案 a (拡張引数) を採用 (= 案 b の専用関数分離より変更最小)。
+ * 内部 loop の startIdx 加算は薄い差し込みで済むため。
+ */
+function foldRouteTree(input: FoldInput, options?: { startIdx?: number }): Node {
+  const startIdx = options?.startIdx ?? 0;
   const { match, componentMods, loaderResults, errorMods, reset } = input;
 
   // layer の pathPrefix (null = leaf) に応じて使う error.tsx を選ぶ。
@@ -838,27 +876,30 @@ function foldRouteTree(input: FoldInput): Node {
   // を auto-invoke という連鎖で depth-first に DOM を構築する (ADR 0026)。
   let nodeFn: () => Node;
   if (errorIndex !== -1) {
-    // errorIndex が layouts.length なら leaf loader error → 最寄り (null)
-    // それ以外は layout[errorIndex] の pathPrefix より外側の error.tsx を使う
+    // partial-relative errorIndex を絶対 index に変換して error.tsx 選定する。
+    // absErrorIdx が match.layouts.length なら leaf loader error → 最寄り (null)
+    const absErrorIdx = startIdx + errorIndex;
     const errorLayerPrefix =
-      errorIndex < match.layouts.length ? match.layouts[errorIndex]!.pathPrefix : null;
+      absErrorIdx < match.layouts.length ? match.layouts[absErrorIdx]!.pathPrefix : null;
     nodeFn = () => renderError(loaderError, selectErrorMod(errorLayerPrefix), match.params, reset);
-    // error layer より外側の layouts で fold。外側 layouts も render error を
-    // 起こしうるので wrapLayout で個別 ErrorBoundary wrap する。
+    // error layer より外側の (partial slice 内の) layouts で fold。外側 layouts も
+    // render error を起こしうるので wrapLayout で個別 ErrorBoundary wrap する。
     for (let i = errorIndex - 1; i >= 0; i--) {
       const inner = nodeFn;
       const layoutMod = componentMods[i]!;
       const data = loaderResults[i]!.data;
-      const layerPathPrefix = match.layouts[i]!.pathPrefix;
-      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner, i);
+      const absLayerIdx = startIdx + i;
+      const layerPathPrefix = match.layouts[absLayerIdx]!.pathPrefix;
+      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner, absLayerIdx);
     }
   } else {
     // 全 loader 成功 → 通常経路。leaf は render error catch のため ErrorBoundary
     // で wrap (fallback は最寄り)、各 layout は wrapLayout で外側 error.tsx。
     const leafMod = componentMods[componentMods.length - 1]!;
     const layoutMods = componentMods.slice(0, -1);
-    // ADR 0049: leaf の layer index は layouts.length 番目 (= 最後の layer)。
-    const leafLayerIdx = layoutMods.length;
+    // ADR 0049: leaf の layer index は (絶対) layouts.length 番目 = startIdx + 内部 index。
+    // partial slice の場合、内部 layout 数 = layoutMods.length、絶対 leaf index は startIdx + layoutMods.length。
+    const leafLayerIdx = startIdx + layoutMods.length;
 
     // ADR 0060 partial hydration: leaf route の filePath が `.server.tsx` で終わる場合、
     // page output 全体を `__VidroServerOnlySection` で囲む。これで server は
@@ -897,8 +938,9 @@ function foldRouteTree(input: FoldInput): Node {
       const inner = nodeFn;
       const layoutMod = layoutMods[i]!;
       const data = loaderResults[i]!.data;
-      const layerPathPrefix = match.layouts[i]!.pathPrefix;
-      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner, i);
+      const absLayerIdx = startIdx + i;
+      const layerPathPrefix = match.layouts[absLayerIdx]!.pathPrefix;
+      nodeFn = () => wrapLayout(layoutMod, layerPathPrefix, data, inner, absLayerIdx);
     }
   }
   return nodeFn();

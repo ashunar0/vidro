@@ -18,15 +18,20 @@
 // ら Phase A 動作に degrade (空 `<div id="app">` + bootstrap data のみ) して、
 // client render に逃がす (toy runtime のセーフネット)。
 
-import { renderToReadableStream, VIDRO_STREAMING_RUNTIME } from "@vidro/core/server";
+import {
+  renderToReadableStream,
+  renderToString,
+  VIDRO_STREAMING_RUNTIME,
+} from "@vidro/core/server";
 import {
   compileRoutes,
+  diffLayoutChain,
   matchRoute,
   type RouteRecord,
   type ServerModule,
   type ServerModuleLoader,
 } from "./route-tree";
-import { Router, type ResolvedModules } from "./router";
+import { Router, type ResolvedModules, type SSRProps } from "./router";
 import { currentParams, currentPathname } from "./navigation";
 
 /**
@@ -63,6 +68,12 @@ export function createServerHandler(options: CreateServerHandlerOptions): Server
 
     if (url.pathname === endpoint) {
       return handleLoaderEndpoint(url, request, compiled);
+    }
+
+    // ADR 0061: SPA navigation 用の partial HTML endpoint。`/__loader` と
+    // 対称な internal infrastructure。
+    if (url.pathname === "/__partial") {
+      return handlePartialEndpoint(url, request, manifest, compiled);
     }
 
     // POST は accept より method 優先で分岐 (form submit / programmatic 両対応)。
@@ -208,6 +219,71 @@ async function handleAction(
   const revalidateRequest = new Request(url.toString(), { headers: request.headers });
   const loaderData = await gatherRouteData(revalidateRequest, compiled);
   return jsonResponse(200, { actionResult: result, loaderData });
+}
+
+/**
+ * ADR 0061: `/__partial?to=<encoded>&from=<encoded>` を捌く endpoint。
+ *
+ * - `from` 必須 (= E-α)、不在は 400
+ * - to / from は `pathname + search` を encodeURIComponent した値 (= G-α)
+ * - 200: partial fragment HTML、`X-Vidro-Diverge-Index` header に divergeIndex
+ * - 4xx/5xx: 最小 body (= F-α、client は full reload)
+ *
+ * `/__loader` と同じ scheme guard で `javascript:` / `data:` 等の non-http URL を
+ * 弾く (= reviewer 指摘 pattern と整合)。
+ */
+async function handlePartialEndpoint(
+  url: URL,
+  request: Request,
+  manifest: RouteRecord,
+  compiled: CompiledFromRoutes,
+): Promise<Response> {
+  const toRaw = url.searchParams.get("to");
+  const fromRaw = url.searchParams.get("from");
+
+  if (!toRaw) return new Response("missing `to` query", { status: 400 });
+  if (!fromRaw) return new Response("missing `from` query", { status: 400 });
+
+  let toUrl: URL;
+  let fromUrl: URL;
+  try {
+    toUrl = new URL(toRaw, url.origin);
+    fromUrl = new URL(fromRaw, url.origin);
+  } catch {
+    return new Response("invalid `to`/`from` URL", { status: 400 });
+  }
+
+  if (toUrl.protocol !== "http:" && toUrl.protocol !== "https:") {
+    return new Response("invalid `to` scheme", { status: 400 });
+  }
+  if (fromUrl.protocol !== "http:" && fromUrl.protocol !== "https:") {
+    return new Response("invalid `from` scheme", { status: 400 });
+  }
+
+  // routeRequest: loader が `request.url` を見たとき to URL に見えるよう偽装
+  // (= /__loader と同じ pattern)。headers (cookie / accept-language 等) は forward。
+  const routeRequest = new Request(toUrl, { headers: request.headers });
+
+  let result: { html: string; divergeIndex: number; status: number };
+  try {
+    result = await renderPartialHTML(toUrl, fromUrl, manifest, compiled, routeRequest);
+  } catch {
+    // F-α: infrastructure error (= module load 失敗 / unhandled throw 等) は
+    // 500 + 最小 body。client は full reload に倒す。
+    return new Response("partial render failed", { status: 500 });
+  }
+
+  if (result.status !== 200) {
+    return new Response("not found", { status: result.status });
+  }
+
+  return new Response(result.html, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "x-vidro-diverge-index": String(result.divergeIndex),
+    },
+  });
 }
 
 async function handleNavigation(
@@ -422,6 +498,87 @@ type ErrorModuleLike = {
     params: Record<string, string>;
   }) => unknown;
 };
+
+/**
+ * ADR 0061: partial HTML render の中核。to URL / from URL を受け取り、
+ * 共通 layout を skip した layer N 以降の HTML fragment を生成して返す。
+ *
+ * 流れ:
+ * 1. to / from の matchRoute → diffLayoutChain で divergeIndex 計算
+ * 2. divergeIndex 以降の layout module + leaf module + 全 error module を並列 load
+ * 3. divergeIndex 以降の layout の loader + leaf の loader を並列実行
+ * 4. Router の SSR mode (= partial: { startIdx: divergeIndex }) で renderToString
+ *    → fragment は anchor 無しの partial fragment HTML に
+ *
+ * 戻り値 status:
+ * - 200: 正常 (= loader/render error は ErrorBoundary + error.tsx で吸収済の partial HTML)
+ * - 404: to の route 不在 (= notFound) — 現状は最小実装で client は full reload に倒す
+ *
+ * 共通 prefix の loader data は server で再実行しない (= partial の趣旨)。client 側は
+ * 既存の page-level state (= filter / accordion / scroll) を保ったまま layer N 以降の
+ * DOM だけ swap する設計と整合 (= ADR 0061 B-β)。
+ *
+ * notFound 経路の partial 化 (= 200 + notFound page を partial として返す) は
+ * 別途 dogfood で必要になったら拡張。
+ */
+export async function renderPartialHTML(
+  toUrl: URL,
+  fromUrl: URL,
+  manifest: RouteRecord,
+  compiled: CompiledFromRoutes,
+  request: Request,
+): Promise<{ html: string; divergeIndex: number; status: number }> {
+  const toMatch = matchRoute(toUrl.pathname, compiled);
+  const fromMatch = matchRoute(fromUrl.pathname, compiled);
+
+  if (!toMatch.route) {
+    // notFound: 現状は 404 を返して client 側 full reload (= F-α infrastructure error
+    // 経路に倒す)。partial 内で notFound page を render する経路は YAGNI。
+    return { html: "", divergeIndex: 0, status: 404 };
+  }
+
+  const { divergeIndex } = diffLayoutChain(fromMatch, toMatch);
+  const partialLayouts = toMatch.layouts.slice(divergeIndex);
+
+  // 並列: leaf module + partial layout modules + 全 error modules
+  // (errors は selectErrorMod が match.errors 全体を見るので全 chain load 必要)
+  const [route, layouts, errors] = await Promise.all([
+    toMatch.route.load() as Promise<RouteModuleLike>,
+    Promise.all(partialLayouts.map((l) => l.load() as Promise<RouteModuleLike>)),
+    Promise.all(
+      toMatch.errors.map((e) => (e.load() as Promise<ErrorModuleLike>).catch(() => null)),
+    ),
+  ]);
+
+  // 並列: partial layout の loader + leaf の loader
+  const layerLoads: Promise<LayerResult>[] = [
+    ...partialLayouts.map((l) => runLoader(l.serverLoad, request, toMatch.params)),
+    runLoader(toMatch.server ? toMatch.server.load : null, request, toMatch.params),
+  ];
+  const layers = await Promise.all(layerLoads);
+
+  const ssr: SSRProps = {
+    bootstrapData: {
+      pathname: toUrl.pathname,
+      search: toUrl.search,
+      params: toMatch.params,
+      layers,
+    },
+    resolvedModules: {
+      route: route as ResolvedModules["route"],
+      layouts: layouts as ResolvedModules["layouts"],
+      errors: errors as ResolvedModules["errors"],
+    },
+    partial: { startIdx: divergeIndex },
+  };
+
+  // sync renderToString (= async component 対応は ADR 0061 範囲外、ADR 0060 deferred 2)
+  // 共通 prefix の per-request scope (currentPathname / currentParams / search /
+  // loaderData) は Router の renderServerSide が try/finally で握る。
+  const html = renderToString(() => Router({ routes: manifest, ssr }));
+
+  return { html, divergeIndex, status: 200 };
+}
 
 /**
  * pathname から match を計算し、必要な modules を全部並列 load する。

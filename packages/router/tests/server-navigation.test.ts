@@ -60,3 +60,59 @@ describe("createServerHandler — navigation HTML (Phase C streaming SSR)", () =
     expect(body).toContain('</div><script type="module" src="/src/main.tsx"></script></body>');
   });
 });
+
+// ADR 0061: /__partial endpoint (server-only page SPA navigation)
+describe("createServerHandler — /__partial endpoint (ADR 0061)", () => {
+  test("from が無いと 400 (E-α: from は必須)", async () => {
+    const manifest: RouteRecord = {
+      "/routes/index.tsx": () => Promise.resolve({ default: () => h("h1", null, "Home") }),
+    };
+    const handler = createServerHandler({ manifest });
+    const res = await handler(new Request("http://localhost/__partial?to=%2F"));
+    expect(res.status).toBe(400);
+  });
+
+  test("to が無いと 400", async () => {
+    const manifest: RouteRecord = {
+      "/routes/index.tsx": () => Promise.resolve({ default: () => h("h1", null, "Home") }),
+    };
+    const handler = createServerHandler({ manifest });
+    const res = await handler(new Request("http://localhost/__partial?from=%2F"));
+    expect(res.status).toBe(400);
+  });
+
+  test("通常 partial 経路で 200 + partial HTML + X-Vidro-Diverge-Index header", async () => {
+    // posts/[id]/index.tsx を leaf に持つ manifest で、/posts/1 → /posts/2 を partial で取る
+    const manifest: RouteRecord = {
+      "/routes/index.tsx": () => Promise.resolve({ default: () => h("h1", null, "Home") }),
+      "/routes/posts/[id]/index.tsx": () =>
+        Promise.resolve({
+          default: (props: { params: Record<string, string> }) =>
+            h("article", null, `Post ${props.params.id}`),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+    const res = await handler(
+      new Request("http://localhost/__partial?to=%2Fposts%2F2&from=%2Fposts%2F1"),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    // /posts/* に layout 無いので共通 prefix 0 → divergeIndex = 0
+    expect(res.headers.get("x-vidro-diverge-index")).toBe("0");
+    const body = await res.text();
+    expect(body).toContain("<article>Post 2</article>");
+  });
+
+  test("invalid scheme (javascript:) は 400", async () => {
+    const manifest: RouteRecord = {
+      "/routes/index.tsx": () => Promise.resolve({ default: () => h("h1", null, "Home") }),
+    };
+    const handler = createServerHandler({ manifest });
+    const res = await handler(
+      new Request(
+        `http://localhost/__partial?to=${encodeURIComponent("javascript:alert(1)")}&from=%2F`,
+      ),
+    );
+    expect(res.status).toBe(400);
+  });
+});
