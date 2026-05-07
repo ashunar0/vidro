@@ -94,25 +94,26 @@ export function serializeBootstrapError(reason: unknown): SerializedError {
   return { name: "Error", message: String(reason) };
 }
 
-let currentScope: ResourceScope | null = null;
+// ADR 0065 Phase 2: 共通 scope-context helper 経由で AsyncLocalStorage 化。
+// async function component (ADR 0066) の continuation 内で `resource()` を作る
+// 経路があった場合、`getCurrentResourceScope()` が null にならないようにする。
+// runWithResourceScope の sync return 型は不変。
+import { createScope } from "./scope-context";
+
+const resourceScope = createScope<ResourceScope>();
 
 /**
  * scope を active にして fn を評価。fn の内側で Resource constructor が server
  * mode を見ると `getCurrentResourceScope()` で本 scope を取り出して fetcher を
- * fire / pending register、または resolved を引き当てる。Owner.run と同じく
- * try/finally で前 scope に戻す (nested 呼び出しでも安全)。
+ * fire / pending register、または resolved を引き当てる。`scope-context` 経由で
+ * AsyncLocalStorage を使うので、fn 内側の async 子孫 (= await 後の continuation)
+ * でも scope が引ける (ADR 0065)。
  */
 export function runWithResourceScope<T>(scope: ResourceScope, fn: () => T): T {
-  const prev = currentScope;
-  currentScope = scope;
-  try {
-    return fn();
-  } finally {
-    currentScope = prev;
-  }
+  return resourceScope.runWith(scope, fn);
 }
 
 /** 現在 active な scope を返す。renderToStringAsync 外なら null。 */
 export function getCurrentResourceScope(): ResourceScope | null {
-  return currentScope;
+  return resourceScope.getCurrent();
 }
