@@ -53,14 +53,16 @@ describe("renderToReadableStream", () => {
     expect(html).not.toContain("__vidroFill(");
   });
 
-  test("Suspense 外の bootstrapKey 付き resource: root partial patch に resolved 値が乗る", async () => {
+  test("Suspense 外の bootstrapKey 付き resource: shell allSettled で resolved 値が markup に焼かれる + patch も同居", async () => {
     const stream = renderToReadableStream(() => {
       const r = resource(() => Promise.resolve({ name: "Asahi" }), {
         bootstrapKey: "user:1",
       });
-      // Suspense なしで使うと shell-pass で loading=true 表示、root scope で
-      // 集めた fetcher が __vidroAddResources patch に乗る (caller が patch 後に
-      // hydrate して bootstrap-hit で blink 解消する前提)
+      // ADR 0066 論点 3 (= Suspense なしは shell-pass 全 await) で shell-pass の
+      // allSettled が microtask boundary を作り、Resource fetcher も同 microtask queue
+      // で resolve → server effect が text を resolved 値に書き換える → shell markup に
+      // "Asahi" が焼かれる (= 旧来の loading=true + patch 後着とは挙動が変わる)。patch
+      // 自体も flushRoot で emit されるので client 側 hydrate でも resolved 値で blink なし。
       return h(
         "p",
         null,
@@ -68,7 +70,7 @@ describe("renderToReadableStream", () => {
       );
     });
     const html = await collect(stream);
-    expect(html).toContain("<p>loading</p>");
+    expect(html).toContain("<p>Asahi</p>");
     expect(html).toContain('__vidroAddResources({"user:1":{"data":{"name":"Asahi"}}})');
   });
 

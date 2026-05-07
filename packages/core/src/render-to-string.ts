@@ -187,11 +187,13 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
       const outerPrevious = getRenderer();
       setRenderer(serverRenderer as unknown as Renderer<Node, Element, Text>);
 
+      // shell-pass で立てる root owner。renderToString を呼ばずに自前で build する形に
+      // 変えたので (= ADR 0066 論点 3 の「Suspense なしは shell-pass 全 await」を実装する
+      // ため)、owner / mountQueue の lifecycle も自前で管理する必要がある。
+      const shellOwner = new Owner(null);
+
       try {
-        // 1. shell-pass: per-boundary scope に fetcher を集めつつ shell markup を作る
-        //    `__vidroFill` / `__vidroAddResources` は caller が `<head>` に inject
-        //    済み前提。core は #app の中身に当たる stream chunks (shell + 各
-        //    boundary chunk) のみを担当する責務分離。
+        // 1. shell-pass build: VNode 木を組み立てる (= serialize はここでは呼ばない)
         //
         //    rootScope (ADR 0033 論点 9): Suspense **外** で declare された
         //    bootstrapKey 付き resource を吸収する root pseudo-boundary scope。
@@ -201,16 +203,34 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         // ADR 0066 Phase 1: Suspense 外で declare された async function component の
         // Promise を吸収する root pseudo-boundary asyncScope。Suspense 内側では
         // runWithAsyncScope の push/pop で boundaryAsyncScope に切り替わる。
-        // Phase 1 では h() 側が register しないので空配列のまま no-op 等価。
         const rootAsyncScope = new AsyncScope();
-        let shellHtml = "";
+        let rootNode: Node | undefined;
         runWithStream(stream, () => {
           runWithResourceScope(rootScope, () => {
             runWithAsyncScope(rootAsyncScope, () => {
-              shellHtml = renderToString(fn);
+              // renderToString と同形の build: islandScope + mountScope + owner.run。
+              // serialize はここでは呼ばない (= 後続の allSettled 後に呼ぶ)。
+              rootNode = runWithIslandScope(() => runWithMountScope(() => shellOwner.run(fn)));
             });
           });
         });
+
+        // 2. shell-pass の async function component (= Suspense **外** で declare されたもの)
+        //    の Promise が rootAsyncScope.pending に register されている。それらを
+        //    Promise.allSettled で全完了を待ってから serialize に進む (= ADR 0066 論点 3
+        //    「Suspense なしは shell-pass 全 await (古典 SSR)」)。Suspense **内** の
+        //    async は boundaryAsyncScope に分かれているので flushBoundary が後で待つ。
+        //    rootScope.pending (= Suspense 外の bootstrapKey 付き resource) はここでは
+        //    待たない (= ADR 0033 論点 9: shell には loading=true で markup を焼き、
+        //    resolved 値は flushRoot が __vidroAddResources patch で後着で送る)。
+        //    pending が空 (= 同期完了経路) の場合は no-op の microtask 1 回で済む。
+        await Promise.allSettled(rootAsyncScope.pending);
+
+        // 3. shell serialize: VAsyncSlot.resolved が書き込まれた後の VNode 木を string 化。
+        //    Suspense は shell-pass 中に boundary 化済 (= shell には fallback markup +
+        //    `<!--vb-...-->` marker pair が入っている)、内側 children は boundary registry に
+        //    保存されているので、ここでの serialize には現れない。
+        const shellHtml = serialize(rootNode as unknown as VNode);
         emit(shellHtml);
 
         // ADR 0036: shell flush 直後 (= 後着 boundary chunks より前) に boot
@@ -254,6 +274,11 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         for (const b of stream.boundaries) b.owner.dispose();
         controller.error(err);
       } finally {
+        // shell-pass 用 owner を片付ける (= renderToString と同形)。server では
+        // onMount を発火しないので mountQueue も discard。boundary owner は
+        // parent=null で独立しているので shellOwner.dispose() に巻き込まれない。
+        discardMountQueue();
+        shellOwner.dispose();
         // ADR 0066 Phase 4-A: outer scope で立てた serverRenderer を元に戻す。
         // 全 boundary flush 完了 + controller.close() 後に renderer 状態を
         // 呼び出し前 (browserRenderer 等) に復帰。

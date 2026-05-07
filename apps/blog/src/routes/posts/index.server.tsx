@@ -1,14 +1,17 @@
 // 公開側: 全記事一覧 (`.server.tsx`)。
-// invoke-once な server 評価で `getAllPosts()` を直接 call。
-// signal / computed / effect は使えない (= 全部 static HTML として焼かれる)。
+// ADR 0066 dogfood: `async function Component() { const posts = await db.postsAsync(); ... }`
+// 直書き形式。core の h() が Promise<Node> を VAsyncSlot に包んで AsyncScope に register、
+// renderToReadableStream / renderToStringAsync の allSettled 待ち合わせ後に markup に展開される。
+// signal / computed / effect は使えない (= 全部 static HTML として焼かれる、ADR 0058)。
 //
 // 詳細 page は posts/[slug]/index.server.tsx で別途。
 
 import { Link } from "@vidro/router";
 import { db } from "./server";
 
-export default function PostsIndex() {
-  const posts = db.posts;
+export default async function PostsIndex() {
+  const posts = await db.postsAsync();
+
   return (
     <section>
       <h2 class="text-xl font-semibold">All posts</h2>

@@ -5,14 +5,16 @@
 // in-memory store。Cloudflare Workers の isolate 寿命依存だが、公開側 SSR の
 // dogfood には十分。実運用では D1 / KV に差し替え予定。
 //
-// API 形は `db.posts` / `db.postBySlug(slug)` の namespace + property access。
-// `db.posts` は publishedAt desc に sort + freeze 済の immutable view を返す
-// (= 呼び出し側は sort 知識を持たない)。
+// API 形 (現行):
+//   - `db.posts`: 既存 sync immutable view (publishedAt desc sort + freeze 済)
+//   - `db.postBySlug(slug)`: 既存 sync lookup
+//   - `db.postsAsync()`: ADR 0066 dogfood 用、async API simulator (Promise.resolve)
 //
-// 注: 本物の D1 / KV / Postgres にした時は `db.posts(): Promise<Post[]>` /
-// `db.postBySlug(slug): Promise<Post|null>` の async API に変わる。その時は
-// `.server.tsx` の async component サポート (= core h() の sync 呼び出し制約解消)
-// が必要。memory `project_pending_rewrites` 参照、優先度: 高。
+// async 版を入れた経緯: ADR 0066 (async server component native) で
+// `.server.tsx` 内 `async function Component() { const x = await db.findAll(); ... }`
+// 直書きを実現したので、その動作確認用に async API を 1 個生やしている。実運用で
+// D1 / KV に置換した時は db.posts (sync 版) を deprecate して全体を async 化する
+// 想定。posts/index.server.tsx は既に await db.postsAsync() を直書きで使って動いている。
 
 export type Post = {
   slug: string;
@@ -50,4 +52,8 @@ const sorted: readonly Post[] = Object.freeze(
 export const db = {
   posts: sorted,
   postBySlug: (slug: string): Post | null => sorted.find((p) => p.slug === slug) ?? null,
+  // ADR 0066 dogfood 用 async simulator。実運用 D1 query 化の代用。Promise.resolve で
+  // 即座に解決する形 (= microtask 1 回挟まる) でも `.server.tsx` 側 `await` を経由する
+  // ので async function component 経路の動作確認になる。
+  postsAsync: async (): Promise<readonly Post[]> => sorted,
 };

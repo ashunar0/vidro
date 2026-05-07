@@ -129,23 +129,19 @@ describe("async function component × streaming SSR (ADR 0066 Phase 4-A)", () =>
     expect(html).toContain('__vidroFill("vb0")');
   });
 
-  test("renderToReadableStream の Suspense 外側 async: shell-pass で同期 evaluate されるので throw する", async () => {
+  test("renderToReadableStream の Suspense 外側 async: shell-pass の allSettled で待ち合わせて markup に展開", async () => {
     async function Outer() {
-      return h("section", null, "from-async");
+      const data = await Promise.resolve("from-async");
+      return h("section", { id: "outer" }, data);
     }
-    // shell-pass の renderToString は同期完了 → VAsyncSlot.resolved がまだ null の
-    // まま serialize に到達 → Q3 確定形 always throw が発火。これは fail-fast の
-    // 期待動作で、user に「Suspense で囲むか resource() を使うか」を促す形になる
-    // (= memory project_design_north_star の RSC simpler 代替の制約: shell-pass で
-    // 同期に await できない async は Suspense 必須)。
-    let threw = false;
-    try {
-      const stream = renderToReadableStream(() => h(Outer as never, null));
-      await collect(stream);
-    } catch {
-      threw = true;
-    }
-    expect(threw).toBe(true);
+    // ADR 0066 論点 3 「Suspense なしは shell-pass 全 await (古典 SSR)」。
+    // renderToReadableStream は shell-pass を build → rootAsyncScope.pending allSettled →
+    // serialize の 3 段で実行する。Suspense なしの async function component は
+    // rootAsyncScope に register され、shell serialize 前に resolve を待つ。markup には
+    // resolved 値が乗る (= VAsyncSlot.resolved 経由の再帰展開)。
+    const stream = renderToReadableStream(() => h(Outer as never, null));
+    const html = await collect(stream);
+    expect(html).toContain('<section id="outer">from-async</section>');
   });
 });
 

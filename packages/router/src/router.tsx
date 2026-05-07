@@ -3,6 +3,7 @@ import {
   effect,
   ErrorBoundary,
   getRenderer,
+  h,
   onCleanup,
   readVidroData,
   signal,
@@ -1193,9 +1194,16 @@ function foldRouteTree(input: FoldInput, options?: { startIdx?: number }): FoldO
       // leaf に data prop は渡さず、user は loaderData<typeof loader>() で
       // reactive に取得する。layouts は LayoutProps が依然 data 持ちなので
       // wrapLayout 側は維持。
+      //
+      // ADR 0066 dogfood (Phase 5): leaf の direct call (= `leafMod.default(...)`) から
+      // `h(leafMod.default, props)` 経由に切り替える。これで leaf が async function
+      // (= `.server.tsx` 内 `async function PostsIndex() { const x = await ...; ... }`) の
+      // 場合に core h() の Promise 判定経路が走り、AsyncScope.registerPending +
+      // VAsyncSlot 生成で markup に焼かれる。sync leaf は h() の sync component path で
+      // 既存通り評価されるので動作変化なし。
       const prev = _setLayerIndex(leafLayerIdx);
       try {
-        return leafMod.default({ params: match.params });
+        return h(leafMod.default as never, { params: match.params });
       } finally {
         _restoreLayerIndex(prev);
       }
