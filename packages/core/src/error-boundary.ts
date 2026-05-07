@@ -3,6 +3,7 @@ import { effect } from "./effect";
 import { Owner, getCurrentOwner, onCleanup } from "./owner";
 import { untrack } from "./observer";
 import { getRenderer } from "./renderer";
+import type { VNode } from "./server-renderer";
 
 type ErrorBoundaryProps = {
   /** 捕捉した error を受けて fallback UI を返す。err は throw された値、reset は state 復帰用。 */
@@ -40,21 +41,54 @@ type ErrorBoundaryProps = {
 export function ErrorBoundary(props: ErrorBoundaryProps): Node {
   const renderer = getRenderer();
 
-  // server mode: effect / reactive 切替は不要。children を sync 実行、throw したら
-  // onError + fallback を sync 実行して content を確定。anchor は client / hydrate と
-  // 同 shape (`<!--error-boundary-->`) で fragment 末尾に出す (ADR 0021)。
+  // server mode: childrenOwner を立てて setErrorHandler で sync throw / async reject
+  // (= ADR 0066 Q6) の両方を catch する。successフラグで多重起動を防ぎ、最初の
+  // error だけが fallback markup に反映される。
+  //
+  // ADR 0066 Phase 4-B (Q6 機構): async function component が return した Promise が
+  // reject すると、jsx.ts h() の then-handler が `componentOwner.handleError(err)` を
+  // 呼ぶ。componentOwner の親は本 ErrorBoundary の childrenOwner なので chain で
+  // setErrorHandler に届く。handler は fragment.children[0] (= contentNode = VAsyncSlot を
+  // 含む subtree、または sync 成功 markup) を fallback Node に **mutation** で
+  // 書き換える (= Option β、children tree は捨てる)。fragment は ErrorBoundary が
+  // return 後も closure で参照を保持しているので serialize 時には mutation 後の
+  // children が見える (= invoke-once 維持: tree 1 回 build、slot mutation 1 回)。
   if (renderer.isServer) {
-    let contentNode: Node;
-    try {
-      contentNode = props.children();
-    } catch (err) {
-      props.onError(err);
-      // fallback の reset は server では発火できない (次回は client hydration)。
-      contentNode = props.fallback(err, () => {});
-    }
     const fragment = renderer.createFragment();
-    renderer.appendChild(fragment, contentNode);
-    renderer.appendChild(fragment, renderer.createComment("error-boundary"));
+    const anchor = renderer.createComment("error-boundary");
+
+    const childrenOwner = new Owner();
+    let errored = false;
+
+    childrenOwner.setErrorHandler((err) => {
+      // 最初の error だけ採用 (= 多重 reject の連鎖で fallback が上書きされ続けるのを防ぐ)。
+      if (errored) return;
+      errored = true;
+      props.onError(err);
+      // server では reset 不要 (= 次回 client hydrate で error.value=null から始まる)。
+      const fallbackNode = props.fallback(err, () => {}) as unknown as VNode;
+      // VFragment は server-renderer で `{ kind: "fragment", children: VNode[] }` 構造。
+      // 直接 children を mutation する (= invoke-once + serialize 時には書き換え後の値)。
+      const f = fragment as unknown as { children: VNode[] };
+      if (f.children.length > 0) {
+        // contentNode が既に append されている (sync 成功 + 後続 async reject) → 0 番目 replace
+        f.children[0] = fallbackNode;
+      } else {
+        // contentNode が未 append (sync throw 直後の handler 起動) → 直接 push
+        f.children.push(fallbackNode);
+      }
+    });
+
+    // children を sync 評価。sync throw なら handler が即起動 → fallback が
+    // fragment.children に push される + runCatching が undefined を返す。
+    // async pending (= 内側に async function component あり) の場合は contentNode が
+    // VAsyncSlot を含む subtree として返り、その後 Promise resolve / reject で
+    // serialize 直前までに slot.resolved 書き込みまたは handler 起動が走る。
+    const contentNode = childrenOwner.runCatching(() => props.children());
+    if (contentNode !== undefined && !errored) {
+      renderer.appendChild(fragment, contentNode);
+    }
+    renderer.appendChild(fragment, anchor);
     return fragment;
   }
 

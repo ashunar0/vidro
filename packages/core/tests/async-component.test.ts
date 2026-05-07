@@ -17,9 +17,10 @@
 // Phase 4 (= Q6 「ErrorBoundary が VAsyncSlot を fallback markup に mutation」)
 // とセットで実装するため、本ファイルでは扱わない。dogfood (apps/blog) は Phase 5。
 
-import { describe, expect, test } from "vite-plus/test";
+import { describe, expect, test, vi } from "vite-plus/test";
 import { h } from "../src/jsx";
 import { Suspense } from "../src/suspense";
+import { ErrorBoundary } from "../src/error-boundary";
 import { renderToReadableStream, renderToStringAsync } from "../src/render-to-string";
 
 async function collect(stream: ReadableStream<Uint8Array>): Promise<string> {
@@ -145,5 +146,70 @@ describe("async function component × streaming SSR (ADR 0066 Phase 4-A)", () =>
       threw = true;
     }
     expect(threw).toBe(true);
+  });
+});
+
+describe("async function component × ErrorBoundary (ADR 0066 Phase 4-B / Q6)", () => {
+  test("async component が reject → ErrorBoundary が fallback markup に切り替える", async () => {
+    async function Broken() {
+      // 簡略化のため await の前で throw (= sync throw 等価ではなく、Promise が
+      // reject に転化する経路)
+      await Promise.resolve();
+      throw new Error("boom");
+    }
+    const onError = vi.fn();
+    const { html } = await renderToStringAsync(() =>
+      ErrorBoundary({
+        children: () => h(Broken as never, null),
+        fallback: (err) => h("p", null, "caught: ", (err as Error).message),
+        onError,
+      }),
+    );
+    // Broken の Promise が reject → jsx.ts h() の then-handler で
+    // componentOwner.handleError(err) → ErrorBoundary の childrenOwner で setErrorHandler
+    // が起動 → fragment.children[0] が fallback Node に mutation で書き換わる。
+    expect(html).toContain("<p>caught: boom</p>");
+    expect(html).toContain("<!--error-boundary-->");
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+    expect((onError.mock.calls[0]![0] as Error).message).toBe("boom");
+  });
+
+  test("sync component の throw も既存通り ErrorBoundary が catch する (regression check)", async () => {
+    function Broken(): Node {
+      throw new Error("sync-boom");
+    }
+    const onError = vi.fn();
+    const { html } = await renderToStringAsync(() =>
+      ErrorBoundary({
+        children: () => h(Broken, null),
+        fallback: (err) => h("p", null, "sync caught: ", (err as Error).message),
+        onError,
+      }),
+    );
+    // Phase 4-B 拡張で sync throw 路も childrenOwner.runCatching → setErrorHandler の
+    // 経路に乗る。fragment.children に直接 push される (= 既存 try/catch path 等価)。
+    expect(html).toContain("<p>sync caught: sync-boom</p>");
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  test("ErrorBoundary なしで async reject → renderToStringAsync 自体が throw (unhandled)", async () => {
+    async function Broken() {
+      await Promise.resolve();
+      throw new Error("unhandled");
+    }
+    // ErrorBoundary なし → owner chain の root に handler 無し → handleError が
+    // 再 throw → Promise の then-handler 内で throw → settled が rejected →
+    // allSettled は reject も settled として扱うので renderToStringAsync の await は
+    // 抜ける → ただし VAsyncSlot.resolved が null のまま serialize に到達 → Q3
+    // always throw が発火。
+    let caught: unknown = null;
+    try {
+      await renderToStringAsync(() => h(Broken as never, null));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).not.toBeNull();
+    // Q3 always throw のメッセージ (= "VAsyncSlot serialized before resolve")
+    expect((caught as Error).message).toContain("VAsyncSlot serialized before resolve");
   });
 });
