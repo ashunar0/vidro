@@ -1,0 +1,17 @@
+{
+  "name": "bench-vidro",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vp build"
+  },
+  "dependencies": {
+    "@vidro/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@vidro/plugin": "workspace:*",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

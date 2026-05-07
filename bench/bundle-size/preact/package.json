@@ -1,0 +1,17 @@
+{
+  "name": "bench-preact",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vp build"
+  },
+  "dependencies": {
+    "preact": "^10.24.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.0",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

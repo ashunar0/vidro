@@ -2,6 +2,7 @@ packages:
   - apps/*
   - packages/*
   - tools/*
+  - bench/bundle-size/*
 
 catalog:
   "@babel/generator": ^7.29.1
