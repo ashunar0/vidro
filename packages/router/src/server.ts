@@ -33,14 +33,26 @@ import {
 } from "./route-tree";
 import { Router, type ResolvedModules, type SSRProps } from "./router";
 import { currentParams, currentPathname } from "./navigation";
+import { runWithRequestEnv } from "./request-env-scope";
+
+// `getRequestEnv<T>()` を server export にも露出。user は `.server.ts` /
+// loader / action / async function component から D1 / KV / 任意の env を取得する。
+export { getRequestEnv } from "./request-env-scope";
 
 /**
  * navigation 処理に必要な per-request context。dev middleware は渡さず、
  * prod entry (Cloudflare Workers) が `env.ASSETS` を assets として注入する。
+ *
+ * env は Cloudflare Workers の bindings (= D1 / KV / R2 等) や任意の user 側 context を
+ * per-request で route 全域に共有する経路。`getRequestEnv<MyEnv>()` で `.server.ts` /
+ * loader / action / async function component から型付きで取得できる (= ADR 0066 dogfood
+ * から提案、SQLite + Drizzle 統合等)。
  */
 export type ServerContext = {
   /** `env.ASSETS` 相当。渡されていれば navigation で index.html を fetch + inject。 */
   assets?: { fetch(request: Request): Promise<Response> };
+  /** Cloudflare Workers の env binding 等を per-request で渡す経路。`getRequestEnv<T>()` で取得。 */
+  env?: unknown;
 };
 
 /** WinterCG 準拠の fetch handler 型。ctx は assets 等の per-request 依存を渡す。 */
@@ -64,31 +76,37 @@ export function createServerHandler(options: CreateServerHandlerOptions): Server
   const compiled = compileRoutes(manifest);
 
   return async (request, ctx = {}) => {
-    const url = new URL(request.url);
+    // 全 dispatch path を `runWithRequestEnv` で wrap する。これで loader / action /
+    // navigation / `.server.tsx` 内 `getRequestEnv<MyEnv>()` が same scope で env を
+    // 引ける。ctx.env が未指定なら null を立てて (= getRequestEnv は throw する側で
+    // user に「server entry で env を渡せ」と伝える) Workers 並行 race を回避。
+    return runWithRequestEnv(ctx.env ?? null, async () => {
+      const url = new URL(request.url);
 
-    if (url.pathname === endpoint) {
-      return handleLoaderEndpoint(url, request, compiled);
-    }
+      if (url.pathname === endpoint) {
+        return handleLoaderEndpoint(url, request, compiled);
+      }
 
-    // ADR 0061: SPA navigation 用の partial HTML endpoint。`/__loader` と
-    // 対称な internal infrastructure。
-    if (url.pathname === "/__partial") {
-      return handlePartialEndpoint(url, request, manifest, compiled);
-    }
+      // ADR 0061: SPA navigation 用の partial HTML endpoint。`/__loader` と
+      // 対称な internal infrastructure。
+      if (url.pathname === "/__partial") {
+        return handlePartialEndpoint(url, request, manifest, compiled);
+      }
 
-    // POST は accept より method 優先で分岐 (form submit / programmatic 両対応)。
-    // R-min は form (multipart / x-www-form-urlencoded) 経路のみ。programmatic な
-    // useSubmit({json}) は R-mid 以降。
-    if (request.method === "POST") {
-      return handleAction(url, request, compiled);
-    }
+      // POST は accept より method 優先で分岐 (form submit / programmatic 両対応)。
+      // R-min は form (multipart / x-www-form-urlencoded) 経路のみ。programmatic な
+      // useSubmit({json}) は R-mid 以降。
+      if (request.method === "POST") {
+        return handleAction(url, request, compiled);
+      }
 
-    const accept = request.headers.get("accept") ?? "";
-    if (ctx.assets && accept.includes("text/html")) {
-      return handleNavigation(url, request, ctx.assets, manifest, compiled);
-    }
+      const accept = request.headers.get("accept") ?? "";
+      if (ctx.assets && accept.includes("text/html")) {
+        return handleNavigation(url, request, ctx.assets, manifest, compiled);
+      }
 
-    return new Response(null, { status: 404 });
+      return new Response(null, { status: 404 });
+    });
   };
 }
 

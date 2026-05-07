@@ -30,3 +30,8 @@ export { Suspense } from "./suspense";
 export { readVidroData } from "./bootstrap";
 export { readReactiveSource } from "./reactive-source";
 export type { ReactiveSource } from "./reactive-source";
+// ADR 0065 で作った per-render scope helper (= raw AsyncLocalStorage + browser fallback)。
+// 他 package (例: @vidro/router の getRequestEnv) でも request scope を立てる用途で
+// 使えるよう export。runtime 形は scope-context.ts に閉じてる。
+export { createScope } from "./scope-context";
+export type { Scope } from "./scope-context";
