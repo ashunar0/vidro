@@ -3,10 +3,10 @@
 // は不要、{ params } 直書きで OK。
 
 import { Link } from "@vidro/router";
-import { getAllPosts, getPostBySlug } from "../server";
+import { db } from "../server";
 
 export default function PostDetail({ params }: { params: { slug: string } }) {
-  const post = getPostBySlug(params.slug);
+  const post = db.postBySlug(params.slug);
   if (!post) {
     return (
       <article>
@@ -20,11 +20,10 @@ export default function PostDetail({ params }: { params: { slug: string } }) {
     );
   }
 
-  // 前後の記事を計算 (publishedAt desc 順での隣接)
-  const all = [...getAllPosts()].sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1));
-  const idx = all.findIndex((p) => p.slug === post.slug);
-  const newer = idx > 0 ? all[idx - 1] : null;
-  const older = idx < all.length - 1 ? all[idx + 1] : null;
+  // 隣接 post を db.posts (publishedAt desc 済) から計算
+  const idx = db.posts.findIndex((p) => p.slug === post.slug);
+  const newer = idx > 0 ? db.posts[idx - 1] : null;
+  const older = idx < db.posts.length - 1 ? db.posts[idx + 1] : null;
 
   return (
     <article>

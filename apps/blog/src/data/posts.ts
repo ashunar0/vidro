@@ -4,6 +4,15 @@
 //
 // in-memory store。Cloudflare Workers の isolate 寿命依存だが、公開側 SSR の
 // dogfood には十分。実運用では D1 / KV に差し替え予定。
+//
+// API 形は `db.posts` / `db.postBySlug(slug)` の namespace + property access。
+// `db.posts` は publishedAt desc に sort + freeze 済の immutable view を返す
+// (= 呼び出し側は sort 知識を持たない)。
+//
+// 注: 本物の D1 / KV / Postgres にした時は `db.posts(): Promise<Post[]>` /
+// `db.postBySlug(slug): Promise<Post|null>` の async API に変わる。その時は
+// `.server.tsx` の async component サポート (= core h() の sync 呼び出し制約解消)
+// が必要。memory `project_pending_rewrites` 参照、優先度: 高。
 
 export type Post = {
   slug: string;
@@ -12,7 +21,7 @@ export type Post = {
   publishedAt: string; // ISO 8601 文字列 (Date instance ではない = JSON serialize 通る)
 };
 
-const posts: Post[] = [
+const seed: Post[] = [
   {
     slug: "why-vidro",
     title: "Vidro を作り始めた理由",
@@ -33,10 +42,12 @@ const posts: Post[] = [
   },
 ];
 
-export function getAllPosts(): Post[] {
-  return posts;
-}
+// module load 時に 1 回だけ sort + freeze。以降は同じ参照を返す。
+const sorted: readonly Post[] = Object.freeze(
+  [...seed].sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1)),
+);
 
-export function getPostBySlug(slug: string): Post | null {
-  return posts.find((p) => p.slug === slug) ?? null;
-}
+export const db = {
+  posts: sorted,
+  postBySlug: (slug: string): Post | null => sorted.find((p) => p.slug === slug) ?? null,
+};

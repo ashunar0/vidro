@@ -5,11 +5,10 @@
 // 詳細 page は posts/[slug]/index.server.tsx で別途。
 
 import { Link } from "@vidro/router";
-import { getAllPosts } from "./server";
+import { db } from "./server";
 
 export default function PostsIndex() {
-  // 新しい順に並べる (publishedAt desc)
-  const posts = [...getAllPosts()].sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1));
+  const posts = db.posts;
   return (
     <section>
       <h2 class="text-xl font-semibold">All posts</h2>
