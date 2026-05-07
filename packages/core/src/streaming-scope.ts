@@ -85,25 +85,27 @@ export class StreamingContext {
   }
 }
 
-let currentStream: StreamingContext | null = null;
+// ADR 0065 Phase 4: 共通 scope-context helper 経由で AsyncLocalStorage 化。
+// async function component (ADR 0066) の continuation 内で Suspense が
+// `<Suspense>` を構築した場合、boundary 化判定が正しく行えるように
+// streaming context を await 越しに引けるようにする。
+import { createScope } from "./scope-context";
+
+const streamingScope = createScope<StreamingContext | null>();
 
 /**
  * stream を active にして fn を評価。fn の内側 (= shell-pass の renderToString)
  * で Suspense が server mode を見ると `getCurrentStream()` で本 ctx を取り出して
- * boundary 化する。Owner.run と同じく try/finally で前 ctx に戻す (nested 呼び出し
- * 安全、boundary-pass で解除される動作も同じ機構で表現)。
+ * boundary 化する。`scope-context` 経由で AsyncLocalStorage を使うので、fn 内側
+ * の async 子孫 (= await 後の continuation) でも streaming context が引ける
+ * (ADR 0065)。`null` を渡せば「streaming 解除」を表現する (= boundary-pass で
+ * 既存動作互換に解除する経路で使用、ADR 0064 Phase 4 以降は使用箇所なし)。
  */
 export function runWithStream<T>(ctx: StreamingContext | null, fn: () => T): T {
-  const prev = currentStream;
-  currentStream = ctx;
-  try {
-    return fn();
-  } finally {
-    currentStream = prev;
-  }
+  return streamingScope.runWith(ctx, fn);
 }
 
 /** 現在 active な streaming context。なければ null (= 既存 SSR 動作)。 */
 export function getCurrentStream(): StreamingContext | null {
-  return currentStream;
+  return streamingScope.getCurrent();
 }
