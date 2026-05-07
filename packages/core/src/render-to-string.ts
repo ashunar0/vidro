@@ -23,12 +23,7 @@ import { setRenderer, getRenderer, type Renderer } from "./renderer";
 import { runWithMountScope, discardMountQueue } from "./mount-queue";
 import { Owner } from "./owner";
 import { serverRenderer, serialize, type VNode } from "./server-renderer";
-import {
-  ResourceScope,
-  runWithResourceScope,
-  type BootstrapValue,
-  type SerializedError,
-} from "./resource-scope";
+import { ResourceScope, runWithResourceScope, type BootstrapValue } from "./resource-scope";
 import { StreamingContext, runWithStream } from "./streaming-scope";
 import { runWithIslandScope } from "./island-scope";
 
@@ -65,17 +60,17 @@ export type RenderToStringAsyncResult = {
 
 /**
  * server で `bootstrapKey` 付き resource を resolve してから markup を作る
- * 2-pass async 版 (ADR 0030 Step B-5c)。
+ * async 版 (ADR 0030 Step B-5c → ADR 0064 Phase 2)。
  *
  *   1-pass: 空 ResourceScope で renderToString → Resource constructor が
- *           server mode を検知して fetcher を scope に register、loading=true
- *           で markup (この markup は捨てる)
- *   resolve: scope.fetchers を Promise.allSettled で待ち、resolved/rejected を
- *           BootstrapValue に整形。reject は SerializedError 形式に変換 (router の
- *           serializeError と同形、5-a)
- *   2-pass: resolved hits 入りの ResourceScope で renderToString → Resource
- *           constructor が hit を引き当てて loading=false スタート、resolved 値で
- *           markup が完成
+ *           server mode を見ると fetcher を即時 fire、then-handler が
+ *           scope.resolved に書き込む promise を scope.pending に register。
+ *           markup は捨てる (= 真の 1-pass async tree walk は ADR 0064 Phase 3 で
+ *           renderer 側を再設計、Phase 2 段階では JSX 評価 2 回維持)
+ *   resolve: `Promise.allSettled(scope.pending.values())` を await。完了時点で
+ *           scope.resolved は全 key 埋まっている。
+ *   2-pass: 同 scope で renderToString → Resource constructor が getResolved で
+ *           hit を引き当て、loading=false スタートで resolved 値の markup が完成。
  *
  * caller (createServerHandler 等) は返ってきた `resources` を `__vidro_data` に
  * 同居させる。client 側 Resource constructor が initial value を引き当てるので
@@ -83,54 +78,32 @@ export type RenderToStringAsyncResult = {
  *
  * `bootstrapKey` 未指定の resource は scope に register されない (B-5b 動作と同じ
  * loading=true 状態で markup に焼かれる)。
- *
- * CPU コストは 2x (JSX 評価 + VNode build を 2 回)。1-pass + 穴埋め化は将来の
- * 最適化案件 (project_pending_rewrites)。
  */
 export async function renderToStringAsync(fn: () => Node): Promise<RenderToStringAsyncResult> {
-  // --- 1-pass: fetcher 集め ---
-  const collectScope = new ResourceScope();
-  runWithResourceScope(collectScope, () => {
-    // markup 結果は捨てる。意義は scope.fetchers 集めること。
+  const scope = new ResourceScope();
+
+  // --- 1-pass: ctor 内で fetcher が fire → scope.pending に積まれる ---
+  runWithResourceScope(scope, () => {
+    // markup は捨てる。意義は fetcher を fire させて scope.pending を埋めること。
     renderToString(fn);
   });
 
   // --- resolve all ---
-  // Map → entries 配列に固定。Promise.allSettled の結果と添字対応するため。
-  const entries = Array.from(collectScope.fetchers.entries());
-  const settled = await Promise.allSettled(entries.map(([, fetcher]) => fetcher()));
+  // 各 settled は then(success, fail) で reject を吸収しているため、
+  // `Promise.all` でも事故らないが念のため allSettled。
+  await Promise.allSettled(Array.from(scope.pending.values()));
 
-  const hits = new Map<string, BootstrapValue>();
-  for (let i = 0; i < entries.length; i++) {
-    const key = entries[i]![0];
-    const result = settled[i]!;
-    if (result.status === "fulfilled") {
-      hits.set(key, { data: result.value });
-    } else {
-      hits.set(key, { error: serializeBootstrapError(result.reason) });
-    }
-  }
-
-  // --- 2-pass: resolved 値で markup ---
-  const renderScope = new ResourceScope(hits);
+  // --- 2-pass: 同 scope (resolved 入り) で markup ---
   let html = "";
-  runWithResourceScope(renderScope, () => {
+  runWithResourceScope(scope, () => {
     html = renderToString(fn);
   });
 
-  // hits Map を JSON serializable な plain object に変換
+  // resolved Map を JSON serializable な plain object に変換
   const resources: Record<string, BootstrapValue> = {};
-  for (const [k, v] of hits) resources[k] = v;
+  for (const [k, v] of scope.resolved) resources[k] = v;
 
   return { html, resources };
-}
-
-/** Promise.allSettled の reject reason を SerializedError 形式に整形。 */
-function serializeBootstrapError(reason: unknown): SerializedError {
-  if (reason instanceof Error) {
-    return { name: reason.name, message: reason.message, stack: reason.stack };
-  }
-  return { name: "Error", message: String(reason) };
 }
 
 // --- Phase C streaming SSR ---
@@ -147,9 +120,9 @@ function serializeBootstrapError(reason: unknown): SerializedError {
  *      ctx に push
  *   2. emit(shellHtml) — shell を即 flush (TTFB / FCP に効く)
  *   3. boundary 並列 flush (ADR 0033 out-of-order):
- *      各 boundary について `Promise.allSettled(boundary.scope.fetchers)` を独立
- *      kick。resolve したら hits を組み、boundary-pass で hits 入り ResourceScope
- *      で childrenFactory を renderToString → 1 chunk
+ *      各 boundary について `Promise.allSettled(boundary.scope.pending.values())`
+ *      を独立 kick。resolve したら scope.resolved (then-handler が書き込み済み) を
+ *      seed として boundary-pass で childrenFactory を同 scope で renderToString → 1 chunk
  *      (`<script>__vidroAddResources(...)</script>` + `<template>...</template>` +
  *      `<script>__vidroFill("${id}")</script>`) にまとめて emit。controller.enqueue
  *      は sync なので Promise の resolve 順 = stream chunk 順
@@ -228,34 +201,29 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
 
 /**
  * Suspense 外で declare された bootstrapKey 付き resource (= rootScope の
- * fetcher) を解決して、`__vidroAddResources(...)` partial patch だけ emit する。
- * template / fill は無し (root に DOM 配置を持たない)。fetcher 0 個なら何も
+ * pending) を解決して、`__vidroAddResources(...)` partial patch だけ emit する。
+ * template / fill は無し (root に DOM 配置を持たない)。pending 0 個なら何も
  * emit しないで早期 return (空 patch を出す意味は無い、ADR 0033 論点 9)。
  */
 async function flushRoot(scope: ResourceScope, emit: (chunk: string) => void): Promise<void> {
-  const entries = Array.from(scope.fetchers.entries());
-  if (entries.length === 0) return;
-  const settled = await Promise.allSettled(entries.map(([, fetcher]) => fetcher()));
+  if (scope.pending.size === 0) return;
+  await Promise.allSettled(Array.from(scope.pending.values()));
+  // Resource ctor の then-handler が registerResolved で書き込み済み。
+  if (scope.resolved.size === 0) return;
   const hits: Record<string, BootstrapValue> = {};
-  for (let i = 0; i < entries.length; i++) {
-    const key = entries[i]![0];
-    const result = settled[i]!;
-    hits[key] =
-      result.status === "fulfilled"
-        ? { data: result.value }
-        : { error: serializeBootstrapError(result.reason) };
-  }
+  for (const [k, v] of scope.resolved) hits[k] = v;
   emit(`<script>__vidroAddResources(${escapeJsonForScript(hits)})</script>`);
 }
 
 /**
- * 1 boundary 分の resolve + render + emit。out-of-order の核。
+ * 1 boundary 分の resolve + render + emit。out-of-order の核 (ADR 0033 → 0064 Phase 2)。
  *
- *   1. boundary scope の全 fetcher を Promise.allSettled
- *   2. hits を組む (data / error 両対応、SerializedError 経由)
- *   3. boundary-pass: streaming context **解除済み** state で childrenFactory を
- *      hits 入り ResourceScope で renderToString。内側 Suspense は children 直吐き
- *   4. partial bootstrap patch + template + fill script を 1 chunk で emit
+ *   1. boundary scope の全 pending を Promise.allSettled。Resource ctor の
+ *      then-handler が scope.resolved に書き込み済み
+ *   2. boundary-pass: streaming context **解除済み** state で childrenFactory を
+ *      同じ scope で renderToString。内側 Resource ctor は getResolved で hit を
+ *      引き当て (= 1-pass で fired した結果が反映される)、内側 Suspense は children 直吐き
+ *   3. partial bootstrap patch + template + fill script を 1 chunk で emit
  *
  * boundary 単位の throw (例: childrenFactory 内 sync throw) は呼び出し元の
  * Promise.allSettled が拾うので、stream 全体は止めない (= fallback がそのまま
@@ -267,25 +235,14 @@ async function flushBoundary(
   childrenFactory: () => unknown,
   emit: (chunk: string) => void,
 ): Promise<void> {
-  const entries = Array.from(scope.fetchers.entries());
-  const settled = await Promise.allSettled(entries.map(([, fetcher]) => fetcher()));
-  const hits = new Map<string, BootstrapValue>();
-  for (let i = 0; i < entries.length; i++) {
-    const key = entries[i]![0];
-    const result = settled[i]!;
-    if (result.status === "fulfilled") {
-      hits.set(key, { data: result.value });
-    } else {
-      hits.set(key, { error: serializeBootstrapError(result.reason) });
-    }
-  }
+  await Promise.allSettled(Array.from(scope.pending.values()));
 
-  // boundary-pass: hits 入り scope で再 render。streaming context は本 task の
-  // call stack 上では立っていない (start(controller) 内の runWithStream は既に
-  // try/finally で抜けて null に戻っている) ので、内側 Suspense は children 直吐き。
-  const renderScope = new ResourceScope(hits);
+  // boundary-pass: scope.resolved 入りの同じ scope で再 render。streaming
+  // context は本 task の call stack 上では立っていない (start(controller) 内の
+  // runWithStream は既に try/finally で抜けて null に戻っている) ので、内側
+  // Suspense は children 直吐き。
   let childrenHtml = "";
-  runWithResourceScope(renderScope, () => {
+  runWithResourceScope(scope, () => {
     childrenHtml = renderToString(childrenFactory as () => Node);
   });
 
@@ -293,7 +250,7 @@ async function flushBoundary(
   // 1 emit にまとめるのは、3 個別 enqueue でも順序保証は同じだが、Workers の
   // chunk 境界を boundary 単位で揃えたい (debug / トレース性) ため。
   const partial: Record<string, BootstrapValue> = {};
-  for (const [k, v] of hits) partial[k] = v;
+  for (const [k, v] of scope.resolved) partial[k] = v;
   emit(
     `<script>__vidroAddResources(${escapeJsonForScript(partial)})</script>` +
       `<template id="vidro-tpl-${id}">${childrenHtml}</template>` +

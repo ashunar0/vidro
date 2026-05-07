@@ -68,7 +68,8 @@ export function Suspense(props: SuspenseProps): Node {
         });
       });
       // ADR 0034 Issue 3: cross-boundary 重複 bootstrapKey を dev warn。
-      // children 評価完了で boundaryScope.fetchers が固まったタイミングで呼ぶ。
+      // children 評価完了で boundaryScope.pending が固まったタイミングで呼ぶ
+      // (= ADR 0064 Phase 2 で fetchers Map → pending Map に移行)。
       stream.trackBoundaryKeys(boundaryScope);
       const fallbackScope = new SuspenseScope();
       const fallbackNode = runWithSuspenseScope(fallbackScope, () => props.fallback());

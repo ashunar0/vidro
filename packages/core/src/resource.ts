@@ -6,6 +6,7 @@ import { getRenderer } from "./renderer";
 import { readVidroData } from "./bootstrap";
 import {
   getCurrentResourceScope,
+  serializeBootstrapError,
   type BootstrapValue,
   type SerializedError,
 } from "./resource-scope";
@@ -26,14 +27,19 @@ import {
  * pending 中は scope の count に register する。Suspense より **外** で構築された
  * resource は scope null = どの Suspense にも関与しない (Solid 互換の意味論)。
  *
- * SSR 経路 (ADR 0030、B-5c): `bootstrapKey` option を渡すと:
- *   - server mode (renderToStringAsync 内): 1-pass で fetcher を ResourceScope に
- *     register、loading=true で markup。caller が Promise.allSettled で resolve →
- *     2-pass で hit を引き当てて resolved 値で markup
+ * SSR 経路 (ADR 0030 + ADR 0064 Phase 2): `bootstrapKey` option を渡すと:
+ *   - server mode (renderToStringAsync 内): scope.resolved に既存 hit があれば
+ *     即引き当て。無ければ ctor 内で fetcher を即時 fire し、`#settled` を
+ *     scope.pending に register、then-handler が scope.resolved に書き込む。
+ *     caller が `Promise.allSettled(scope.pending.values())` を await した後の
+ *     2-pass で hit を引き当てて resolved 値で markup が完成する。同 key の
+ *     2 つ目以降の Resource は pending dedup で既存 fetcher に乗る (= 二重 fetch
+ *     回避、first-write-wins + dev warn)
  *   - client mode: `__vidro_data.resources[key]` に hit があれば loading=false
  *     スタート (Suspense register しない、fetcher 呼ばない) = blink 解消。
  *     hit なしなら従来通り即時 fetch
- *   - bootstrapKey 未指定: client only で従来動作 (B-5b 互換)
+ *   - bootstrapKey 未指定: client only で従来動作 (B-5b 互換)、server mode は
+ *     loading=true のまま markup に焼かれる (= ADR 0028 / 0030 と同じ)
  *
  * reactive source (ADR 0032): `resource(source, fetcher, options?)` の 3 引数
  * 形式で、source 関数を effect で track。source signal 変化で auto refetch、
@@ -67,6 +73,12 @@ class Resource<T> {
   #suspense: SuspenseScope | null;
   // scope に register 中の場合は unregister 関数を保持。null なら未 register。
   #unregister: (() => void) | null = null;
+  // ADR 0064 Phase 2: server mode で fetcher が settle するまでの promise を
+  // 保持。caller (renderToStringAsync 等) は別経路で `scope.pending` 経由で
+  // 待つので、本フィールドは「個別 Resource 単位で `await r.settled` したい
+  // user」向けの API。client mode は今のところ `Promise.resolve()` を返す
+  // (= `loading` signal を購読する経路で十分なため)。
+  #settled: Promise<void> = Promise.resolve();
 
   /**
    * Constructor は overload 解析で 2 形態を受け付ける:
@@ -106,8 +118,8 @@ class Resource<T> {
     const renderer = getRenderer();
 
     if (renderer.isServer) {
-      // --- server mode (ADR 0030 B-5c、ADR 0032 sourceful 拡張) ---
-      // sourceful 時は source() を 1 回評価 → fetcher(value) を register。
+      // --- server mode (ADR 0030 B-5c → ADR 0064 Phase 2 で immediate-await へ) ---
+      // sourceful 時は source() を 1 回評価 → fetcher(value) で bind。
       // gating value (false/null/undef) は fetcher skip + loading=false。
       let serverFetcher: () => Promise<T>;
       if (source) {
@@ -124,13 +136,53 @@ class Resource<T> {
 
       if (options?.bootstrapKey !== undefined) {
         const scope = getCurrentResourceScope();
-        const hit = scope?.getResolved(options.bootstrapKey);
-        if (hit !== undefined) {
-          this.#applyBootstrapHit(hit);
+        if (scope) {
+          const key = options.bootstrapKey;
+          const hit = scope.getResolved(key);
+          if (hit !== undefined) {
+            // 2-pass / 上位 seed 由来の hit。同期的に確定値を反映して終わり。
+            this.#applyBootstrapHit(hit);
+            return;
+          }
+          // 同 key で既に in-flight な fetcher があれば dedup (warn は scope 側)。
+          // 既存 promise を `#settled` に採用するが、then-handler は本 instance の
+          // 内部 state を更新しないと 2-pass 前に loading=true のまま markup に
+          // 焼かれる懸念があるため、resolved 反映処理は別途繋ぐ。
+          if (scope.pending.has(key)) {
+            this.#loading.value = true;
+            this.#settled = scope.registerPending(key, scope.pending.get(key)!).then(() => {
+              const v = scope.getResolved(key);
+              if (v !== undefined) this.#applyBootstrapHit(v);
+            });
+            return;
+          }
+          // fresh fire: ctor 内で即時に fetcher() を起動、settled は scope に
+          // register。sync throw は Promise.resolve(...) wrap で reject に整形。
+          let fetcherPromise: Promise<T>;
+          try {
+            fetcherPromise = Promise.resolve(serverFetcher());
+          } catch (err) {
+            fetcherPromise = Promise.reject(err);
+          }
+          const settled = fetcherPromise.then(
+            (data) => {
+              const value: BootstrapValue = { data };
+              scope.registerResolved(key, value);
+              this.#applyBootstrapHit(value);
+            },
+            (err) => {
+              const value: BootstrapValue = { error: serializeBootstrapError(err) };
+              scope.registerResolved(key, value);
+              this.#applyBootstrapHit(value);
+            },
+          );
+          this.#settled = scope.registerPending(key, settled);
+          this.#loading.value = true;
           return;
         }
-        scope?.registerFetcher(options.bootstrapKey, serverFetcher as () => Promise<unknown>);
       }
+      // bootstrapKey 未指定 / scope 不在: 既存動作互換 (B-5b)。
+      // server で fetcher は呼ばず loading=true のまま markup を焼く。
       this.#loading.value = true;
       return;
     }
@@ -186,6 +238,17 @@ class Resource<T> {
   /** fetcher が reject した場合の値。次の refetch 開始時に undefined にリセット。 */
   get error(): unknown {
     return this.#error.value;
+  }
+
+  /**
+   * ADR 0064 Phase 2: server mode で fetcher が settle するまでの promise。
+   * `await r.settled` してから `r.value` を読めば、in-flight な server-side
+   * resource を待ち合わせる経路として使える (Phase 3+ で renderer 側が
+   * activate する見込み)。client mode では `Promise.resolve()` を返す
+   * (= `loading` signal を購読する経路で十分なため)。
+   */
+  get settled(): Promise<void> {
+    return this.#settled;
   }
 
   /**

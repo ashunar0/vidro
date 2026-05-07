@@ -4,7 +4,7 @@
 // `getCurrentStream()` が non-null かを見て boundary 化するか既存動作 (children
 // 直吐き) かを分岐する。boundary 化したら id を採番 + per-boundary ResourceScope
 // を立てつつ、scope と childrenFactory を本 ctx に push する。後で
-// renderToReadableStream は各 boundary の scope.fetchers を独立に Promise.allSettled
+// renderToReadableStream は各 boundary の scope.pending を独立に Promise.allSettled
 // で待ち、resolve 順に template + fill chunk を emit する (out-of-order)。
 //
 // suspense-scope / resource-scope と同パターンの module-level state。
@@ -39,16 +39,16 @@ export class StreamingContext {
 
   /**
    * boundary scope の fetcher key を全 boundary で track して、cross-boundary
-   * 重複を dev warn する (ADR 0034 Issue 3)。Suspense streaming branch から
-   * children 評価直後 (= scope.fetchers 確定時) に呼ぶ前提。
+   * 重複を dev warn する (ADR 0034 Issue 3 → ADR 0064 Phase 2)。Suspense streaming
+   * branch から children 評価直後 (= scope.pending 確定時) に呼ぶ前提。
    *
-   * 同一 scope 内の重複 key は ResourceScope.registerFetcher が first-write-wins
+   * 同一 scope 内の重複 key は ResourceScope.registerPending が first-write-wins
    * + warn する。本機構は scope を **またいだ** 重複の検出に責務分離されている。
    * client 側 `__vidroAddResources` の Object.assign で後勝ちするので resolve 順
    * (= emit 順) で値が決まる非決定的動作になるため、dev で気付けるようにする。
    */
   trackBoundaryKeys(scope: ResourceScope): void {
-    for (const key of scope.fetchers.keys()) {
+    for (const key of scope.pending.keys()) {
       if (this.#seenKeys.has(key)) {
         if (!this.#warnedKeys.has(key)) {
           console.warn(
