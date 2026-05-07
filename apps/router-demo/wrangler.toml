@@ -3,6 +3,12 @@ name = "router-demo"
 # prod では vite build が worker bundle を生成する。main は source を指す (ADR 0043)。
 main = "./.vidro/server-entry.ts"
 compatibility_date = "2026-04-17"
+# AsyncLocalStorage を有効化 (ADR 0065)。Vidro の per-render scope (island /
+# resource / suspense / streaming) が `await` を生き残るために `node:async_hooks`
+# の AsyncLocalStorage を使う。`nodejs_als` は ALS のみの軽量 flag、`nodejs_compat`
+# は Node.js builtins 全般を有効化する重め flag。Vidro は ALS だけ要求するので
+# 最小の `nodejs_als` を採用。
+compatibility_flags = ["nodejs_als"]
 
 [assets]
 # build output を .vidro/build/{client,ssr}/ に集約 (ADR 0043)。

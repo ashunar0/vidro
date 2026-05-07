@@ -1,6 +1,8 @@
 name = "blog"
 main = "./.vidro/server-entry.ts"
 compatibility_date = "2026-04-17"
+# ADR 0065: per-render scope の AsyncLocalStorage 化を有効にする。
+compatibility_flags = ["nodejs_als"]
 
 [assets]
 directory = "./.vidro/build/client"

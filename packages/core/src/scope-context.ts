@@ -15,11 +15,17 @@
 // preservation 不要)。
 //
 // 採用方針 (ADR 0065 論点 1-A):
-//   - raw `globalThis.AsyncLocalStorage` を使う (= Workers / Node 両方で動く)
+//   - raw `AsyncLocalStorage` を使う (= Workers / Node 両方で動く)
 //   - `unctx` library は `callAsync` が常に Promise を返す制約があり、Vidro の
 //     sync runWith API と衝突するため不採用 (= ADR 0065 Decision で 1-B 却下済)
 //   - 将来 Nitro / unjs 路線に踏み込んだ時は本 helper 内部だけ unctx に
 //     差し替え可能 (= callsite 影響ゼロ)
+//
+// 検出順序:
+//   1. `globalThis.AsyncLocalStorage` (= 呼び出し元 entry が予め polyfill 済の場合)
+//   2. `node:async_hooks` を dynamic import (= top-level await で sync 同等扱い、
+//      Node / Workers / Deno / Bun で動く)
+//   3. 両方 fail → browser / 古い runtime なので sync fallback
 //
 // Cloudflare Workers での enable: `compatibility_flags = ["nodejs_als"]`
 // (or `nodejs_compat`) を wrangler.toml に追加する必要あり。
@@ -31,18 +37,24 @@ type ALSInstance<T> = {
 
 type ALSConstructor = { new <T>(): ALSInstance<T> };
 
-// runtime detection. Workers では `globalThis.AsyncLocalStorage` (= nodejs_als
-// flag 経由)、Node.js でも `node:async_hooks` を import 済みなら globalThis に
-// 載る (= test runner / dev server が import を仕込む経路あり)。browser では
-// undefined になる前提で OK。
-//
-// `node:async_hooks` の direct import は browser bundle に "Cannot resolve
-// node:async_hooks" を出すリスクがあるので、globalThis 経由に絞る。Node 環境で
-// globalThis に載っていない場合は Phase 5 (compatibility flags) 段で必要に応じ
-// て polyfill / explicit import を考える。
-const ALS: ALSConstructor | undefined = (
+// 1. globalThis 経由 (= 呼び出し元 polyfill 済 / Workers 一部環境)
+let detected: ALSConstructor | undefined = (
   globalThis as unknown as { AsyncLocalStorage?: ALSConstructor }
 ).AsyncLocalStorage;
+
+// 2. node:async_hooks を dynamic import で試す。top-level await で sync 同等。
+//    server runtime (Node / Workers + nodejs_als / Deno / Bun) では成功、
+//    browser では import 自体が失敗するので catch でスキップ。
+if (!detected) {
+  try {
+    const mod = await import("node:async_hooks");
+    detected = mod.AsyncLocalStorage as unknown as ALSConstructor;
+  } catch {
+    // browser や ALS 未対応 runtime → sync fallback で動く
+  }
+}
+
+const ALS: ALSConstructor | undefined = detected;
 
 export type Scope<T> = {
   /**
