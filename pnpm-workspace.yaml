@@ -10,16 +10,20 @@ catalog:
   "@babel/traverse": ^7.29.0
   "@babel/types": ^7.29.0
   "@cloudflare/vite-plugin": ^1.34.0
+  "@cloudflare/workers-types": ^4.20251017.0
   "@tailwindcss/vite": ^4.2.4
   "@types/babel__generator": ^7.27.0
   "@types/babel__traverse": ^7.28.0
   "@types/node": ^25.5.0
+  drizzle-kit: ^0.31.0
+  drizzle-orm: ^0.44.0
   jsdom: ^29.0.2
   tailwindcss: ^4.2.4
   typescript: ^6.0.2
   vite: npm:@voidzero-dev/vite-plus-core@latest
   vite-plus: latest
   vitest: npm:@voidzero-dev/vite-plus-test@latest
+  wrangler: ^4.0.0
 
 catalogMode: prefer
 overrides:

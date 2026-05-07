@@ -10,3 +10,13 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 
 run_worker_first = true
+
+# D1 (SQLite) binding。dev では Miniflare が `.wrangler/state/v3/d1/` 配下に local SQLite
+# ファイルを作って simulate する。本番 deploy 時は `wrangler d1 create blog-db` で
+# 取得した UUID を `database_id` に入れる (= 現状の "00000000-0000-0000-0000-000000000000"
+# は local 専用 placeholder)。
+[[d1_databases]]
+binding = "DB"
+database_name = "blog-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "drizzle"

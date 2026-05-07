@@ -258,13 +258,21 @@ function renderServerEntry(): string {
   lines.push('import { createServerHandler } from "@vidro/router/server";');
   lines.push('import { routeManifest } from "./route-manifest";');
   lines.push("");
-  lines.push("type Env = { ASSETS?: { fetch: (request: Request) => Promise<Response> } };");
+  // Workers の env は wrangler.toml の bindings (D1 / KV / R2 / 任意) で生え方が
+  // 変わるため、Vidro 側では `Record<string, unknown>` の base 型に ASSETS だけ
+  // 明示する形に倒し、handler に丸ごと渡す。user が `getRequestEnv<MyEnv>()` で
+  // type assertion する経路で具体型を取得する (= ADR 0066 dogfood で導入)。
+  lines.push("type Env = {");
+  lines.push("  ASSETS?: { fetch: (request: Request) => Promise<Response> };");
+  lines.push("} & Record<string, unknown>;");
   lines.push("");
   lines.push("const handler = createServerHandler({ manifest: routeManifest });");
   lines.push("");
   lines.push("export default {");
   lines.push("  async fetch(request: Request, env: Env): Promise<Response> {");
-  lines.push("    const response = await handler(request, { assets: env.ASSETS });");
+  // env を丸ごと ctx.env に渡す。`getRequestEnv<T>()` は ALS scope で per-request に
+  // 引ける (= packages/router/src/request-env-scope.ts、createServerHandler 内 wrap)。
+  lines.push("    const response = await handler(request, { assets: env.ASSETS, env });");
   lines.push("    if (response.status !== 404) return response;");
   lines.push("    // handler 範囲外 (static asset / non-HTML API) は assets に委譲。");
   lines.push("    if (env.ASSETS) return env.ASSETS.fetch(request);");

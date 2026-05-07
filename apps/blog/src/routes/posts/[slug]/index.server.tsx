@@ -1,12 +1,13 @@
 // 公開側: 記事詳細 (`.server.tsx`)。
+// ADR 0066 dogfood: async function component で `await db.postBySlug(...)` を直書き。
 // `.server.tsx` は loader を持たない (= ADR 0058 D-α-iii) ので PageProps generic
 // は不要、{ params } 直書きで OK。
 
 import { Link } from "@vidro/router";
 import { db } from "../server";
 
-export default function PostDetail({ params }: { params: { slug: string } }) {
-  const post = db.postBySlug(params.slug);
+export default async function PostDetail({ params }: { params: { slug: string } }) {
+  const post = await db.postBySlug(params.slug);
   if (!post) {
     return (
       <article>
@@ -20,10 +21,12 @@ export default function PostDetail({ params }: { params: { slug: string } }) {
     );
   }
 
-  // 隣接 post を db.posts (publishedAt desc 済) から計算
-  const idx = db.posts.findIndex((p) => p.slug === post.slug);
-  const newer = idx > 0 ? db.posts[idx - 1] : null;
-  const older = idx < db.posts.length - 1 ? db.posts[idx + 1] : null;
+  // 隣接 post を全件 (publishedAt desc 済) から計算。toy data 量なので全 fetch で良い
+  // (= 本格的な blog なら index 経由で前後 1 件だけ select する SQL に置換)。
+  const all = await db.postsAsync();
+  const idx = all.findIndex((p) => p.slug === post.slug);
+  const newer = idx > 0 ? all[idx - 1] : null;
+  const older = idx >= 0 && idx < all.length - 1 ? all[idx + 1] : null;
 
   return (
     <article>

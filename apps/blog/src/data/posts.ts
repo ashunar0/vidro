@@ -1,59 +1,50 @@
-// blog dogfood: posts toy DB。.server.tsx 経由でしか触らない server-only data。
-// .server.tsx → server.ts → data/posts.ts と層を 1 段挟むことで、ADR 0058 の
-// 「.server.tsx (component) と server.ts (logic) の責務分離」を踏襲する。
+// blog dogfood: posts data layer。D1 (SQLite) + Drizzle ORM 経由で取得する。
+// 旧 in-memory `sorted: readonly Post[]` は ADR 0066 dogfood Step 3 で D1 に置換済。
+// .server.tsx / server.ts → data/posts.ts と層を 1 段挟む構造は維持 (ADR 0058 の
+// 「.server.tsx (component) と server.ts (logic) の責務分離」)。
 //
-// in-memory store。Cloudflare Workers の isolate 寿命依存だが、公開側 SSR の
-// dogfood には十分。実運用では D1 / KV に差し替え予定。
+// runtime: `getRequestEnv<{ DB: D1Database }>()` で per-request の env を取り、
+// `drizzle(env.DB, { schema })` で type-safe ORM handle を作る。各 helper は
+// 必要な時だけ handle を作る (= per-request short-lived、isolate global は持たない)。
 //
-// API 形 (現行):
-//   - `db.posts`: 既存 sync immutable view (publishedAt desc sort + freeze 済)
-//   - `db.postBySlug(slug)`: 既存 sync lookup
-//   - `db.postsAsync()`: ADR 0066 dogfood 用、async API simulator (Promise.resolve)
-//
-// async 版を入れた経緯: ADR 0066 (async server component native) で
-// `.server.tsx` 内 `async function Component() { const x = await db.findAll(); ... }`
-// 直書きを実現したので、その動作確認用に async API を 1 個生やしている。実運用で
-// D1 / KV に置換した時は db.posts (sync 版) を deprecate して全体を async 化する
-// 想定。posts/index.server.tsx は既に await db.postsAsync() を直書きで使って動いている。
+// schema 変更時:
+//   1. src/db/schema.ts を編集
+//   2. `pnpm db:generate` で migration SQL 生成
+//   3. `pnpm db:migrate:local` で local D1 に apply (本番 deploy 時は `:remote`)
 
-export type Post = {
-  slug: string;
-  title: string;
-  body: string;
-  publishedAt: string; // ISO 8601 文字列 (Date instance ではない = JSON serialize 通る)
-};
+import { drizzle } from "drizzle-orm/d1";
+import { desc } from "drizzle-orm";
+import { getRequestEnv } from "@vidro/router/server";
+import { posts as postsTable, type Post } from "../db/schema";
 
-const seed: Post[] = [
-  {
-    slug: "why-vidro",
-    title: "Vidro を作り始めた理由",
-    body: "AI 時代のフロントエンド FW として、React RSC の考え方を simpler に置き直したかった。directive ではなく拡張子で server/client を分け、fine-grained reactivity と SSR を両立させる。",
-    publishedAt: "2026-04-15T09:30:00Z",
-  },
-  {
-    slug: "server-tsx-boundary",
-    title: ".server.tsx は拡張子で boundary",
-    body: "directive (use client / use server) ではなく拡張子で server-only を表現。AI 親和 + import chain 追跡不要 + 後付けで .tsx → .server.tsx rename だけで bundle 除外できる。",
-    publishedAt: "2026-04-22T14:10:00Z",
-  },
-  {
-    slug: "fine-grained-and-ssr",
-    title: "fine-grained reactivity と SSR の融合",
-    body: "Solid 系の signal を Vidro でも採用しつつ、HTML-first の wire を default にする。両側 invoke-once + island hydrate で Flight 不要、シンプルさを保つ。",
-    publishedAt: "2026-05-06T13:00:00Z",
-  },
-];
+export type { Post };
 
-// module load 時に 1 回だけ sort + freeze。以降は同じ参照を返す。
-const sorted: readonly Post[] = Object.freeze(
-  [...seed].sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1)),
-);
+type Env = { DB: D1Database };
+
+function getDb() {
+  const { DB } = getRequestEnv<Env>();
+  return drizzle(DB, { schema: { posts: postsTable } });
+}
 
 export const db = {
-  posts: sorted,
-  postBySlug: (slug: string): Post | null => sorted.find((p) => p.slug === slug) ?? null,
-  // ADR 0066 dogfood 用 async simulator。実運用 D1 query 化の代用。Promise.resolve で
-  // 即座に解決する形 (= microtask 1 回挟まる) でも `.server.tsx` 側 `await` を経由する
-  // ので async function component 経路の動作確認になる。
-  postsAsync: async (): Promise<readonly Post[]> => sorted,
+  /** publishedAt desc に sort された全記事を返す。SSR で `<ul>` に map される想定。 */
+  postsAsync: async (): Promise<Post[]> => {
+    const drz = getDb();
+    return drz.select().from(postsTable).orderBy(desc(postsTable.publishedAt)).all();
+  },
+
+  /** slug 単一 lookup。詳細 page (`posts/[slug]/index.server.tsx`) で使う。 */
+  postBySlug: async (slug: string): Promise<Post | null> => {
+    const drz = getDb();
+    const rows = await drz.select().from(postsTable).where(eqSlug(slug)).limit(1).all();
+    return rows[0] ?? null;
+  },
 };
+
+// `eq(postsTable.slug, slug)` を呼ぶための薄い helper。drizzle-orm の eq を直 import
+// すると import が増えるが、本 file 内 1 箇所しか使わないので import を local に閉じる
+// 形は採用しない (= named export 経由)。下の import をまとめる方が clean。
+import { eq } from "drizzle-orm";
+function eqSlug(slug: string) {
+  return eq(postsTable.slug, slug);
+}
