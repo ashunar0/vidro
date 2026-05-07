@@ -124,22 +124,23 @@ export async function renderToStringAsync(fn: () => Node): Promise<RenderToStrin
 
 /**
  * shell 即時 flush + 各 Suspense boundary を **resolve 順** に独立 emit する
- * out-of-order streaming SSR API (ADR 0031 + ADR 0033)。
+ * out-of-order streaming SSR API (ADR 0031 + ADR 0033 + ADR 0064 Phase 4)。
  *
  * 流れ:
  *   1. shell-pass: StreamingContext を active にして renderToString。Suspense は
- *      `getCurrentStream()` を見て boundary 化 — per-boundary ResourceScope を
- *      立てて children を 1 回評価し fetcher 収集、shell には marker + fallback
- *      markup + suspense anchor を吐く。boundary {id, scope, childrenFactory} を
- *      ctx に push
+ *      `getCurrentStream()` を見て boundary 化 — per-boundary ResourceScope +
+ *      per-boundary Owner を立てて children を **1 回だけ** evaluate、build した
+ *      VNode tree を registry に保存。shell には marker + fallback markup +
+ *      suspense anchor を吐く。boundary {id, scope, owner, childrenNode} を ctx に push
  *   2. emit(shellHtml) — shell を即 flush (TTFB / FCP に効く)
- *   3. boundary 並列 flush (ADR 0033 out-of-order):
+ *   3. boundary 並列 flush (ADR 0033 out-of-order + ADR 0064 Phase 4):
  *      各 boundary について `Promise.allSettled(boundary.scope.pending.values())`
- *      を独立 kick。resolve したら scope.resolved (then-handler が書き込み済み) を
- *      seed として boundary-pass で childrenFactory を同 scope で renderToString → 1 chunk
- *      (`<script>__vidroAddResources(...)</script>` + `<template>...</template>` +
- *      `<script>__vidroFill("${id}")</script>`) にまとめて emit。controller.enqueue
- *      は sync なので Promise の resolve 順 = stream chunk 順
+ *      を独立 kick。resolve したら Resource ctor の then-handler が signal に書き込み済み
+ *      → boundary owner 配下の server effect が re-run して childrenNode の text が
+ *      resolved 値で更新される (= 旧 boundary-pass 再評価の代替)。完成した childrenNode を
+ *      直接 serialize して 1 chunk (`<script>__vidroAddResources(...)</script>` +
+ *      `<template>...</template>` + `<script>__vidroFill("${id}")</script>`) にまとめて
+ *      emit。controller.enqueue は sync なので Promise の resolve 順 = stream chunk 順
  *   4. 全 boundary flush 完了で controller.close()
  *
  * caller (router/server.ts) は本 stream を shell prefix (`<head>` + `<body>` +
@@ -147,15 +148,24 @@ export async function renderToStringAsync(fn: () => Node): Promise<RenderToStrin
  * body にする。bootstrap data の `<script id="__vidro_data">` は caller が
  * inject (router 部分のみ、resources は本 stream の partial patch で後出し累積)。
  *
- * ネスト Suspense は内側 boundary-pass で streaming context が解除されるので、
- * 既存 (renderToStringAsync 互換) 動作で children 直吐きになる。内側を独立 chunk
- * 化する true full out-of-order は将来案件 (project_pending_rewrites)。
+ * ネスト Suspense は内側で stream null (= shell-pass の中で children 評価中、
+ * boundary owner.run 配下) なので、既存 (renderToStringAsync 互換) 動作で children
+ * 直吐きになる。内側を独立 chunk 化する true full out-of-order は将来案件
+ * (project_pending_rewrites)。
+ *
+ * ADR 0064 Phase 4: invoke-once 貫徹 = 各 boundary children は 1 回しか評価しない。
+ * 旧 2-pass の boundary 再評価 (= flushBoundary 内 renderToString) を廃止し、user の
+ * `await db.findAll()` 等が 2 回走らない構造になる。
  */
 export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const enc = new TextEncoder();
       const emit = (chunk: string) => controller.enqueue(enc.encode(chunk));
+
+      // stream は try/catch を跨いで参照したい (shell-pass throw 時に既に push 済み
+      // boundary owner を catch ブロックで dispose するため、ADR 0064 Phase 4)。
+      const stream = new StreamingContext();
 
       try {
         // 1. shell-pass: per-boundary scope に fetcher を集めつつ shell markup を作る
@@ -167,7 +177,6 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         //    bootstrapKey 付き resource を吸収する root pseudo-boundary scope。
         //    Suspense 内側では runWithResourceScope の push/pop で boundaryScope
         //    に切り替わるので、Suspense 外の resource だけが rootScope に残る。
-        const stream = new StreamingContext();
         const rootScope = new ResourceScope();
         let shellHtml = "";
         runWithStream(stream, () => {
@@ -187,14 +196,17 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         // 取り除き TTI を縮める。
         emit(VIDRO_BOOT_TRIGGER);
 
-        // 2. boundary 並列 flush + root scope flush (ADR 0033 out-of-order)
+        // 2. boundary 並列 flush + root scope flush (ADR 0033 out-of-order +
+        //    ADR 0064 Phase 4)
         //    各 boundary に対して独立に Promise.allSettled。resolve した順で chunk
         //    を emit する。controller.enqueue は sync なので serialize される。
         //    rootScope は template/fill を持たないので __vidroAddResources のみ。
         //    Promise.allSettled で全完了を待ってから controller.close() する。
         await Promise.allSettled([
           flushRoot(rootScope, emit),
-          ...stream.boundaries.map((b) => flushBoundary(b.id, b.scope, b.childrenFactory, emit)),
+          ...stream.boundaries.map((b) =>
+            flushBoundary(b.id, b.scope, b.owner, b.childrenNode, emit),
+          ),
         ]);
 
         controller.close();
@@ -207,6 +219,12 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         // 情報も失われない。boundary-pass 内の throw は Promise.allSettled が
         // 拾うので本 catch には到達しない (= fallback がそのまま残る、ADR 0033
         // 論点 6)。
+        //
+        // ADR 0064 Phase 4: boundary owner は parent=null で立てているので
+        // root owner.dispose() に巻き込まれない。shell-pass throw で flushBoundary
+        // が呼ばれない経路では boundary owner が dispose されず effect leak する
+        // 懸念があるため、明示的に片付ける (long-lived isolate 安全化)。
+        for (const b of stream.boundaries) b.owner.dispose();
         controller.error(err);
       }
     },
@@ -230,46 +248,53 @@ async function flushRoot(scope: ResourceScope, emit: (chunk: string) => void): P
 }
 
 /**
- * 1 boundary 分の resolve + render + emit。out-of-order の核 (ADR 0033 → 0064 Phase 2)。
+ * 1 boundary 分の resolve + serialize + emit (ADR 0033 → 0064 Phase 4 で 1-pass 化)。
  *
  *   1. boundary scope の全 pending を Promise.allSettled。Resource ctor の
- *      then-handler が scope.resolved に書き込み済み
- *   2. boundary-pass: streaming context **解除済み** state で childrenFactory を
- *      同じ scope で renderToString。内側 Resource ctor は getResolved で hit を
- *      引き当て (= 1-pass で fired した結果が反映される)、内側 Suspense は children 直吐き
+ *      then-handler が scope.resolved に書き込み + signal に書き込み済み。boundary
+ *      owner 配下の server effect が signal を購読しているので、settle 中に re-run
+ *      されて childrenNode 内の text が resolved 値で更新される (= 旧 boundary-pass
+ *      再評価の代替、invoke-once 貫徹)
+ *   2. childrenNode (= shell-pass で 1 回だけ evaluate された VNode tree) を直接
+ *      serialize して HTML 化
  *   3. partial bootstrap patch + template + fill script を 1 chunk で emit
+ *   4. boundary owner.dispose() で配下 effect / cleanup を片付ける
  *
- * boundary 単位の throw (例: childrenFactory 内 sync throw) は呼び出し元の
- * Promise.allSettled が拾うので、stream 全体は止めない (= fallback がそのまま
- * 残る、ADR 0033 論点 6)。
+ * boundary 単位の throw (例: children 評価中の sync throw → shell-pass で raise) は
+ * shell-pass の catch に流れるので、本 path は到達しない。settle 段階の reject は
+ * Resource ctor 内 then-handler が SerializedError 化して scope に書き込むので、
+ * 本 await は通常 reject しない (Promise.allSettled なので reject 自体握り潰す)。
  */
 async function flushBoundary(
   id: string,
   scope: ResourceScope,
-  childrenFactory: () => unknown,
+  owner: Owner,
+  childrenNode: Node,
   emit: (chunk: string) => void,
 ): Promise<void> {
-  await Promise.allSettled(Array.from(scope.pending.values()));
+  try {
+    await Promise.allSettled(Array.from(scope.pending.values()));
 
-  // boundary-pass: scope.resolved 入りの同じ scope で再 render。streaming
-  // context は本 task の call stack 上では立っていない (start(controller) 内の
-  // runWithStream は既に try/finally で抜けて null に戻っている) ので、内側
-  // Suspense は children 直吐き。
-  let childrenHtml = "";
-  runWithResourceScope(scope, () => {
-    childrenHtml = renderToString(childrenFactory as () => Node);
-  });
+    // childrenNode は shell-pass で boundary owner 配下に build 済み。settle 中に
+    // server effect が signal 反映で text を書き換えているので、ここでは serialize
+    // するだけで resolved 値入りの HTML が得られる (= invoke-once)。
+    const childrenHtml = serialize(childrenNode as unknown as VNode);
 
-  // partial bootstrap patch (この boundary 分だけ key 単位 merge) + template + fill。
-  // 1 emit にまとめるのは、3 個別 enqueue でも順序保証は同じだが、Workers の
-  // chunk 境界を boundary 単位で揃えたい (debug / トレース性) ため。
-  const partial: Record<string, BootstrapValue> = {};
-  for (const [k, v] of scope.resolved) partial[k] = v;
-  emit(
-    `<script>__vidroAddResources(${escapeJsonForScript(partial)})</script>` +
-      `<template id="vidro-tpl-${id}">${childrenHtml}</template>` +
-      `<script>__vidroFill("${id}")</script>`,
-  );
+    // partial bootstrap patch (この boundary 分だけ key 単位 merge) + template + fill。
+    // 1 emit にまとめるのは、3 個別 enqueue でも順序保証は同じだが、Workers の
+    // chunk 境界を boundary 単位で揃えたい (debug / トレース性) ため。
+    const partial: Record<string, BootstrapValue> = {};
+    for (const [k, v] of scope.resolved) partial[k] = v;
+    emit(
+      `<script>__vidroAddResources(${escapeJsonForScript(partial)})</script>` +
+        `<template id="vidro-tpl-${id}">${childrenHtml}</template>` +
+        `<script>__vidroFill("${id}")</script>`,
+    );
+  } finally {
+    // emit 後 (例外路でも) boundary owner を dispose して effect / cleanup を片付ける。
+    // shell-pass の root owner と独立しているので、ここで dispose しないと leak する。
+    owner.dispose();
+  }
 }
 
 /**

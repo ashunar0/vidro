@@ -47,33 +47,42 @@ export function Suspense(props: SuspenseProps): Node {
   if (renderer.isServer) {
     const stream = getCurrentStream();
     if (stream) {
-      // streaming SSR (Phase C-2 + ADR 0033 out-of-order): children を 1 度評価
-      // して per-boundary ResourceScope に fetcher を集めるが markup は捨て、
-      // shell には fallback markup を出す。boundary 範囲は
-      // `<!--vb-${id}-start--> ... <!--vb-${id}-end-->` で囲み、tail で
-      // `__vidroFill` が start/end 間の node を template content と差し替える。
-      // anchor `<!--suspense-->` は client mode と整合させて hydrate cursor を
-      // 揃えるためそのまま末尾に置く (start/end は __vidroFill が remove する)。
+      // streaming SSR (Phase C-2 + ADR 0033 out-of-order + ADR 0064 Phase 4):
+      // boundary 専用 Owner を立てて children を **1 回だけ** evaluate し、build した
+      // VNode tree を boundary registry に保存する。Resource は server mode で fetcher
+      // を即時 fire し、then-handler が signal に書き込むので、boundary owner 配下の
+      // server effect が re-run して childrenNode 内 text が resolved 値で更新される。
+      // shell には fallback markup + `<!--vb-${id}-start/end-->` marker pair を出す。
+      // anchor `<!--suspense-->` は client mode と整合させて hydrate cursor を揃える。
       //
-      // per-boundary scope (ADR 0033): children 評価を runWithResourceScope で
-      // wrap することで、内部 resource の fetcher は flat collectScope ではなく
-      // boundary 専用 scope に分離 register される。renderToReadableStream は
-      // この scope ごとに独立 Promise.allSettled で待ち、resolve 順 emit する。
+      // per-boundary scope (ADR 0033): runWithResourceScope で wrap することで、内部
+      // resource の fetcher は boundary 専用 scope に分離 register される。
+      // renderToReadableStream は scope ごとに独立 Promise.allSettled で待ち、resolve
+      // 順に flushBoundary が childrenNode を直接 serialize → chunk emit する。
+      //
+      // boundary owner は parent=null で立てる (shell-pass の root owner.dispose() に
+      // 巻き込まれないため、renderToReadableStream の async 待機中も effect が生きる)。
+      // emit 後に flushBoundary が boundary owner.dispose() で片付ける。
       const id = stream.allocBoundaryId();
       const boundaryScope = new ResourceScope();
       const innerScope = new SuspenseScope();
-      runWithSuspenseScope(innerScope, () => {
-        runWithResourceScope(boundaryScope, () => {
-          props.children();
+      const boundaryOwner = new Owner(null);
+      // children 評価は同期。throw 時は registerBoundary に到達しないので、
+      // registry に push される時点では必ず代入済み (= definite assignment)。
+      let childrenNode!: Node;
+      boundaryOwner.run(() => {
+        runWithSuspenseScope(innerScope, () => {
+          runWithResourceScope(boundaryScope, () => {
+            childrenNode = props.children();
+          });
         });
       });
       // ADR 0034 Issue 3: cross-boundary 重複 bootstrapKey を dev warn。
-      // children 評価完了で boundaryScope.pending が固まったタイミングで呼ぶ
-      // (= ADR 0064 Phase 2 で fetchers Map → pending Map に移行)。
+      // children 評価完了で boundaryScope.pending が固まったタイミングで呼ぶ。
       stream.trackBoundaryKeys(boundaryScope);
       const fallbackScope = new SuspenseScope();
       const fallbackNode = runWithSuspenseScope(fallbackScope, () => props.fallback());
-      stream.registerBoundary(id, boundaryScope, props.children);
+      stream.registerBoundary(id, boundaryScope, boundaryOwner, childrenNode);
       const fragment = renderer.createFragment();
       renderer.appendChild(fragment, renderer.createComment(`vb-${id}-start`));
       renderer.appendChild(fragment, fallbackNode);

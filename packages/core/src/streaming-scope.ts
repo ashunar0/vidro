@@ -1,23 +1,44 @@
-// Phase C streaming SSR の boundary registry (ADR 0031 + ADR 0033)。
+// Phase C streaming SSR の boundary registry (ADR 0031 + ADR 0033 + ADR 0064 Phase 4)。
 //
 // renderToReadableStream が shell-pass を実行する間、Suspense は
 // `getCurrentStream()` が non-null かを見て boundary 化するか既存動作 (children
 // 直吐き) かを分岐する。boundary 化したら id を採番 + per-boundary ResourceScope
-// を立てつつ、scope と childrenFactory を本 ctx に push する。後で
-// renderToReadableStream は各 boundary の scope.pending を独立に Promise.allSettled
-// で待ち、resolve 順に template + fill chunk を emit する (out-of-order)。
+// + per-boundary Owner を立てて、children を **1 回だけ** evaluate し、結果の
+// VNode tree (childrenNode) を本 ctx に push する。後で renderToReadableStream は
+// 各 boundary の scope.pending を独立に Promise.allSettled で待ち、resolve 後に
+// 同じ childrenNode を serialize して chunk emit する (= boundary-pass 廃止、ADR
+// 0064 Phase 4)。owner は server effect の lifetime を boundary 単位で握っており、
+// emit 後に dispose する。
 //
 // suspense-scope / resource-scope と同パターンの module-level state。
 
 import type { ResourceScope } from "./resource-scope";
+import type { Owner } from "./owner";
 
 export type Boundary = {
   /** shell の `<!--vb-${id}-start--> ... <!--vb-${id}-end-->` marker pair と tail の `<template id="vidro-tpl-${id}">` を結ぶ識別子 */
   id: string;
-  /** boundary 内 resource の fetcher を集める per-boundary scope (ADR 0033)。boundary-pass で hits 入りで再構築する hydration cache 元にもなる。 */
+  /** boundary 内 resource の fetcher を集める per-boundary scope (ADR 0033)。Phase 4 では「resolved 値を保持して effect 経由で childrenNode に反映」する役割。 */
   scope: ResourceScope;
-  /** tail で resolved scope のもとに再評価する Suspense の children (元 props.children をそのまま握る) */
-  childrenFactory: () => unknown;
+  /**
+   * boundary 専用 Owner (Phase 4)。shell-pass 中に `props.children()` を 1 回
+   * だけ evaluate するために `owner.run(...)` で active にする。owner は root に
+   * attach せず独立 scope として立てるので、shell-pass の root owner.dispose() に
+   * 巻き込まれない。Resource ctor の then-handler が settle 後に signal を書き込む
+   * と、boundary owner 配下の server effect が再実行されて childrenNode の text が
+   * resolved 値で更新される。emit 後に caller (= flushBoundary) が dispose する。
+   */
+  owner: Owner;
+  /**
+   * shell-pass で 1-pass 評価された VNode tree (Phase 4)。Resource は server mode で
+   * loading=true として markup に焼かれているが、effect が signal を購読しているので
+   * scope.pending の resolve 後に text が resolved 値で書き換わる。flushBoundary は
+   * await 後に本 Node を直接 serialize する (= boundary-pass 廃止)。
+   *
+   * children 評価が throw した場合は registerBoundary 自体に到達しないので、
+   * registry に push される時点で必ず非 null。
+   */
+  childrenNode: Node;
 };
 
 export class StreamingContext {
@@ -33,8 +54,8 @@ export class StreamingContext {
     return `vb${this.#counter++}`;
   }
 
-  registerBoundary(id: string, scope: ResourceScope, childrenFactory: () => unknown): void {
-    this.boundaries.push({ id, scope, childrenFactory });
+  registerBoundary(id: string, scope: ResourceScope, owner: Owner, childrenNode: Node): void {
+    this.boundaries.push({ id, scope, owner, childrenNode });
   }
 
   /**
