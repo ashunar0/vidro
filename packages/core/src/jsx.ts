@@ -216,8 +216,11 @@ export function _$dynamicChild(thunk: () => unknown): Node {
 
 // ADR 0056: 初期値 empty な dynamic slot 用 helper。Comment placeholder を return し、
 // client/hydrate では effect 内で comment ↔ text を DOM swap して reactivity を維持する。
-// server は effect が untrack 状態で 1 回走るだけで以降 fire しないので、Comment が
-// そのまま serialize されて `<!---->` が emit される。
+// server は ADR 0064 Phase 3 で reactive 化された effect が VNode の kind を
+// "comment" ↔ "text" で in-place mutate する (= renderToStringAsync の async tree walk
+// で Resource resolve 後に signal 発火 → effect 再評価 → markup が text に差し替わる)。
+// renderToString (sync) や streaming SSR の shell-pass では owner が同期 dispose される
+// ので 1 回しか走らず、結果として `<!---->` が emit される旧来動作と同じになる。
 //
 // effect 内では `getRenderer()` を毎回呼んで「実行時点の active renderer」を取る。
 // hydrate 中に install された effect は、hydrate 完了後 (= setRenderer で browserRenderer
@@ -226,7 +229,28 @@ export function _$dynamicChild(thunk: () => unknown): Node {
 // "[hydrate] cursor exhausted" で throw する (review #2 で発見)。
 function _emptyDynamicSlot(r: ReturnType<typeof getRenderer>, thunk: () => unknown): Node {
   const placeholder = r.createComment("");
-  if (r.isServer) return placeholder;
+
+  if (r.isServer) {
+    // VComment と VText は同じ shape (`{ kind, value }`) なので、`kind` を切り替える
+    // だけで serialize が `<!---->` ↔ text を吐き分ける。VNode 木の中で参照は固定
+    // (parent.children 配列の同じ slot に存在し続ける) なので mutation 戦略が成立する。
+    type MutableSlot = { kind: "comment" | "text"; value: string };
+    const slot = placeholder as unknown as MutableSlot;
+    effect(() => {
+      let v = thunk();
+      if (typeof v === "function" && (v as Function).length === 0) v = (v as () => unknown)();
+      if (v instanceof Signal) v = v.value;
+      const next = toText(v);
+      if (next === "") {
+        slot.kind = "comment";
+        slot.value = "";
+      } else {
+        slot.kind = "text";
+        slot.value = next;
+      }
+    });
+    return placeholder;
+  }
 
   let current: Node = placeholder;
   effect(() => {

@@ -6,7 +6,6 @@ import {
   type ObserverSource,
 } from "./observer";
 import { getCurrentOwner, Owner } from "./owner";
-import { getRenderer } from "./renderer";
 
 type CleanupFn = () => void;
 type EffectFn = () => void | CleanupFn;
@@ -29,12 +28,13 @@ export class Effect implements Observer {
     // 構築時点の Owner を覚え、その cleanup に自分の dispose を登録 (Owner.dispose で巻き込み解放)
     this.#parentOwner = getCurrentOwner();
     this.#parentOwner?.addCleanup(() => this.dispose());
-    // server mode (ADR 0016 論点 6): body を観測なしで 1 回だけ走らせて即 dispose。
-    // Signal の初期値を renderer に書き込ませ、subscribe list には載せない。
-    if (getRenderer().isServer) {
-      this.#runOnceServer();
-      return;
-    }
+    // ADR 0064 Phase 3 (旧 ADR 0016 論点 6 を更新): server mode でも `#run` で
+    // observer を有効化する。renderToStringAsync の async tree walk で
+    // Resource ctor の then-handler が signal を書き込むと、subscribe 済み effect
+    // が再評価されて text/markup が resolved 値で更新される (= 旧 2-pass JSX 評価
+    // の代替)。renderToString (sync) や streaming SSR の shell-pass のように owner
+    // が同期的に dispose される経路では、effect は 1 回走って即 dispose されるので
+    // 旧来の "一発走り" semantics と同じ振る舞いになる (= subscribe しても発火 0 回)。
     this.#run();
   }
 
@@ -79,20 +79,6 @@ export class Effect implements Observer {
     } finally {
       setCurrentObserver(prev);
       this.#running = false;
-    }
-  }
-
-  // server mode 専用: observer 登録せずに body を 1 回だけ呼び、以後の追跡をしない。
-  // cleanup / childOwner / sources には何も記録しないので、`dispose()` 呼び出しも
-  // 不要 (Owner tree の cleanup に hook している分だけ残るが、何も削除対象がない)。
-  #runOnceServer(): void {
-    this.#childOwner = new Owner(this.#parentOwner, { attach: false });
-    try {
-      this.#childOwner.runCatching(() => this.#fn());
-    } finally {
-      // 即座に dispose して、server での request 完了後にメモリが残らないようにする
-      this.#disposed = true;
-      this.#disposeChildOwner();
     }
   }
 

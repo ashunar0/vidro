@@ -60,17 +60,20 @@ export type RenderToStringAsyncResult = {
 
 /**
  * server で `bootstrapKey` 付き resource を resolve してから markup を作る
- * async 版 (ADR 0030 Step B-5c → ADR 0064 Phase 2)。
+ * 1-pass async tree walk 版 (ADR 0030 Step B-5c → ADR 0064 Phase 3 で 1-pass 化)。
  *
- *   1-pass: 空 ResourceScope で renderToString → Resource constructor が
- *           server mode を見ると fetcher を即時 fire、then-handler が
- *           scope.resolved に書き込む promise を scope.pending に register。
- *           markup は捨てる (= 真の 1-pass async tree walk は ADR 0064 Phase 3 で
- *           renderer 側を再設計、Phase 2 段階では JSX 評価 2 回維持)
- *   resolve: `Promise.allSettled(scope.pending.values())` を await。完了時点で
- *           scope.resolved は全 key 埋まっている。
- *   2-pass: 同 scope で renderToString → Resource constructor が getResolved で
- *           hit を引き当て、loading=false スタートで resolved 値の markup が完成。
+ *   1-pass: 空 ResourceScope を立てて owner.run(fn) で JSX を 1 回評価。
+ *           Resource constructor が server mode を見ると fetcher を即時 fire し、
+ *           then-handler が scope.resolved + Resource 内部 signal に書き込む
+ *           promise を scope.pending に register。server effect は ADR 0064 Phase 3 で
+ *           subscribe するので、本 owner が dispose される前は signal 発火に追従して
+ *           re-run できる (= text が "..." → resolved 値で更新される)
+ *   resolve: `Promise.allSettled(scope.pending.values())` を await。期間中に
+ *           Resource ctor の then-handler が signal を書き込み、subscribe 済み
+ *           server effect が反応して VNode 木の text を更新する
+ *   serialize: 待ち合わせ後の VNode 木を 1 回 serialize して HTML 化。owner.dispose
+ *           は serialize 後に行う (effects を await 中も生かしておくため、
+ *           renderToString sync 版の owner-dispose-immediately 経路と分離)
  *
  * caller (createServerHandler 等) は返ってきた `resources` を `__vidro_data` に
  * 同居させる。client 側 Resource constructor が initial value を引き当てるので
@@ -78,32 +81,43 @@ export type RenderToStringAsyncResult = {
  *
  * `bootstrapKey` 未指定の resource は scope に register されない (B-5b 動作と同じ
  * loading=true 状態で markup に焼かれる)。
+ *
+ * 旧 2-pass model (ADR 0030 / ADR 0064 Phase 2 中間状態) では JSX 評価 + VNode build を
+ * 2 回行っていたコストを 1 回に縮小 (= ADR 0064 北極星「正しい使い方でも DB query 2x
+ * の慢性コスト解消」の JSX 評価面の対応分)。
  */
 export async function renderToStringAsync(fn: () => Node): Promise<RenderToStringAsyncResult> {
+  const previous = getRenderer();
+  setRenderer(serverRenderer as unknown as Renderer<Node, Element, Text>);
+  const owner = new Owner(null);
   const scope = new ResourceScope();
 
-  // --- 1-pass: ctor 内で fetcher が fire → scope.pending に積まれる ---
-  runWithResourceScope(scope, () => {
-    // markup は捨てる。意義は fetcher を fire させて scope.pending を埋めること。
-    renderToString(fn);
-  });
+  try {
+    // --- 1-pass: VNode 木を 1 回だけ build。fetcher は ctor 内で fire 済み。 ---
+    let root: Node | undefined;
+    runWithResourceScope(scope, () => {
+      root = runWithIslandScope(() => runWithMountScope(() => owner.run(fn)));
+    });
 
-  // --- resolve all ---
-  // 各 settled は then(success, fail) で reject を吸収しているため、
-  // `Promise.all` でも事故らないが念のため allSettled。
-  await Promise.allSettled(Array.from(scope.pending.values()));
+    // --- await all settled ---
+    // server effect が subscribe しているので、ここで then-handler が signal を
+    // 書き込むと、effect が即時 re-run して VNode 木の text を resolved 値に更新する。
+    // 各 settled は then(success, fail) で reject を吸収しているため allSettled で
+    // 事故らない (Promise.all でも実害はないが念のため)。
+    await Promise.allSettled(Array.from(scope.pending.values()));
 
-  // --- 2-pass: 同 scope (resolved 入り) で markup ---
-  let html = "";
-  runWithResourceScope(scope, () => {
-    html = renderToString(fn);
-  });
+    // --- serialize: signal 反映後の VNode を 1 回 serialize ---
+    const html = serialize(root as unknown as VNode);
 
-  // resolved Map を JSON serializable な plain object に変換
-  const resources: Record<string, BootstrapValue> = {};
-  for (const [k, v] of scope.resolved) resources[k] = v;
+    const resources: Record<string, BootstrapValue> = {};
+    for (const [k, v] of scope.resolved) resources[k] = v;
 
-  return { html, resources };
+    return { html, resources };
+  } finally {
+    discardMountQueue();
+    owner.dispose();
+    setRenderer(previous);
+  }
 }
 
 // --- Phase C streaming SSR ---

@@ -52,7 +52,7 @@ describe("renderToString", () => {
     let runs = 0;
     const html = renderToString(() => {
       effect(() => {
-        void count.value; // subscribe ではなく初期値 peek だけ
+        void count.value;
         runs++;
       });
       return h("span", null, "x");
@@ -60,8 +60,10 @@ describe("renderToString", () => {
     expect(html).toBe("<span>x</span>");
     expect(runs).toBe(1);
 
-    // server mode の effect は subscribe しないので、後から count を書き換えても
-    // runs は増えない
+    // ADR 0064 Phase 3: server mode の effect も subscribe するように変わった
+    // が、renderToString (sync) は owner を即時 dispose する経路なので、結果として
+    // 1 回しか走らない (= 旧来の "観測なし 1 回走り" semantics と同じ振る舞い)。
+    // 後から count を書き換えても runs は増えない。
     count.value = 99;
     expect(runs).toBe(1);
   });

@@ -99,6 +99,23 @@ describe("renderToStringAsync", () => {
     warn.mockRestore();
   });
 
+  test("ADR 0064 Phase 3: component function が JSX 評価で 1 回しか呼ばれない (1-pass)", async () => {
+    let calls = 0;
+    const { html } = await renderToStringAsync(() => {
+      calls++;
+      const r = resource(() => Promise.resolve("Asahi"), { bootstrapKey: "u" });
+      return h(
+        "p",
+        null,
+        _$dynamicChild(() => r.value ?? "..."),
+      );
+    });
+
+    // 旧 2-pass model では JSX 評価 2 回 → calls === 2 だった。Phase 3 で 1-pass に。
+    expect(calls).toBe(1);
+    expect(html).toBe("<p>Asahi</p>");
+  });
+
   test("Suspense + bootstrap resolved: children が markup に焼かれる", async () => {
     const { html, resources } = await renderToStringAsync(() =>
       Suspense({
