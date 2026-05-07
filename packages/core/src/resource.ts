@@ -124,7 +124,7 @@ class Resource<T> {
 
       if (options?.bootstrapKey !== undefined) {
         const scope = getCurrentResourceScope();
-        const hit = scope?.getHit(options.bootstrapKey);
+        const hit = scope?.getResolved(options.bootstrapKey);
         if (hit !== undefined) {
           this.#applyBootstrapHit(hit);
           return;
