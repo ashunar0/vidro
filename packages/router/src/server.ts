@@ -20,7 +20,7 @@
 
 import {
   renderToReadableStream,
-  renderToString,
+  renderToStringAsync,
   VIDRO_STREAMING_RUNTIME,
 } from "@vidro/core/server";
 import {
@@ -590,10 +590,13 @@ export async function renderPartialHTML(
     partial: { startIdx: divergeIndex },
   };
 
-  // sync renderToString (= async component 対応は ADR 0061 範囲外、ADR 0060 deferred 2)
+  // ADR 0066 dogfood: async function component (= `.server.tsx` 内 `await db.x()`
+  // 直書き) が partial swap でも動くよう、renderToStringAsync (1-pass async tree walk +
+  // AsyncScope.pending allSettled) に切り替え。Suspense なし shell-pass 全 await の
+  // 古典 SSR 動作 (ADR 0066 論点 3) でそのまま markup に焼ける。
   // 共通 prefix の per-request scope (currentPathname / currentParams / search /
   // loaderData) は Router の renderServerSide が try/finally で握る。
-  const html = renderToString(() => Router({ routes: manifest, ssr }));
+  const { html } = await renderToStringAsync(() => Router({ routes: manifest, ssr }));
 
   return { html, divergeIndex, status: 200 };
 }
