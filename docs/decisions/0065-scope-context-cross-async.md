@@ -1,8 +1,8 @@
-# 0065 — Scope context が `await` を生き残る (unctx 経由 AsyncLocalStorage migration)
+# 0065 — Scope context が `await` を生き残る (AsyncLocalStorage + 共通 helper migration)
 
 ## Status
 
-**Accepted** — 2026-05-07 (54th session、user 合意取得済 = unctx 路線)
+**Accepted** — 2026-05-07 (54th session、user 合意取得済 = raw ALS + 共通 helper 路線、unctx は sync API 衝突で実装段階で却下)
 
 依存: ADR 0064 (Resource 1-pass 統一、全 Phase 着地済)
 load 先: ADR 0066 (async server component native、本 ADR の上に load)
@@ -82,69 +82,86 @@ async function PostsIndex() {
 
 ### Vidro 哲学整合 (memory cross-check)
 
-| memory                       | 関係                                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `project_design_north_star`  | RSC simpler 代替の核 = async server component を成立させるため、scope migration が前提条件 |
-| `project_pending_rewrites`   | 「並行 request safety は AsyncLocalStorage 化で将来対応」項目を本 ADR で前倒し対応         |
-| `project_3tier_architecture` | 「環境で切る」哲学 = unctx 経由で runtime 抽象、Workers / Node / Deno / Bun 全対応         |
-| `project_legibility_test`    | scope API は`runWithIslandScope` の意味論不変、call site は変更なし = 読み手影響ゼロ       |
+| memory                       | 関係                                                                                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| `project_design_north_star`  | RSC simpler 代替の核 = async server component を成立させるため、scope migration が前提条件          |
+| `project_pending_rewrites`   | 「並行 request safety は AsyncLocalStorage 化で将来対応」項目を本 ADR で前倒し対応                  |
+| `project_3tier_architecture` | 「環境で切る」哲学 = ALS 経由で runtime 抽象、Workers / Node / Deno / Bun 全対応 + browser fallback |
+| `project_legibility_test`    | scope API は`runWithIslandScope` の意味論不変、call site は変更なし = 読み手影響ゼロ                |
 
 ## Options
 
-### 論点 1: AsyncLocalStorage を直書きするか、抽象 library を経由するか
+### 論点 1: AsyncLocalStorage の使い方 (= 直書き / 抽象 library / 共通 helper)
 
-#### (1-A) `unctx` library 経由 (= 採用本命)
-
-```ts
-import { createContext } from "unctx";
-
-const islandCtx = createContext<IslandSeqState>({ asyncContext: true });
-
-export function runWithIslandScope<T>(fn: () => T): T {
-  return islandCtx.call(new Map(), fn);
-}
-
-export function getIslandSeqState() {
-  return islandCtx.use({ default: () => null });
-}
-```
-
-- pros: ALS 検出 + browser fallback を library が吸収、自前ロジック不要
-- pros: TanStack Start / Nuxt / Nitro が裏で使ってる枯れた pattern (= unjs エコシステム)
-- pros: 将来 Nitro 採用時に整合 (= 同じ unjs 路線)
-- cons: dependency 1 個追加 (= 但し zero-dep tiny library、bundle 影響ほぼゼロ)
-
-#### (1-B) `node:async_hooks` 直書き + 自前 fallback
+#### (1-A) raw `AsyncLocalStorage` + 共通 helper (`scope-context.ts`) (= 採用)
 
 ```ts
-let storage: AsyncLocalStorage<IslandSeqState> | null = null;
+// scope-context.ts (新規 internal helper)
+let ALS: ALSCtor | undefined;
+try {
+  ALS = (globalThis as any).AsyncLocalStorage;
+} catch {}
 
-if (typeof globalThis.AsyncLocalStorage !== "undefined") {
-  storage = new globalThis.AsyncLocalStorage();
-}
-
-export function runWithIslandScope<T>(fn: () => T): T {
-  if (storage) return storage.run(new Map(), fn);
-  // browser fallback
-  const prev = currentScope;
-  currentScope = new Map();
-  try {
-    return fn();
-  } finally {
-    currentScope = prev;
+export function createScope<T>() {
+  if (ALS) {
+    const storage = new ALS<T>();
+    return {
+      runWith: <R>(value: T, fn: () => R): R => storage.run(value, fn),
+      getCurrent: (): T | null => storage.getStore() ?? null,
+    };
   }
+  // browser fallback (sync state、await 越え preservation なし)
+  let current: T | null = null;
+  return {
+    runWith: <R>(value: T, fn: () => R): R => {
+      const prev = current;
+      current = value;
+      try {
+        return fn();
+      } finally {
+        current = prev;
+      }
+    },
+    getCurrent: (): T | null => current,
+  };
+}
+
+// island-scope.ts (after migration)
+const islandScope = createScope<IslandSeqState>();
+export function runWithIslandScope<T>(fn: () => T): T {
+  return islandScope.runWith(new Map(), fn);
+}
+export function getIslandSeqState() {
+  return islandScope.getCurrent();
 }
 ```
 
+- pros: **sync passthrough を保つ** (= `runWithXxxScope(fn)` が sync return、callsite の `renderToString` 等を変えずに済む)
+- pros: ALS の `als.run(value, fn)` 自体が sync passthrough (= fn の return 型をそのまま返す)、async 子孫には ALS が preserve する
 - pros: dependency ゼロ
-- cons: 各 scope file に同じ条件分岐コードが入る (= 4 ファイル分 duplicate)
-- cons: 将来 unctx 採用時に rename 作業発生
+- pros: browser fallback も helper 1 ファイルに集約 = 各 scope file はビジネスロジック純化
+- cons: 将来 unjs / Nitro 路線に踏み込んだ時に unctx に rename したくなる (= helper 1 ファイル 5 行差し替えで完了、影響軽微)
+
+#### (1-B) `unctx` library 経由
+
+```ts
+const ctx = createContext<IslandSeqState>({ asyncContext: true, AsyncLocalStorage });
+ctx.callAsync(new Map(), fn); // ← Promise<T> を返す
+ctx.call(new Map(), fn); // ← sync だが ALS 経路を使わない (= await 越え preservation 効かない)
+```
+
+- 致命的な問題: `callAsync` が **常に Promise 返す** = `runWithIslandScope` が async になる連鎖変化、`renderToString` まで async 化が必要
+- `call` は sync だが ALS 経路を使わない (= 意義喪失)
+- = **unctx は sync API + ALS preservation の両立が無い**、Vidro 既存 API と衝突
+- pros: TanStack / Nitro / Nuxt 整合
+- cons: 上記 sync passthrough 不可問題、本ケースでは不採用
+- 将来 Nitro 採用 + 全コード async 化判断が出たら再検討
 
 #### (1-C) `.server.ts` / `.client.ts` でファイル分割
 
 - 各 scope file を server (ALS) / client (sync) で分けて bundler に解決させる
 - pros: bundle が clean
-- cons: ファイル数増、Vidro の `.server.ts` 規約は user 向け、core 内部で使うのは異質
+- cons: ファイル数 4 → 8 倍、Vidro の `.server.ts` 規約は user 向け、core 内部 idiom として異質
 
 ### 論点 2: どの scope file を migrate するか
 
@@ -173,29 +190,29 @@ export function runWithIslandScope<T>(fn: () => T): T {
 
 3 論点すべて確定 (= 54th session、user 合意取得済):
 
-- 論点 1: **(1-A) `unctx` library 経由** ─ ALS 検出 + browser fallback を委譲、unjs エコシステム整合
+- 論点 1: **(1-A) raw `AsyncLocalStorage` + 共通 helper (`scope-context.ts`)** ─ sync passthrough を維持、callsite API 不変、unctx は sync + ALS の両立不可で却下、将来 Nitro 採用時に helper 差し替えで unctx 経由に rename 可能
 - 論点 2: **(2-A) per-render scope 4 件すべて (island/resource/suspense/streaming)** ─ まとめて async-safety 化
 - 論点 3: 上記 3 件 (mount/observer/owner) は **migrate 不要** ─ async 越え不要なため
 
-### unctx の使い方規約 (= 各 scope file 共通)
+### scope-context helper の使い方規約 (= 各 scope file 共通)
 
 ```ts
-import { createContext } from "unctx";
+import { createScope } from "./scope-context";
 
-const ctx = createContext<T>({ asyncContext: true });
+const xxxScope = createScope<T>();
 
 export function runWithXxxScope<T>(fn: () => T): T {
-  return ctx.call(initialValue, fn);
+  return xxxScope.runWith(initialValue, fn);
 }
 
 export function getCurrentXxx(): T | null {
-  return ctx.use({ default: () => null });
+  return xxxScope.getCurrent();
 }
 ```
 
-- `{ asyncContext: true }` で ALS 経由 (= await 越え) 動作
-- `call` は sync / async どちらの fn も透過 (= return 値そのまま、Promise なら Promise)
-- `use({ default: () => null })` で「scope なし時 null」を表現 (= 既存 `currentScope === null` 動作維持)
+- `createScope<T>()` 内で **server runtime** (Node / Workers / Deno / Bun) なら `globalThis.AsyncLocalStorage` を使う、**browser** なら sync state にフォールバック
+- `runWith(value, fn)` は ALS の `als.run` を呼ぶ → fn が sync ならその return 型をそのまま返す、async なら Promise<T> を返す (= sync passthrough、callsite の API 不変)
+- `getCurrent()` は ALS の `getStore()` または fallback の current variable を返す、scope なしなら null
 
 ### Cloudflare Workers compatibility flag
 
@@ -206,30 +223,31 @@ ALS は Workers では `nodejs_compat` または `nodejs_als` flag が必要:
 compatibility_flags = ["nodejs_als"]  # or "nodejs_compat"
 ```
 
-`nodejs_als` の方が軽量 (= AsyncLocalStorage のみ)。`nodejs_compat` は Node.js builtins 全般を有効化 (= unctx が他の Node API を内部で使う場合に備える)。Vidro は async 機構のみ必要なので **`nodejs_als` が最小**。
+`nodejs_als` の方が軽量 (= AsyncLocalStorage のみ)。`nodejs_compat` は Node.js builtins 全般を有効化。Vidro は ALS のみ必要なので **`nodejs_als` が最小**。
 
 ### Scope (= 本 ADR で扱う / 扱わない)
 
-| 項目                                                          | 本 ADR で扱う?                       |
-| ------------------------------------------------------------- | ------------------------------------ |
-| `unctx` 依存追加 (`packages/core/package.json`)               | ✅                                   |
-| 4 scope file を `unctx` 経由で書き換え                        | ✅                                   |
-| 既存 sync test の通過確認 (= semantic 維持)                   | ✅                                   |
-| async 越し scope preservation の test 追加                    | ✅                                   |
-| Workers compatibility_flags 設定 (apps/router-demo/apps/blog) | ✅                                   |
-| `mount-queue` / `observer` / `owner` の migration             | ❌ (= async 越え不要、論点 3 で確定) |
-| `currentPathname` / `currentParams` の ALS 化                 | ❌ (= router 側、別 ADR で扱う)      |
-| `async function Component()` 自体のサポート                   | ❌ (= **ADR 0066 で扱う**)           |
-| Nitro 採用 / multi-runtime build                              | ❌ (= 別 ADR、本 ADR は unctx だけ)  |
+| 項目                                                          | 本 ADR で扱う?                                 |
+| ------------------------------------------------------------- | ---------------------------------------------- |
+| `scope-context.ts` 新規 (= raw ALS + browser fallback helper) | ✅                                             |
+| 4 scope file を helper 経由で書き換え                         | ✅                                             |
+| 既存 sync test の通過確認 (= semantic 維持)                   | ✅                                             |
+| async 越し scope preservation の test 追加                    | ✅                                             |
+| Workers compatibility_flags 設定 (apps/router-demo/apps/blog) | ✅                                             |
+| `mount-queue` / `observer` / `owner` の migration             | ❌ (= async 越え不要、論点 3 で確定)           |
+| `currentPathname` / `currentParams` の ALS 化                 | ❌ (= router 側、別 ADR で扱う)                |
+| `async function Component()` 自体のサポート                   | ❌ (= **ADR 0066 で扱う**)                     |
+| Nitro / unjs 採用 / multi-runtime build                       | ❌ (= 別 ADR、本 ADR は raw ALS + helper のみ) |
 
 ## Open Questions (= 実装着地時に詰める detail)
 
 > 注: 確定論点は Decision 参照。本 section は実装段階で詰める detail のみ。
 
-1. **unctx の version / API 詳細**
-   - `unctx` v2.x (執筆時) の `createContext({ asyncContext: true })` を使う想定
-   - `call` vs `callAsync` の使い分け (= 仕様で決まっているはず、実装で確認)
-   - return type 推論の調整 (= TS で sync / async 両対応の wrapper 型)
+1. **`globalThis.AsyncLocalStorage` の TS 型**
+   - Workers では `globalThis.AsyncLocalStorage` が global にある (= `@cloudflare/workers-types` で型定義)
+   - Node.js では `node:async_hooks` の `AsyncLocalStorage` が global ではない
+   - 共通 helper は `globalThis.AsyncLocalStorage` を runtime detect、TS は `unknown as ALSCtor` で型を narrow
+   - 実装時に Node 環境で globalThis に AsyncLocalStorage を polyfill すべきか確認
 
 2. **既存 test の通過確認範囲**
    - sync 経路 (= renderToString / hydrate / partial hydration) の動作不変を assert
@@ -263,10 +281,10 @@ compatibility_flags = ["nodejs_als"]  # or "nodejs_compat"
 
 ### Cons / 残るリスク
 
-- **dependency 1 個増加** (`unctx`) — zero-dep tiny だが pure module 維持の哲学から微妙に外れる
 - **Workers の compatibility flag が必要** — `nodejs_als` (or `nodejs_compat`) の設定漏れがあると runtime error
 - **migrating tests の verification コスト** — 既存 test 数百件の通過確認、初回 run で網羅
-- **bundle size +N KB の懸念** — 実測で確認、unctx は < 1KB の見込みで実害ゼロ想定
+- **bundle size 影響** — helper 1 ファイル (~30 行)、無視できるレベル
+- **unjs / Nitro 路線への切替コスト** — 将来 Nitro 採用時に `scope-context.ts` 1 ファイルを unctx 化する手間 (= helper 内部書き換え 5 行レベル、callsite 影響ゼロ)
 
 ### 既存 ADR との関係
 
@@ -278,8 +296,8 @@ compatibility_flags = ["nodejs_als"]  # or "nodejs_compat"
 
 ## Affected files (実装着地時)
 
-- `packages/core/package.json`: `unctx` dependency 追加
-- `packages/core/src/island-scope.ts`: `unctx` 経由に書き換え
+- `packages/core/src/scope-context.ts`: **新規作成** (= raw ALS + browser fallback helper)
+- `packages/core/src/island-scope.ts`: `scope-context` 経由に書き換え
 - `packages/core/src/resource-scope.ts`: 同上 (`runWithResourceScope` / `getCurrentResourceScope`)
 - `packages/core/src/suspense-scope.ts`: 同上 (`runWithSuspenseScope` / `getCurrentSuspense`)
 - `packages/core/src/streaming-scope.ts`: 同上 (`runWithStream` / `getCurrentStream`)
@@ -291,14 +309,14 @@ compatibility_flags = ["nodejs_als"]  # or "nodejs_compat"
 
 - 既存 ADR (0001-0064) との矛盾なし check (上記表で実施済)
 - 既存 memory との整合 check (上記 cross-check 表で実施済)
-- `unctx` v2.x の API 仕様確認 (= context7 等で実装着地時に最終確認)
+- `globalThis.AsyncLocalStorage` の Workers / Node 動作確認 (= 実装着地時に dogfood で最終確認)
 - `feature-dev:code-reviewer` agent review (memory `feedback_review_in_workflow` per、Accepted 化前 or 実装 commit 直前)
 
 ## Next steps (= Accepted 化後)
 
 ### 段階的 commit 推奨順序
 
-1. **Phase 1**: `unctx` dependency 追加 + `island-scope.ts` を unctx 経由に書き換え (= 動作 baseline 確認)
+1. **Phase 1**: `scope-context.ts` helper 新規作成 + `island-scope.ts` を helper 経由に書き換え (= 動作 baseline 確認)
 2. **Phase 2**: `resource-scope.ts` migration
 3. **Phase 3**: `suspense-scope.ts` migration
 4. **Phase 4**: `streaming-scope.ts` migration
