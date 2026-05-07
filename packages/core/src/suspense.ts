@@ -5,6 +5,7 @@ import { getRenderer } from "./renderer";
 import { SuspenseScope, runWithSuspenseScope } from "./suspense-scope";
 import { getCurrentStream } from "./streaming-scope";
 import { ResourceScope, runWithResourceScope } from "./resource-scope";
+import { AsyncScope, runWithAsyncScope } from "./async-scope";
 import { getCurrentStreamingHydration } from "./streaming-hydration";
 import type { HydrationRenderer } from "./hydration-renderer";
 
@@ -65,6 +66,12 @@ export function Suspense(props: SuspenseProps): Node {
       // emit 後に flushBoundary が boundary owner.dispose() で片付ける。
       const id = stream.allocBoundaryId();
       const boundaryScope = new ResourceScope();
+      // ADR 0066 Phase 1: per-boundary asyncScope を立てて children 評価を wrap。
+      // Phase 1 では h() 側がまだ Promise を register しないので空配列のまま、
+      // flushBoundary の Promise.allSettled に渡しても no-op 等価。Phase 2 以降で
+      // 内側の async function component が `getCurrentAsyncScope` 経由で本 scope に
+      // pending Promise を push する。
+      const boundaryAsyncScope = new AsyncScope();
       const innerScope = new SuspenseScope();
       const boundaryOwner = new Owner(null);
       // children 評価は同期。throw 時は registerBoundary に到達しないので、
@@ -73,7 +80,9 @@ export function Suspense(props: SuspenseProps): Node {
       boundaryOwner.run(() => {
         runWithSuspenseScope(innerScope, () => {
           runWithResourceScope(boundaryScope, () => {
-            childrenNode = props.children();
+            runWithAsyncScope(boundaryAsyncScope, () => {
+              childrenNode = props.children();
+            });
           });
         });
       });
@@ -82,7 +91,7 @@ export function Suspense(props: SuspenseProps): Node {
       stream.trackBoundaryKeys(boundaryScope);
       const fallbackScope = new SuspenseScope();
       const fallbackNode = runWithSuspenseScope(fallbackScope, () => props.fallback());
-      stream.registerBoundary(id, boundaryScope, boundaryOwner, childrenNode);
+      stream.registerBoundary(id, boundaryScope, boundaryAsyncScope, boundaryOwner, childrenNode);
       const fragment = renderer.createFragment();
       renderer.appendChild(fragment, renderer.createComment(`vb-${id}-start`));
       renderer.appendChild(fragment, fallbackNode);

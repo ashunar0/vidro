@@ -14,12 +14,21 @@
 
 import type { ResourceScope } from "./resource-scope";
 import type { Owner } from "./owner";
+import type { AsyncScope } from "./async-scope";
 
 export type Boundary = {
   /** shell の `<!--vb-${id}-start--> ... <!--vb-${id}-end-->` marker pair と tail の `<template id="vidro-tpl-${id}">` を結ぶ識別子 */
   id: string;
   /** boundary 内 resource の fetcher を集める per-boundary scope (ADR 0033)。Phase 4 では「resolved 値を保持して effect 経由で childrenNode に反映」する役割。 */
   scope: ResourceScope;
+  /**
+   * boundary 内 async function component (ADR 0066) の Promise を集める per-boundary
+   * scope。Phase 1 では空 scope を渡すだけの no-op 等価 (h() 側がまだ Promise を
+   * register しない)。Phase 2 以降で h() の component branch が `getCurrentAsyncScope`
+   * 経由で本 scope に Promise を push、flushBoundary が Promise.allSettled で
+   * scope (resource) と asyncScope (async component) の両方を待つ。
+   */
+  asyncScope: AsyncScope;
   /**
    * boundary 専用 Owner (Phase 4)。shell-pass 中に `props.children()` を 1 回
    * だけ evaluate するために `owner.run(...)` で active にする。owner は root に
@@ -54,8 +63,14 @@ export class StreamingContext {
     return `vb${this.#counter++}`;
   }
 
-  registerBoundary(id: string, scope: ResourceScope, owner: Owner, childrenNode: Node): void {
-    this.boundaries.push({ id, scope, owner, childrenNode });
+  registerBoundary(
+    id: string,
+    scope: ResourceScope,
+    asyncScope: AsyncScope,
+    owner: Owner,
+    childrenNode: Node,
+  ): void {
+    this.boundaries.push({ id, scope, asyncScope, owner, childrenNode });
   }
 
   /**

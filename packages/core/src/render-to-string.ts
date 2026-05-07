@@ -24,6 +24,7 @@ import { runWithMountScope, discardMountQueue } from "./mount-queue";
 import { Owner } from "./owner";
 import { serverRenderer, serialize, type VNode } from "./server-renderer";
 import { ResourceScope, runWithResourceScope, type BootstrapValue } from "./resource-scope";
+import { AsyncScope, runWithAsyncScope } from "./async-scope";
 import { StreamingContext, runWithStream } from "./streaming-scope";
 import { runWithIslandScope } from "./island-scope";
 
@@ -91,12 +92,18 @@ export async function renderToStringAsync(fn: () => Node): Promise<RenderToStrin
   setRenderer(serverRenderer as unknown as Renderer<Node, Element, Text>);
   const owner = new Owner(null);
   const scope = new ResourceScope();
+  // ADR 0066 Phase 1: async function component の Promise を集める scope を
+  // resource scope と並列で立てる。Phase 1 時点では h() 側が Promise を register
+  // しないので空配列のまま、`Promise.allSettled` に渡しても no-op 等価。
+  const asyncScope = new AsyncScope();
 
   try {
     // --- 1-pass: VNode 木を 1 回だけ build。fetcher は ctor 内で fire 済み。 ---
     let root: Node | undefined;
     runWithResourceScope(scope, () => {
-      root = runWithIslandScope(() => runWithMountScope(() => owner.run(fn)));
+      runWithAsyncScope(asyncScope, () => {
+        root = runWithIslandScope(() => runWithMountScope(() => owner.run(fn)));
+      });
     });
 
     // --- await all settled ---
@@ -104,7 +111,8 @@ export async function renderToStringAsync(fn: () => Node): Promise<RenderToStrin
     // 書き込むと、effect が即時 re-run して VNode 木の text を resolved 値に更新する。
     // 各 settled は then(success, fail) で reject を吸収しているため allSettled で
     // 事故らない (Promise.all でも実害はないが念のため)。
-    await Promise.allSettled(Array.from(scope.pending.values()));
+    // ADR 0066 Phase 1: asyncScope.pending も merge (Phase 1 では空配列 = no-op)。
+    await Promise.allSettled([...scope.pending.values(), ...asyncScope.pending]);
 
     // --- serialize: signal 反映後の VNode を 1 回 serialize ---
     const html = serialize(root as unknown as VNode);
@@ -178,10 +186,17 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         //    Suspense 内側では runWithResourceScope の push/pop で boundaryScope
         //    に切り替わるので、Suspense 外の resource だけが rootScope に残る。
         const rootScope = new ResourceScope();
+        // ADR 0066 Phase 1: Suspense 外で declare された async function component の
+        // Promise を吸収する root pseudo-boundary asyncScope。Suspense 内側では
+        // runWithAsyncScope の push/pop で boundaryAsyncScope に切り替わる。
+        // Phase 1 では h() 側が register しないので空配列のまま no-op 等価。
+        const rootAsyncScope = new AsyncScope();
         let shellHtml = "";
         runWithStream(stream, () => {
           runWithResourceScope(rootScope, () => {
-            shellHtml = renderToString(fn);
+            runWithAsyncScope(rootAsyncScope, () => {
+              shellHtml = renderToString(fn);
+            });
           });
         });
         emit(shellHtml);
@@ -203,9 +218,9 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         //    rootScope は template/fill を持たないので __vidroAddResources のみ。
         //    Promise.allSettled で全完了を待ってから controller.close() する。
         await Promise.allSettled([
-          flushRoot(rootScope, emit),
+          flushRoot(rootScope, rootAsyncScope, emit),
           ...stream.boundaries.map((b) =>
-            flushBoundary(b.id, b.scope, b.owner, b.childrenNode, emit),
+            flushBoundary(b.id, b.scope, b.asyncScope, b.owner, b.childrenNode, emit),
           ),
         ]);
 
@@ -236,10 +251,18 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
  * pending) を解決して、`__vidroAddResources(...)` partial patch だけ emit する。
  * template / fill は無し (root に DOM 配置を持たない)。pending 0 個なら何も
  * emit しないで早期 return (空 patch を出す意味は無い、ADR 0033 論点 9)。
+ *
+ * ADR 0066 Phase 1: asyncScope.pending も merge (Phase 1 では空配列 = no-op)。
+ * Phase 2 以降で Suspense 外の async function component が居る場合は、その
+ * Promise も同 await に乗って完了を待ってから resources patch を emit する。
  */
-async function flushRoot(scope: ResourceScope, emit: (chunk: string) => void): Promise<void> {
-  if (scope.pending.size === 0) return;
-  await Promise.allSettled(Array.from(scope.pending.values()));
+async function flushRoot(
+  scope: ResourceScope,
+  asyncScope: AsyncScope,
+  emit: (chunk: string) => void,
+): Promise<void> {
+  if (scope.pending.size === 0 && asyncScope.pending.length === 0) return;
+  await Promise.allSettled([...scope.pending.values(), ...asyncScope.pending]);
   // Resource ctor の then-handler が registerResolved で書き込み済み。
   if (scope.resolved.size === 0) return;
   const hits: Record<string, BootstrapValue> = {};
@@ -268,12 +291,16 @@ async function flushRoot(scope: ResourceScope, emit: (chunk: string) => void): P
 async function flushBoundary(
   id: string,
   scope: ResourceScope,
+  asyncScope: AsyncScope,
   owner: Owner,
   childrenNode: Node,
   emit: (chunk: string) => void,
 ): Promise<void> {
   try {
-    await Promise.allSettled(Array.from(scope.pending.values()));
+    // ADR 0066 Phase 1: asyncScope.pending も merge (Phase 1 では空配列 = no-op)。
+    // Phase 2 以降で boundary 内 async function component が居る場合は、その
+    // Promise も同 await に乗って完了を待ってから childrenNode を serialize する。
+    await Promise.allSettled([...scope.pending.values(), ...asyncScope.pending]);
 
     // childrenNode は shell-pass で boundary owner 配下に build 済み。settle 中に
     // server effect が signal 反映で text を書き換えているので、ここでは serialize
