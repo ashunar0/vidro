@@ -20,7 +20,20 @@
 import { describe, expect, test } from "vite-plus/test";
 import { h } from "../src/jsx";
 import { Suspense } from "../src/suspense";
-import { renderToStringAsync } from "../src/render-to-string";
+import { renderToReadableStream, renderToStringAsync } from "../src/render-to-string";
+
+async function collect(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let out = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value) out += dec.decode(value, { stream: true });
+  }
+  out += dec.decode();
+  return out;
+}
 
 describe("async function component (ADR 0066 Phase 2)", () => {
   test("sync resolve: async component が await 後の VNode を markup に展開する", async () => {
@@ -87,11 +100,50 @@ describe("async function component × Suspense (ADR 0066 Phase 3)", () => {
     expect(html).toContain("<ul><li>from-sync</li><li>from-async</li></ul>");
   });
 
-  // ADR 0066 Phase 4 で扱う範囲 (= 本 Phase 3 では未着手):
-  //   - renderToReadableStream の Suspense boundary 内 async component (= shell-pass の
-  //     renderToString が finally で setRenderer(previous) するため、async continuation
-  //     中に getRenderer() が serverRenderer から外れて h() が browserRenderer に届く
-  //     構造的問題がある。Phase 4 で renderer を outer scope で setRenderer 保持する
-  //     fix とセットで test を追加する)
-  //   - reject 経路 (Q6 ErrorBoundary mutation 機構)
+  // reject 経路 (Q6 ErrorBoundary mutation 機構) は Phase 4-B で扱う。
+});
+
+describe("async function component × streaming SSR (ADR 0066 Phase 4-A)", () => {
+  test("renderToReadableStream の Suspense boundary 内 async: boundary chunk に markup が焼かれる", async () => {
+    async function Inner() {
+      const data = await Promise.resolve("streamed");
+      return h("p", { id: "ok" }, data);
+    }
+    // Phase 4-A renderer 保持 fix で、shell-pass 後の async continuation 中も
+    // getRenderer() が serverRenderer のまま → Inner 内 h() が VElement を作る →
+    // VAsyncSlot.resolved に書き込まれる → flushBoundary の serialize で展開される。
+    const stream = renderToReadableStream(() =>
+      Suspense({
+        fallback: () => h("p", { id: "fb" }, "loading..."),
+        children: () => h(Inner as never, null),
+      }),
+    );
+    const html = await collect(stream);
+    // shell には fallback markup が乗る (boundary marker pair も)
+    expect(html).toContain('id="fb"');
+    expect(html).toContain("<!--vb-vb0-start-->");
+    expect(html).toContain("<!--vb-vb0-end-->");
+    // boundary chunk の template 内に async component の resolved markup が焼かれる
+    expect(html).toMatch(/<template id="vidro-tpl-vb0"><p id="ok">streamed<\/p><\/template>/);
+    expect(html).toContain('__vidroFill("vb0")');
+  });
+
+  test("renderToReadableStream の Suspense 外側 async: shell-pass で同期 evaluate されるので throw する", async () => {
+    async function Outer() {
+      return h("section", null, "from-async");
+    }
+    // shell-pass の renderToString は同期完了 → VAsyncSlot.resolved がまだ null の
+    // まま serialize に到達 → Q3 確定形 always throw が発火。これは fail-fast の
+    // 期待動作で、user に「Suspense で囲むか resource() を使うか」を促す形になる
+    // (= memory project_design_north_star の RSC simpler 代替の制約: shell-pass で
+    // 同期に await できない async は Suspense 必須)。
+    let threw = false;
+    try {
+      const stream = renderToReadableStream(() => h(Outer as never, null));
+      await collect(stream);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+  });
 });

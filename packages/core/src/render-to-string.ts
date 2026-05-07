@@ -175,6 +175,18 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
       // boundary owner を catch ブロックで dispose するため、ADR 0064 Phase 4)。
       const stream = new StreamingContext();
 
+      // ADR 0066 Phase 4-A: outer scope で setRenderer(serverRenderer) を維持する。
+      // 内部 shell-pass の `renderToString` は finally で `setRenderer(previous)` する
+      // が、その previous は本ブロックで立てた serverRenderer なので結果として
+      // serverRenderer が維持される。これにより shell-pass 後の async continuation
+      // (= boundary 内 async function component の Promise resolve 後の `h(...)` 呼び出し)
+      // でも `getRenderer()` が serverRenderer を返し続ける (= h() が server 経路で
+      // VElement / VText 等を作る)。fix なしだと shell-pass 完了直後に renderer が
+      // 元 (= browserRenderer or undefined) に戻り、async continuation が server から
+      // 外れる構造的問題があった (Phase 3 で発見)。
+      const outerPrevious = getRenderer();
+      setRenderer(serverRenderer as unknown as Renderer<Node, Element, Text>);
+
       try {
         // 1. shell-pass: per-boundary scope に fetcher を集めつつ shell markup を作る
         //    `__vidroFill` / `__vidroAddResources` は caller が `<head>` に inject
@@ -241,6 +253,11 @@ export function renderToReadableStream(fn: () => Node): ReadableStream<Uint8Arra
         // 懸念があるため、明示的に片付ける (long-lived isolate 安全化)。
         for (const b of stream.boundaries) b.owner.dispose();
         controller.error(err);
+      } finally {
+        // ADR 0066 Phase 4-A: outer scope で立てた serverRenderer を元に戻す。
+        // 全 boundary flush 完了 + controller.close() 後に renderer 状態を
+        // 呼び出し前 (browserRenderer 等) に復帰。
+        setRenderer(outerPrevious);
       }
     },
   });
