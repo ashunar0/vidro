@@ -36,7 +36,27 @@ type VFragment = {
   children: VNode[];
 };
 
-export type VNode = VElement | VText | VComment | VFragment;
+/**
+ * async function component (ADR 0066) の Promise<Node> を VNode 木に
+ * 埋め込むための placeholder。h() の component branch が Promise を返す
+ * type を見たら、本 slot を生成して return する (= 同期に渡せる Node を
+ * 親に挿げ替える)。Promise の then-handler が `resolved` に解決値を書き込み、
+ * caller (renderToStringAsync / flushBoundary) が `Promise.allSettled` で
+ * 全 settle を待ってから serialize に進む。
+ *
+ * `resolved === null` を serialize で踏むのは構造的 bug (= allSettled 後 serialize
+ * の流れで起きないはず) なので、ADR 0066 Q3 確定形「always throw、dev/prod
+ * 区別なし」で fail-fast する (= Phase 3 で serialize 分岐を追加)。
+ *
+ * 本 type は server-only (= client 側は jsx.ts の h() で client mode runtime guard
+ * により async component 自体が throw されるため、VAsyncSlot まで到達しない)。
+ */
+export type VAsyncSlot = {
+  kind: "async-slot";
+  resolved: VNode | null;
+};
+
+export type VNode = VElement | VText | VComment | VFragment | VAsyncSlot;
 
 // --- server renderer 実装 ---
 
@@ -131,6 +151,18 @@ export function serialize(node: VNode): string {
     let out = "";
     for (const c of node.children) out += serialize(c);
     return out;
+  }
+  if (node.kind === "async-slot") {
+    // ADR 0066 Q3 確定形: `resolved === null` を serialize で踏むのは構造的 bug
+    // (= caller が Promise.allSettled を待ってから serialize する流れで、本来到達
+    // しない経路)。dev/prod 区別なく always throw して fail-fast にする。
+    if (node.resolved === null) {
+      throw new Error(
+        "[vidro] VAsyncSlot serialized before resolve — async function component Promise was not awaited. " +
+          "This is a Vidro internal bug; please report it.",
+      );
+    }
+    return serialize(node.resolved);
   }
   return serializeElement(node);
 }

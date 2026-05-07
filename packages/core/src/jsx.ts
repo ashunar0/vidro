@@ -5,11 +5,16 @@ import { flushMountQueue, runWithMountScope } from "./mount-queue";
 import { Owner } from "./owner";
 import { Ref } from "./ref";
 import { getRenderer } from "./renderer";
+import { getCurrentAsyncScope } from "./async-scope";
+import type { VAsyncSlot, VNode } from "./server-renderer";
 
 /** Fragment marker: `<>...</>` / `h(Fragment, null, ...)` で children をグループ化する。 */
 export const Fragment = Symbol("Fragment");
 
-type ComponentFn = (props: Record<string, unknown>) => Node;
+// ADR 0066 Phase 2: async function component (= server-only) を許容するため
+// `Node | Promise<Node>` に拡張。client mode で Promise を返した場合は h() の
+// runtime guard で throw する (Q2 確定形 message)。
+type ComponentFn = (props: Record<string, unknown>) => Node | Promise<Node>;
 
 /**
  * JSX 要素を Renderer 経由で構築する。type が文字列なら IntrinsicElement、関数なら
@@ -48,6 +53,48 @@ export function h(
     // handleError が root で再 throw するのでここには到達しない。
     const owner = new Owner();
     const result = owner.runCatching(() => type(propsProxy));
+
+    // ADR 0066 Phase 2: async function component (= Promise<Node> を返す type) の経路。
+    // sync component path は影響を受けない (instanceof Promise が false で素通し)。
+    if (result instanceof Promise) {
+      // client mode で async function component は ADR 0066 Q2 確定形で throw。
+      // user に「.server.tsx に置くか、resource() で client async data を扱う」を
+      // 促す message にして debug coster を削減する。
+      if (!r.isServer) {
+        throw new Error(
+          `[vidro] async function component "${type.name || "anonymous"}" is server-only (.server.tsx). Use resource() for client async data.`,
+        );
+      }
+      // server mode: AsyncScope が立っている前提 (renderToStringAsync /
+      // streaming SSR の shell-pass で立てる)。`renderToString` (sync) では
+      // 立たないので、async component を扱うには renderToStringAsync 必須。
+      const scope = getCurrentAsyncScope();
+      if (!scope) {
+        throw new Error(
+          `[vidro] async function component "${type.name || "anonymous"}" requires renderToStringAsync (or Suspense within renderToReadableStream).`,
+        );
+      }
+      // VAsyncSlot を生成して同期に親へ挿げ替える placeholder にする。Promise
+      // resolve 時に slot.resolved を書き込み、reject 時は owner.handleError で
+      // ErrorBoundary chain (ADR 0063 整合) に流す。serialize 分岐は Phase 3 で追加。
+      const slot: VAsyncSlot = { kind: "async-slot", resolved: null };
+      const settled = result.then(
+        (resolved) => {
+          // resolved は ComponentFn の戻り値 = server mode では VNode (Node に cast 済)。
+          slot.resolved = resolved as unknown as VNode;
+        },
+        (err) => {
+          // ADR 0066 Q4: shell-pass throw 後の disposed owner への handleError は silent
+          // (= render abort 中なので実害なし)。それ以外は ErrorBoundary chain に流す。
+          if (!owner.disposed) owner.handleError(err);
+        },
+      );
+      // AsyncScope.pending に push。caller (renderToStringAsync / flushBoundary /
+      // flushRoot) が allSettled で待つ (Phase 1 で merge 済)。
+      scope.registerPending(settled);
+      return slot as unknown as Node;
+    }
+
     return result ?? r.createComment("vidro-error");
   }
 
