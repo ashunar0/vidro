@@ -26,6 +26,21 @@ export default async function PostsIndex() {
             </Link>
             <p class="mt-1 text-xs text-gray-400">{p.publishedAt}</p>
             <p class="mt-2 text-sm text-gray-700">{p.body}</p>
+            <div class="mt-2 flex gap-3 text-sm">
+              <Link href={`/posts/${p.slug}/edit`} class="text-blue-600 hover:underline">
+                Edit
+              </Link>
+              {/* delete: cross-route POST、`/posts/[slug]/server.ts` の action
+                   (= 詳細 page と同 path co-location) に投げる。一覧 page は
+                   async server component で `submission()` 呼べないので
+                   pending/error 表示は現状なし (= dogfood 痛み点 4: 一覧で
+                   delete pending UX 不可)。 */}
+              <form method="post" action={`/posts/${p.slug}`} class="inline">
+                <button type="submit" class="text-red-600 hover:underline">
+                  Delete
+                </button>
+              </form>
+            </div>
           </li>
         ))}
       </ul>

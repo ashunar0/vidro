@@ -17,9 +17,13 @@ export default function RootLayout({ children }: Route.LayoutProps) {
           <Link href="/" class={linkClass}>
             Home
           </Link>
-          {/* posts 詳細でも active を出したいので prefix match */}
+          {/* posts 詳細でも active を出したいので prefix match。ただし /posts/new
+              は別 link を出すので exact 寄りにしたい場面もある。今は素直に prefix。 */}
           <Link href="/posts" match="prefix" class={linkClass}>
             Posts
+          </Link>
+          <Link href="/posts/new" class={linkClass}>
+            New post
           </Link>
         </nav>
       </header>
