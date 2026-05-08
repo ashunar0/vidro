@@ -30,9 +30,12 @@ export function PostForm() {
       body: JSON.stringify(data),
     });
     if (res.ok) {
-      const { slug } = (await res.json()) as { slug: string };
+      // handleAction の plain value 経路は `{ actionResult, loaderData }` で wrap して
+      // 返す (= ADR 0037 R-min)。formControl は wire format に責務を持たないので、
+      // 受信側 (= 本 island) が actionResult を取り出す。
+      const body = (await res.json()) as { actionResult: { slug: string } };
       f.reset();
-      navigate(`/posts/${slug}`);
+      navigate(`/posts/${body.actionResult.slug}`);
       return;
     }
     if (res.status === 422) {
@@ -41,8 +44,14 @@ export function PostForm() {
     }
   };
 
+  // formControl で fetch を直接呼ぶ form は router の form delegation (= window
+  // capture submit listener、ADR 0051) と衝突して二重 POST になる (= 1 つ目は
+  // urlencoded で送られ action の `request.json()` が parse fail で 500)。
+  // `data-vidro-no-intercept` で router delegation を bypass、formControl.bind の
+  // onSubmit だけが走る形にする (= dogfood 第 3 周目で発見した DX 痛み、ADR 0069
+  // formControl が自動でこの marker を付ける拡張は将来検討)。
   return (
-    <form onSubmit={f.bind(handleSubmit)} class="mt-4 space-y-4">
+    <form onSubmit={f.bind(handleSubmit)} data-vidro-no-intercept class="mt-4 space-y-4">
       <div>
         <label class="block text-sm font-medium" for="title">
           Title
@@ -53,11 +62,10 @@ export function PostForm() {
           {...f.field("title")}
           class="mt-1 w-full rounded border border-gray-300 px-3 py-2"
         />
-        {() =>
-          f.error("title").value && (
-            <p class="mt-1 text-sm text-red-600">{f.error("title").value}</p>
-          )
-        }
+        {/* `<p>` を常時出して reactive text の中身が空なら CSS `empty:hidden` で隠す。
+             条件付き thunk (= `{() => err && <p>...</p>}`) は SSR/hydrate で
+             VNode 構造が揃わず cursor mismatch するため避ける */}
+        <p class="mt-1 text-sm text-red-600 empty:hidden">{f.error("title").value}</p>
       </div>
 
       <div>
@@ -70,17 +78,19 @@ export function PostForm() {
           {...f.field("body")}
           class="mt-1 w-full rounded border border-gray-300 px-3 py-2"
         />
-        {() =>
-          f.error("body").value && <p class="mt-1 text-sm text-red-600">{f.error("body").value}</p>
-        }
+        <p class="mt-1 text-sm text-red-600 empty:hidden">{f.error("body").value}</p>
       </div>
 
+      {/* button text の thunk reactive 化は memory `project_jsx_runtime_contract_pending`
+           の通り JSX runtime 側に SSR/hydrate cursor 整合の限界があるため、disabled だけ
+           reactive にして text は static で書く (= submit 中の visible feedback は
+           opacity だけ)。Vidro 機構の限界点記録 */}
       <button
         type="submit"
         disabled={() => f.pending.value}
         class="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
       >
-        {() => (f.pending.value ? "Submitting..." : "Create post")}
+        Create post
       </button>
     </form>
   );
