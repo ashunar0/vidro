@@ -22,8 +22,12 @@ const generate = (_generate as unknown as { default?: typeof _generate }).defaul
  * - **intrinsic 親** (`<div>` 等、lowercase tag):
  *   - JSXText `hi` → `_$text("hi")`
  *   - JSXExpressionContainer `{x}` → `_$dynamicChild(() => x)`
+ *   - JSXExpressionContainer `{() => x}` (arity 0) → `_$dynamicChild(() => x)` (= 二重 thunk せず直接 wrap)
  *   - 目的は SSR hydration の post-order cursor との整合 (h() 引数として **先に**
- *     評価されることで、`createText` が `createElement(parent)` より前に呼ばれる)
+ *     評価されることで、`createText` が `createElement(parent)` より前に呼ばれる)。
+ *     dogfood 第3周目: `{() => err && <p/>}` 系の arrow thunk を passthrough すると
+ *     h() の引数として遅延評価され、cursor が createElement → createText の順で消費されて
+ *     post-order とズレる。`_$dynamicChild` で wrap すると引数評価時に Node 化され post-order が保たれる
  *
  * - **component 親** (`<Foo>` PascalCase / `<Foo.Bar>` JSXMemberExpression):
  *   - JSXText `hi` → `() => _$text("hi")`
@@ -192,14 +196,14 @@ export function jsxTransform(): Plugin {
             // VIDRO_MARKER_TAG flag (symbol-keyed) を見て binding-safe に判別する。
             if (isInjectedMarkerNode(path.node)) return;
 
-            // ArrowFunction / FunctionExpression は素通し (component 親でも intrinsic
-            // 親でも同じ — ユーザーが書いた callback はそのまま値として渡す)
-            if (t.isArrowFunctionExpression(expr) || t.isFunctionExpression(expr)) return;
-
             const isComponentParent = t.isJSXElement(parent) && isComponentJSXElement(parent);
 
             if (isComponentParent) {
-              // component child: getter 化 (eager 評価せず、primitive 側で必要時呼ぶ)
+              // component child: ArrowFunction / FunctionExpression は render callback
+              // として素通し (`<For>{(item) => ...}</For>`、`<ErrorBoundary>{() => <X/>}</ErrorBoundary>` 等)
+              if (t.isArrowFunctionExpression(expr) || t.isFunctionExpression(expr)) return;
+
+              // それ以外は getter 化 (eager 評価せず、primitive 側で必要時呼ぶ)
               if (t.isJSXElement(expr) || t.isJSXFragment(expr)) {
                 path.node.expression = t.arrowFunctionExpression([], expr);
                 return;
@@ -209,7 +213,30 @@ export function jsxTransform(): Plugin {
               return;
             }
 
-            // intrinsic 親: 既存挙動 (post-order を保つため _$dynamicChild で先評価)
+            // intrinsic 親: arity > 0 の arrow / function (= render callback 風) は素通し。
+            // intrinsic で valid な使い道は無いが、handwritten JSX の compat と、後続の
+            // runtime (= jsx.ts appendChild の function path) が peek して落とせるよう残す。
+            if (
+              (t.isArrowFunctionExpression(expr) || t.isFunctionExpression(expr)) &&
+              expr.params.length > 0
+            ) {
+              return;
+            }
+
+            // arity 0 の arrow / function は user が明示的に reactive thunk を書いた形
+            // (`{() => err && <p/>}` 等)。`_$dynamicChild` に **直接** 渡して二重 thunk を
+            // 避ける (= `() => () => ...` を防ぐ)。dogfood 第3周目で発見した cursor mismatch
+            // bug の core fix: passthrough だと h() の child 引数として遅延評価される結果、
+            // outer h() の createElement → inner createText/Element の順で cursor が消費されて
+            // post-order とズレる。`_$dynamicChild(arrow)` で wrap すると引数評価時点で
+            // arrow 内側の JSX が evaluate されて post-order が保たれる。
+            if (t.isArrowFunctionExpression(expr) || t.isFunctionExpression(expr)) {
+              path.node.expression = t.callExpression(t.identifier("_$dynamicChild"), [expr]);
+              needed.add("_$dynamicChild");
+              return;
+            }
+
+            // JSXElement / JSXFragment 直書きは素通し (`{<X/>}` は Element として直接展開)
             if (t.isJSXElement(expr) || t.isJSXFragment(expr)) return;
             path.node.expression = t.callExpression(t.identifier("_$dynamicChild"), [
               t.arrowFunctionExpression([], expr),

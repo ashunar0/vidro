@@ -262,12 +262,18 @@ export function _$dynamicChild(thunk: () => unknown): Node {
 }
 
 // ADR 0056: 初期値 empty な dynamic slot 用 helper。Comment placeholder を return し、
-// client/hydrate では effect 内で comment ↔ text を DOM swap して reactivity を維持する。
+// client/hydrate では effect 内で comment ↔ text ↔ Node を DOM swap して reactivity を維持する。
 // server は ADR 0064 Phase 3 で reactive 化された effect が VNode の kind を
 // "comment" ↔ "text" で in-place mutate する (= renderToStringAsync の async tree walk
 // で Resource resolve 後に signal 発火 → effect 再評価 → markup が text に差し替わる)。
 // renderToString (sync) や streaming SSR の shell-pass では owner が同期 dispose される
 // ので 1 回しか走らず、結果として `<!---->` が emit される旧来動作と同じになる。
+//
+// dogfood 第3周目: `{() => err && <p/>}` のように thunk が Node を返すケースでは、
+// client 側で Comment ↔ Element の DOM swap も扱う (= `<Show>` を inline で書ける形に近づける)。
+// server 側 Node mutation は VNode shape が異なる (text/comment は `{kind, value}` 同形だが
+// element は `{kind, tag, attrs, ...}` で互換性が無い) ため未対応。dogfood の form エラー
+// 表示は client 側 reactivity だけで動くので server 側 Node 対応は YAGNI で保留。
 //
 // effect 内では `getRenderer()` を毎回呼んで「実行時点の active renderer」を取る。
 // hydrate 中に install された effect は、hydrate 完了後 (= setRenderer で browserRenderer
@@ -287,6 +293,9 @@ function _emptyDynamicSlot(r: ReturnType<typeof getRenderer>, thunk: () => unkno
       let v = thunk();
       if (typeof v === "function" && (v as Function).length === 0) v = (v as () => unknown)();
       if (v instanceof Signal) v = v.value;
+      // Node が返るケース: server 側 mutation は未対応。slot は comment のまま固定にして
+      // 静的 fallback とする (= dogfood の form エラー表示は server 側で reactive 化されない)。
+      if (v != null && r.isNode(v)) return;
       const next = toText(v);
       if (next === "") {
         slot.kind = "comment";
@@ -304,26 +313,50 @@ function _emptyDynamicSlot(r: ReturnType<typeof getRenderer>, thunk: () => unkno
     let v = thunk();
     if (typeof v === "function" && (v as Function).length === 0) v = (v as () => unknown)();
     if (v instanceof Signal) v = v.value;
-    const next = toText(v);
-    const isComment = current.nodeType === 8 /* Node.COMMENT_NODE */;
     const active = getRenderer();
-    if (next === "") {
-      if (!isComment) {
-        const replacement = active.createComment("");
-        const parent = current.parentNode;
-        if (parent) parent.replaceChild(replacement, current);
-        current = replacement;
-      }
+
+    // 初回 effect 同期実行時 (= effect() 呼び出し直後) は placeholder がまだ親に
+    // append されていないので `current.parentNode === null`。DOM 操作 skip + `current`
+    // ポインタも維持して、return された placeholder と `current` の不一致を防ぐ。
+    // 後続の effect 再実行 (= signal 変化後) は hydrate / mount 完了後で
+    // parentNode が必ず非 null。
+
+    // Node 返りは current を Node に置き換える。`<Show>` の anchor + branch swap と
+    // 同じ戦略で、parent.replaceChild で in-place DOM swap する。
+    if (v != null && active.isNode(v)) {
+      if (current === v) return;
+      const parent = current.parentNode;
+      if (!parent) return;
+      parent.replaceChild(v, current);
+      current = v;
       return;
     }
-    if (isComment) {
-      const replacement = active.createText(next);
+
+    const next = toText(v);
+    const nodeType = current.nodeType;
+    const isComment = nodeType === 8 /* Node.COMMENT_NODE */;
+    const isText = nodeType === 3 /* Node.TEXT_NODE */;
+
+    if (next === "") {
+      if (isComment) return;
       const parent = current.parentNode;
-      if (parent) parent.replaceChild(replacement, current);
+      if (!parent) return;
+      const replacement = active.createComment("");
+      parent.replaceChild(replacement, current);
       current = replacement;
-    } else {
-      active.setText(current as Text, next);
+      return;
     }
+
+    if (isText) {
+      active.setText(current as Text, next);
+      return;
+    }
+    // current が Comment または Element の場合は Text に置き換える
+    const parent = current.parentNode;
+    if (!parent) return;
+    const replacement = active.createText(next);
+    parent.replaceChild(replacement, current);
+    current = replacement;
   });
   return current;
 }

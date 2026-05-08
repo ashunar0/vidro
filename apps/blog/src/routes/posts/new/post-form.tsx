@@ -62,10 +62,9 @@ export function PostForm() {
           {...f.field("title")}
           class="mt-1 w-full rounded border border-gray-300 px-3 py-2"
         />
-        {/* `<p>` を常時出して reactive text の中身が空なら CSS `empty:hidden` で隠す。
-             条件付き thunk (= `{() => err && <p>...</p>}`) は SSR/hydrate で
-             VNode 構造が揃わず cursor mismatch するため避ける */}
-        <p class="mt-1 text-sm text-red-600 empty:hidden">{f.error("title").value}</p>
+        {f.error("title").value && (
+          <p class="mt-1 text-sm text-red-600">{f.error("title").value}</p>
+        )}
       </div>
 
       <div>
@@ -78,19 +77,15 @@ export function PostForm() {
           {...f.field("body")}
           class="mt-1 w-full rounded border border-gray-300 px-3 py-2"
         />
-        <p class="mt-1 text-sm text-red-600 empty:hidden">{f.error("body").value}</p>
+        {f.error("body").value && <p class="mt-1 text-sm text-red-600">{f.error("body").value}</p>}
       </div>
 
-      {/* button text の thunk reactive 化は memory `project_jsx_runtime_contract_pending`
-           の通り JSX runtime 側に SSR/hydrate cursor 整合の限界があるため、disabled だけ
-           reactive にして text は static で書く (= submit 中の visible feedback は
-           opacity だけ)。Vidro 機構の限界点記録 */}
       <button
         type="submit"
         disabled={() => f.pending.value}
         class="rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
       >
-        Create post
+        {f.pending.value ? "Submitting..." : "Create post"}
       </button>
     </form>
   );

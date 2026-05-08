@@ -474,6 +474,61 @@ describe("hydrate", () => {
     expect(() => hydrate(App, container)).not.toThrow();
   });
 
+  // dogfood 第3周目 bug 3 の核心: `{() => err && <p>{err}</p>}` 形式の thunk が
+  // 初期 falsy のとき empty Comment placeholder で hydrate が成立し、その後 signal
+  // 更新で Node に遷移できること。`_$dynamicChild` 経由 (= transform 後の形) で test。
+  test('`_$dynamicChild(() => x && <p/>)` が "" → Node 遷移しても DOM が更新される', () => {
+    const err = signal("");
+    const App = () =>
+      h(
+        "div",
+        null,
+        _$dynamicChild(() => err.value && h("p", null, _$text(err.value))),
+      );
+    const container = ssrInto(App);
+    // 初期 falsy → empty Comment placeholder
+    expect(container.firstElementChild?.innerHTML).toBe("<!---->");
+
+    hydrate(App, container);
+    err.value = "missing title";
+    // Comment が <p>missing title</p> に置き換わる
+    expect(container.querySelector("p")?.textContent).toBe("missing title");
+
+    // 元に戻すと再び empty Comment になる
+    err.value = "";
+    expect(container.querySelector("p")).toBeNull();
+    expect(container.firstElementChild?.innerHTML).toBe("<!---->");
+  });
+
+  // dogfood 第3周目 bug 4 の核心: `{() => pending ? "A" : "B"}` で thunk が初期 text を
+  // 返すケース。`_$dynamicChild` は peek 値で createText を作るので SSR/hydrate symmetric。
+  test("`_$dynamicChild(() => x ? 'A' : 'B')` が初期 text → 別 text 遷移で warning なく動く", () => {
+    const pending = signal(false);
+    const App = () =>
+      h(
+        "button",
+        null,
+        _$dynamicChild(() => (pending.value ? "Submitting..." : "Create post")),
+      );
+    const container = ssrInto(App);
+    expect(container.firstElementChild?.innerHTML).toBe("Create post");
+
+    const warns: unknown[][] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args);
+    };
+    try {
+      hydrate(App, container);
+    } finally {
+      console.warn = orig;
+    }
+    expect(warns.filter((w) => String(w[0]).includes("text mismatch"))).toHaveLength(0);
+
+    pending.value = true;
+    expect(container.textContent).toBe("Submitting...");
+  });
+
   // ADR 0056 review #2: hydrate 完了後に signal が "" → 非空に遷移したとき、
   // effect 内の swap が getRenderer() の active renderer (= browserRenderer) を
   // 使わないと、HydrationRenderer の cursor exhausted で throw する regression。
