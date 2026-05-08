@@ -145,13 +145,25 @@ async function handleLoaderEndpoint(
 }
 
 /**
- * POST handler — Phase 3 R-min (ADR 0037) + R-mid-3 (ADR 0042 nested action)。
+ * POST handler — Phase 3 R-min (ADR 0037) + R-mid-3 (ADR 0042 nested action)
+ * + ADR 0068 (action 置き場 + resource route)。
  *
  * action 解決順序 (path 完全一致のみ、deepest-first fallback はしない):
  *   1. leaf の `server.ts` (= match.server.load) に `action` export → これを呼ぶ
- *   2. 1 が無ければ、`pathPrefix === url.pathname` の layout の `layout.server.ts`
- *      に `action` export → これを呼ぶ (ADR 0042、layout が path の owner)
- *   3. どちらも無ければ 405 NoActionError
+ *      (= 既存 user 互換、`server.ts` 優先のため最上位に置く)
+ *   2. ADR 0068: leaf route が `index.server.tsx` で `action` named export を持つ
+ *      なら、それを呼ぶ (= page と action の co-location 完全形、痛み点 2 解消)
+ *   3. ADR 0068: route 不在 + leaf server.ts 不在の時、`server.ts` 単独 directory
+ *      (= resource route) を `compiled.servers` から path match で探して呼ぶ
+ *      (= 痛み点 6 解消、`/posts/:slug/delete/server.ts` 等を REST 自然に切れる)
+ *   4. それも無ければ「pathPrefix が url.pathname と完全一致する layout.server.ts」を
+ *      候補に加える (ADR 0042)。loader 不在の layout も想定するため、load 自体は
+ *      まず試して action フィールドの有無で判定する。
+ *   5. どれも無ければ 405 NoActionError
+ *
+ * 「完全一致」は動的 segment 対応必須: `pathPrefix = "/users/:id"` は実 URL
+ * `"/users/123"` にマッチさせる。LayoutEntry.pattern は **prefix-match** 用
+ * (= 子 path も拾う) なのでそのままは使えない。専用の完全一致比較を行う。
  *
  * その他の挙動 (R-min から不変):
  *   - action throw → SerializedError JSON で 500 (client 側 submission.error に流す)
@@ -174,16 +186,36 @@ async function handleAction(
 ): Promise<Response> {
   const match = matchRoute(url.pathname, compiled);
 
-  // 1. leaf の server.ts → action を試す
-  // 2. 無ければ「pathPrefix が url.pathname と完全一致する layout.server.ts」を
-  //    候補に加える (ADR 0042)。loader 不在の layout も想定するため、load 自体は
-  //    まず試して action フィールドの有無で判定する。
-  //
-  //    「完全一致」は動的 segment 対応必須: `pathPrefix = "/users/:id"` は実 URL
-  //    `"/users/123"` にマッチさせる。LayoutEntry.pattern は **prefix-match** 用
-  //    (= 子 path も拾う) なのでそのままは使えない。専用の完全一致比較を行う。
   const candidates: ServerModuleLoader[] = [];
+
+  // 1. leaf の server.ts (= 既存路線、最優先で `server.ts` 優先 semantics を保持)
   if (match.server) candidates.push(match.server.load);
+
+  // 2. ADR 0068: leaf route が `.server.tsx` の時、その module を action 候補に
+  //    追加。dynamic import の戻り値は default + named exports 全部入っているので
+  //    ServerModuleLoader 互換 (action フィールド有無を `mod.action` で判定する
+  //    既存ループに乗る)。`server.ts` が同 directory にある場合は 1 で先に拾われ
+  //    ているので shadow されない (= server.ts 優先、ADR 0068 Decision 論点 3)。
+  if (match.route && match.route.filePath.endsWith("/index.server.tsx")) {
+    candidates.push(match.route.load as unknown as ServerModuleLoader);
+  }
+
+  // 3. ADR 0068: resource route。route 不在 + leaf server.ts 不在の時、
+  //    `compiled.servers` から url.pathname に path match する ServerEntry を
+  //    探して candidates に積む。`/posts/:slug/delete/server.ts` のような
+  //    page を持たない action-only directory が REST 自然に動く。
+  //    params も resource route の path pattern から抽出して action に渡す
+  //    (= matchRoute は route 不在時 params を空にしてしまうため)。
+  let resourceParams: Record<string, string> | null = null;
+  if (!match.route && !match.server) {
+    const resource = findResourceServer(url.pathname, compiled);
+    if (resource) {
+      candidates.push(resource.load);
+      resourceParams = resource.params;
+    }
+  }
+
+  // 4. layout.server.ts (= ADR 0042、既存路線)
   for (const layout of match.layouts) {
     if (layout.serverLoad && layoutPathMatchesExact(layout.pathPrefix, url.pathname)) {
       candidates.push(layout.serverLoad);
@@ -217,7 +249,9 @@ async function handleAction(
 
   let result: unknown;
   try {
-    result = await actionFn({ request, params: match.params });
+    // resource route の場合は match.params が空なので findResourceServer で
+    // 抽出した params を使う。それ以外は match.params (route + layouts 由来)。
+    result = await actionFn({ request, params: resourceParams ?? match.params });
   } catch (err) {
     // ADR 0059: action が `throw new Response(...)` した場合 (= validation error
     // 等の意図的 status code) は serialize せずそのまま return する。client 側
@@ -489,6 +523,41 @@ function layoutPathMatchesExact(prefix: string, pathname: string): boolean {
   if (prefix === "") return pathname === "/";
   const source = "^" + prefix.replace(/:([^/]+)/g, "[^/]+") + "$";
   return new RegExp(source).test(pathname);
+}
+
+/**
+ * ADR 0068: resource route lookup。`compiled.servers` は ServerEntry の配列で、
+ * ServerEntry.path は `"/posts/:slug/delete"` のような pattern string。pathname を
+ * 各 entry の path pattern と完全一致させて、entry と抽出した params を返す。
+ *
+ * 通常 `matchRoute` は route が無いと `match.server` も null にしてしまうので、
+ * resource route (= page を持たない server.ts 単独 directory) では handleAction
+ * 内でこの helper を使って path match で server を引き当てる。params も併せて
+ * 抽出するのは、action に `{ request, params }` で `:slug` 等を渡せる必要がある
+ * ため (= matchRoute は route 不在時 params を空にしてしまう)。
+ */
+function findResourceServer(
+  pathname: string,
+  compiled: CompiledFromRoutes,
+): { load: ServerModuleLoader; params: Record<string, string> } | null {
+  for (const server of compiled.servers) {
+    const paramNames: string[] = [];
+    const source =
+      "^" +
+      server.path.replace(/:([^/]+)/g, (_, name: string) => {
+        paramNames.push(name);
+        return "([^/]+)";
+      }) +
+      "$";
+    const m = pathname.match(new RegExp(source));
+    if (!m) continue;
+    const params: Record<string, string> = {};
+    for (let i = 0; i < paramNames.length; i++) {
+      params[paramNames[i]!] = m[i + 1]!;
+    }
+    return { load: server.load, params };
+  }
+  return null;
 }
 
 function jsonResponse(status: number, body: unknown): Response {

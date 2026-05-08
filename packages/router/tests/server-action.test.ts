@@ -294,4 +294,152 @@ describe("createServerHandler — POST handler (ADR 0037 Phase 3 R-min)", () => 
     const body = (await res.json()) as { error: { name: string; message: string } };
     expect(body.error.name).toBe("NoActionError");
   });
+
+  // ---- ADR 0068: index.server.tsx の action export + resource route ----
+
+  test("ADR 0068: index.server.tsx に action export → leaf として拾われる", async () => {
+    // server.ts 不在、`.server.tsx` が default (component) と action 両方を export。
+    // page と action の co-location 完全形 (痛み点 2 解消)。
+    const manifest: RouteRecord = {
+      "/routes/posts/new/index.server.tsx": () =>
+        Promise.resolve({
+          default: () => null,
+          action: async ({ request }: { request: Request }) => {
+            const fd = await request.formData();
+            const raw = fd.get("title");
+            return { ok: true, title: typeof raw === "string" ? raw : "" };
+          },
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const fd = new FormData();
+    fd.append("title", "From server.tsx");
+    const res = await handler(
+      new Request("http://localhost/posts/new", { method: "POST", body: fd }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { actionResult: { ok: boolean; title: string } };
+    expect(body.actionResult).toEqual({ ok: true, title: "From server.tsx" });
+  });
+
+  test("ADR 0068: server.ts 優先 — server.ts と index.server.tsx の両方に action がある場合は server.ts が呼ばれる", async () => {
+    // 既存 user 互換: `server.ts` を意図的に置いてる user の action を shadow しない。
+    const manifest: RouteRecord = {
+      "/routes/posts/new/index.server.tsx": () =>
+        Promise.resolve({
+          default: () => null,
+          action: async () => ({ from: "server.tsx" }),
+        }),
+      "/routes/posts/new/server.ts": () =>
+        Promise.resolve({
+          action: async () => ({ from: "server.ts" }),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/posts/new", { method: "POST", body: new FormData() }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { actionResult: { from: string } };
+    expect(body.actionResult.from).toBe("server.ts");
+  });
+
+  test("ADR 0068: index.server.tsx に action 不在なら fallback chain に流れる", async () => {
+    // `.server.tsx` は default 出力のみで action 持たず、layout.server.ts の action に
+    // fallback する経路。`.server.tsx` の load() が成功するが action 不在で次候補へ。
+    const manifest: RouteRecord = {
+      "/routes/posts/index.server.tsx": () =>
+        Promise.resolve({
+          default: () => null,
+          // action 不在
+        }),
+      "/routes/posts/layout.tsx": noopRoute,
+      "/routes/posts/layout.server.ts": () =>
+        Promise.resolve({
+          action: async () => ({ from: "layout" }),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/posts", { method: "POST", body: new FormData() }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { actionResult: { from: string } };
+    expect(body.actionResult.from).toBe("layout");
+  });
+
+  test("ADR 0068: resource route — server.ts 単独 directory (page なし) で POST が action に届く", async () => {
+    // /posts/[slug]/delete/server.ts を resource route として登録。同 directory に
+    // index.tsx も index.server.tsx も無い (= page を持たない action-only route)。
+    // 痛み点 6 解消、REST 自然に path を切れる。
+    const manifest: RouteRecord = {
+      "/routes/posts/[slug]/index.tsx": noopRoute,
+      "/routes/posts/[slug]/delete/server.ts": () =>
+        Promise.resolve({
+          action: async ({ params }: { params: { slug: string } }) => ({
+            deleted: params.slug,
+          }),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/posts/foo/delete", {
+        method: "POST",
+        body: new FormData(),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { actionResult: { deleted: string } };
+    expect(body.actionResult).toEqual({ deleted: "foo" });
+  });
+
+  test("ADR 0068: resource route GET は 404 (= 既存 not-found fallback、本 ADR で挙動変えない)", async () => {
+    const manifest: RouteRecord = {
+      "/routes/posts/[slug]/delete/server.ts": () =>
+        Promise.resolve({
+          action: async () => ({ ok: true }),
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    // GET resource route → 既存 path で route 不在として 404
+    const res = await handler(
+      new Request("http://localhost/posts/foo/delete", {
+        method: "GET",
+        headers: { accept: "*/*" },
+      }),
+    );
+
+    expect(res.status).toBe(404);
+  });
+
+  test("ADR 0068: resource route で action 不在なら 405 (resource server.ts に loader のみ)", async () => {
+    const manifest: RouteRecord = {
+      "/routes/posts/[slug]/delete/server.ts": () =>
+        Promise.resolve({
+          loader: async () => ({}),
+          // action 不在
+        }),
+    };
+    const handler = createServerHandler({ manifest });
+
+    const res = await handler(
+      new Request("http://localhost/posts/foo/delete", {
+        method: "POST",
+        body: new FormData(),
+      }),
+    );
+
+    expect(res.status).toBe(405);
+    const body = (await res.json()) as { error: { name: string; message: string } };
+    expect(body.error.name).toBe("NoActionError");
+  });
 });
