@@ -1,12 +1,13 @@
 // 公開側: 記事詳細 (`.server.tsx`)。
 // ADR 0066 dogfood: async function component で `await db.postBySlug(...)` を直書き。
-// `.server.tsx` は loader を持たない (= ADR 0058 D-α-iii) ので PageProps generic
-// は不要、{ params } 直書きで OK。
+// ADR 0067: `./+types` per-route codegen 経由で `Route.PageProps` を引く。
+// ファイル位置 `[slug]` が single source of truth、params.slug は string で型推論される。
 
 import { Link } from "@vidro/router";
 import { db } from "../server";
+import type { Route } from "./+types";
 
-export default async function PostDetail({ params }: { params: { slug: string } }) {
+export default async function PostDetail({ params }: Route.PageProps) {
   const post = await db.postBySlug(params.slug);
   if (!post) {
     return (

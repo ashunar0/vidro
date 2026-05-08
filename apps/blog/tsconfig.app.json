@@ -16,11 +16,17 @@
     "jsx": "react-jsx",
     "jsxImportSource": "@vidro/core",
 
+    /* ADR 0067: per-route +types codegen */
+    /* `src/routes/.../*.tsx` から `./+types` を相対 import すると、 */
+    /* `.vidro/+types/routes/.../+types.d.ts` (= @vidro/plugin routeTypes() が auto-gen) */
+    /* が解決される。両 directory を 1 つの logical root として扱うのが rootDirs の役割。 */
+    "rootDirs": ["./src", "./.vidro/+types"],
+
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", ".vidro/**/*.d.ts"]
+  "include": ["src", ".vidro/**/*.d.ts", ".vidro/+types/**/*"]
 }
