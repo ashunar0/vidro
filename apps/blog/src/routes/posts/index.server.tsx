@@ -30,12 +30,12 @@ export default async function PostsIndex() {
               <Link href={`/posts/${p.slug}/edit`} class="text-blue-600 hover:underline">
                 Edit
               </Link>
-              {/* delete: cross-route POST、`/posts/[slug]/server.ts` の action
-                   (= 詳細 page と同 path co-location) に投げる。一覧 page は
-                   async server component で `submission()` 呼べないので
-                   pending/error 表示は現状なし (= dogfood 痛み点 4: 一覧で
-                   delete pending UX 不可)。 */}
-              <form method="post" action={`/posts/${p.slug}`} class="inline">
+              {/* ADR 0068 dogfood: resource route で delete を受ける。
+                   `/posts/[slug]/delete/server.ts` 単独 directory が action only
+                   route として認識される (= 痛み点 6 解消)。一覧 page は async
+                   server component なので pending/error 表示は依然なし — JS-rich UX
+                   が必要なら row ごと island 化する (= ADR 0069 別軸の応用)。 */}
+              <form method="post" action={`/posts/${p.slug}/delete`} class="inline">
                 <button type="submit" class="text-red-600 hover:underline">
                   Delete
                 </button>
