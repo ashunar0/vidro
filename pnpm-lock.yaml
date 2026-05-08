@@ -54,6 +54,9 @@ catalogs:
     wrangler:
       specifier: ^4.0.0
       version: 4.86.0
+    zod:
+      specifier: ^4.0.0
+      version: 4.4.3
 
 overrides:
   vite: npm:@voidzero-dev/vite-plus-core@latest
@@ -75,12 +78,18 @@ importers:
       '@vidro/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@vidro/form':
+        specifier: workspace:*
+        version: link:../../packages/form
       '@vidro/router':
         specifier: workspace:*
         version: link:../../packages/router
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.44.7(@cloudflare/workers-types@4.20260507.1)
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
@@ -346,6 +355,28 @@ importers:
       jsdom:
         specifier: 'catalog:'
         version: 29.1.0
+      typescript:
+        specifier: ^6.0.2
+        version: 6.0.3
+      vite-plus:
+        specifier: 0.1.20
+        version: 0.1.20(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(jsdom@29.1.0)(tsx@4.21.0)(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))(yaml@2.8.3)
+      vitest:
+        specifier: npm:@voidzero-dev/vite-plus-test@latest
+        version: '@voidzero-dev/vite-plus-test@0.1.20(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(jsdom@29.1.0)(tsx@4.21.0)(typescript@6.0.3)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))(yaml@2.8.3)'
+
+  packages/form:
+    dependencies:
+      '@vidro/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.6.0
+      '@typescript/native-preview':
+        specifier: 7.0.0-dev.20260328.1
+        version: 7.0.0-dev.20260328.1
       typescript:
         specifier: ^6.0.2
         version: 6.0.3
@@ -2923,6 +2954,9 @@ packages:
   zimmerframe@1.1.4:
     resolution: {integrity: sha512-B58NGBEoc8Y9MWWCQGl/gq9xBCe4IiKM0a2x7GZdQKOW5Exr8S1W24J6OgM1njK8xCRGvAJIL/MxXHf6SkmQKQ==}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
 snapshots:
 
   '@asamuzakjp/css-color@5.1.11':
@@ -4967,3 +5001,5 @@ snapshots:
       youch-core: 0.3.3
 
   zimmerframe@1.1.4: {}
+
+  zod@4.4.3: {}
