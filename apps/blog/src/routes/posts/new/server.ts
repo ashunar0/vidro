@@ -26,7 +26,12 @@ const inputSchema = z.object({
 // 将来 Phase 6 で `validator(schema)` middleware が 422 を Response throw して、
 // stub 側で `ServerFnValidationError` 等の custom class に deserialize する経路を
 // 入れるかどうかは Open Question (= ADR 0070 #6, dogfood で痛み顕在化したら起票)。
-type CreatePostResult = { ok: true; slug: string } | { ok: false; fields: Record<string, string> };
+// island form (post-form.tsx) で `await createPost(data) satisfies CreatePostResult`
+// 形に annotation したいので export する。Phase 6 (`@vidro/zod`) で
+// validator middleware が型 propagation する経路に置き換われば本 type も削除可。
+export type CreatePostResult =
+  | { ok: true; slug: string }
+  | { ok: false; fields: Record<string, string> };
 
 // serverFn に **明示的な generic 引数** を渡して Handler の R を CreatePostResult
 // (= 判別共用体) に固定する。inline annotation だと TS の variadic tuple inference

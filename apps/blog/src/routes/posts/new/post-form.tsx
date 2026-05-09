@@ -17,7 +17,7 @@
 import { formControl } from "@vidro/form";
 import { navigate } from "@vidro/router";
 import { z } from "zod";
-import { createPost } from "./server";
+import { createPost, type CreatePostResult } from "./server";
 
 const schema = z.object({
   title: z.string().min(1, "title is required"),
@@ -28,7 +28,10 @@ export function PostForm() {
   const f = formControl({ schema });
 
   const handleSubmit = async (data: z.infer<typeof schema>): Promise<void> => {
-    const result = await createPost(data);
+    // 型は server.ts から explicit に annotation する (= IDE TS server が
+    // serverFn の return 型推論で union を 1 branch に narrow する事象を観測した
+    // ため、堅実に固定。CLI tsc は通るが IDE 起因の差異も含めて回避)。
+    const result: CreatePostResult = await createPost(data);
     if (result.ok) {
       f.reset();
       navigate(`/posts/${result.slug}`);
