@@ -1,17 +1,29 @@
-// ADR 0070 Phase 1: serverFn() factory + Hono c subset context.
+// ADR 0070 Phase 1 + ADR 0072: serverFn() factory + Hono c subset context.
 //
 // 本 file は Phase 1 のみで、bundler 拡張 (= Phase 2 で fetch stub generation)
 // や directory middleware.ts 認識 (= Phase 3) は含めない。serverFn は server side
-// で直接呼べる internal form (= context を引数で受ける) として返るので、unit
+// で直接呼べる internal form (= context を末尾で受ける) として返るので、unit
 // test 可能。Phase 2 で bundler が wrap して位置引数のみの public form
 // (= `(...args) => Promise<R>`) として client / server 両側に export する。
 //
-// 設計判断: ADR 0070 論点 1 (= server.ts / *.server.tsx named export + serverFn
-// wrapper)、論点 6 (= Hono c subset、response builder と body parser を引く)、
-// 論点 7 (= 位置引数で dynamic param と body を受ける)。
+// 設計判断 (ADR 0072 で改訂):
+//   - handler signature は **`(...args: [...P, c?: Context]) => R`** (= c 末尾
+//     optional)、9 割の handler は `(input) => R` の pure service form で書ける、
+//     1 割の edge case (auth header / redirect 等) は `(input, c) => R` で対応
+//     (ADR 0072 論点 1-C)
+//   - middleware は Hono と同形 `(c, next) => ...` だが、`next(overrideArgs?)` で
+//     handler の引数を override できる経路を追加 (= validator middleware の typed
+//     input 渡しに使う、ADR 0072 論点 5-A)
+//   - dispatch は handler を `handler(...currentArgs, c)` で呼ぶ (= c は必ず末尾、
+//     ADR 0072 論点 3-A)
+//   - 論点 7 (= 位置引数で dynamic param と body を受ける) は維持
 //
-// 関連 ADR: 0070 (server function pattern)、0066 (async server component native
-// で getRequestEnv が ALS で動く)、0065 (scope context cross async)。
+// ADR 0072 partial supersede: ADR 0070 論点 6 (= handler が Hono c を第 1 引数で
+// 受ける) は handler 層から外して middleware 層に閉じる。c subset 自体は維持。
+//
+// 関連 ADR: 0070 (server function pattern)、0072 (handler signature pure service
+// form 改修)、0066 (async server component native で getRequestEnv が ALS で動く)、
+// 0065 (scope context cross async)。
 
 import { getRequestEnv } from "./request-env-scope";
 
@@ -65,9 +77,23 @@ export type Context = {
 };
 
 /**
- * Middleware 関数。Hono の `Middleware` 同形式で、`c` を受けて `next()` を
- * 呼んで chain を進める。`next()` を呼ばないと handler は実行されない (= 早期
- * return 経路、auth で unauthorized response を返す等)。
+ * Middleware 関数。Hono の `Middleware` 同形式 + `next(overrideArgs?)` で
+ * 次段以降の args を override できる経路追加 (ADR 0072 論点 5-A)。`c` を受けて
+ * `next()` を呼んで chain を進める。`next()` を呼ばないと handler は実行されない
+ * (= 早期 return 経路、auth で unauthorized response を返す等)。
+ *
+ * generic:
+ *   - `TIn`  = 自分が前段から受け取る args の型 (= 通常 unknown)
+ *   - `TOut` = 自分が次段に渡す args の型 (= validator(schema) なら z.infer<S>)
+ *
+ * generic は **marker 用途** (= validator 等 type 連鎖する middleware が
+ * `Middleware<unknown, z.infer<S>>` で意図表明する)。core の dispatch logic は
+ * generic を runtime で使わず、`next(overrideArgs)` の値で args を更新する。
+ *
+ * `next(overrideArgs)`:
+ *   - 引数なし → 前段の args をそのまま次段に渡す (= 多くの middleware の経路)
+ *   - 引数あり → 次段以降の args を `overrideArgs` で置き換える (= validator が
+ *     `next([parsed.data])` で handler の input 引数を typed 値に置換する経路)
  *
  * 戻り値:
  *   - `void` / `Promise<void>` → chain 完了で handler に到達
@@ -78,58 +104,116 @@ export type Context = {
  *     早期 return は「next() を呼ばないこと」で明示する設計。next() 後の戻り値で
  *     handler 結果を上書きできてしまうと chain semantics が崩れるため。
  */
-export type Middleware = (
+// generic は marker 用途で runtime 不使用 → lint 抑止のため `_` prefix。
+// validator(schema) などが `Middleware<unknown, z.infer<S>>` で意図表明する。
+export type Middleware<_TIn = unknown, _TOut = _TIn> = (
   c: Context,
-  next: () => Promise<void>,
+  next: (overrideArgs?: readonly unknown[]) => Promise<void>,
 ) => Promise<void | Response> | void | Response;
 
 /**
- * Handler 関数。serverFn の最後の引数として渡す本体。`c` (= context) と user
- * 定義の位置引数を受けて値を返す。
+ * Handler 関数。serverFn の最後の引数として渡す本体。user 定義の位置引数を受ける。
+ * **`c` (Context) を末尾引数として書くか書かないかは user 自由** (ADR 0072 論点 1-C)。
+ * 9 割の handler は `(input) => R` の pure service form で書けて、1 割の edge case
+ * (auth header / redirect 等) は `(input, c: Context) => R` のように c を末尾で受ける。
+ *
+ * 型レベルでは Handler の `Args` が user の signature 全体 (= input only or
+ * input + Context)。TS variadic tuple の推論で「c が optional」を表現すると
+ * `(input: T)` の T を Context と曖昧化する事象が出るため、c の有無は user
+ * signature 自体に委ねる pragma。public form (= bundler wrap 後の client 視点)
+ * は `StripTrailingContext` で末尾 Context を除外、internal form (= dispatch
+ * 経路) は `EnsureTrailingContext` で末尾 Context を保証する型変換。
  *
  * ADR 0070 論点 7: `[slug]` 等の dynamic route segment N 個は引数の最初の N 個に
- * inject される (= Phase 2 bundler が stub 生成時に振り分ける)。Phase 1 では
- * 位置引数を passthrough する内部 form。
+ * inject される (= Phase 2 bundler が stub 生成時に振り分ける)。
+ *
+ * 例:
+ *   `(input) => R`            → c 不要な pure service handler (= 9 割)
+ *   `(input, c: Context) => R` → c を使う handler (= auth header 取得 等)
+ *   `(slug, input) => R`      → dyn segment + body input、c 不要
+ *   `(slug, input, c: Context) => R` → 全部 + c
  */
-export type Handler<P extends readonly unknown[], R> = (c: Context, ...args: P) => Promise<R> | R;
+export type Handler<Args extends readonly unknown[], R> = (...args: Args) => Promise<R> | R;
 
 /**
- * serverFn factory の **internal form** (= context を第 1 引数で受ける形)。
- * server-side dispatch (= Phase 2c の dispatchServerFn) と unit test (= Phase 1
- * tests) が使う、user code が直接呼ぶ形ではない。
+ * Args 末尾が Context (or Context | undefined) なら除外、それ以外なら as-is。
+ * public form (= bundler stub と client 視点) で c を見せないために使う。
+ *
+ *   StripTrailingContext<[Input]>             = [Input]              (c なし)
+ *   StripTrailingContext<[Input, Context]>    = [Input]              (c 除外)
+ *   StripTrailingContext<[]>                  = []                   (空)
  */
-export type ServerFnInternal<P extends readonly unknown[], R> = (
-  c: Context,
-  ...args: P
+type StripTrailingContext<Args extends readonly unknown[]> = Args extends readonly [
+  ...infer Rest,
+  infer Last,
+]
+  ? [Last] extends [Context | undefined]
+    ? Rest
+    : Args
+  : Args;
+
+/**
+ * Args 末尾が Context (or Context | undefined) ならそのまま、それ以外なら末尾に
+ * Context を追加。internal form (= dispatch / test 経路) で c を必ず受ける形を
+ * 保証するために使う。
+ *
+ *   EnsureTrailingContext<[Input]>            = [Input, Context]     (c 追加)
+ *   EnsureTrailingContext<[Input, Context]>   = [Input, Context]     (as-is)
+ *   EnsureTrailingContext<[]>                 = [Context]            (c のみ)
+ */
+type EnsureTrailingContext<Args extends readonly unknown[]> = Args extends readonly [
+  ...infer _Rest,
+  infer Last,
+]
+  ? [Last] extends [Context | undefined]
+    ? Args
+    : readonly [...Args, Context]
+  : readonly [Context];
+
+/**
+ * serverFn factory の **internal form** (= context を **末尾必須** で受ける形、
+ * ADR 0072 論点 3-A)。server-side dispatch (= Phase 2c の dispatchServerFn) と
+ * unit test が使う、user code が直接呼ぶ形ではない。
+ *
+ * Handler の Args が末尾に Context を含まない場合は末尾に Context を追加した形に
+ * 変形 (= EnsureTrailingContext)。Args が既に Context を末尾に持つなら as-is。
+ */
+export type ServerFnInternal<Args extends readonly unknown[], R> = (
+  ...args: EnsureTrailingContext<Args>
 ) => Promise<R>;
 
 /**
  * serverFn factory の **public form** (= Phase 2c で user が import して呼ぶ形)。
  * 位置引数のみで context は省く (= server-side では bundler stub / dispatch が
  * c を inject、client-side では bundler stub が fetch wire 化)。
+ *
+ * Handler の Args 末尾に Context があれば除外 (= StripTrailingContext)、これで
+ * client 視点の signature に c が現れない。
  */
-export type ServerFnPublic<P extends readonly unknown[], R> = (...args: P) => Promise<R>;
+export type ServerFnPublic<Args extends readonly unknown[], R> = (
+  ...args: StripTrailingContext<Args>
+) => Promise<R>;
 
 /**
  * serverFn factory の戻り値型 (= public form + `.run` で internal form 露出)。
  *
- *   - `(...args)` 直呼出 → public form (= user code 経路、Phase 2c stub と signature 一致)
- *   - `.run(c, ...args)` → internal form (= unit test / dispatchServerFn 経路、c 明示)
+ *   - `(...args)` 直呼出 → public form (= user code 経路、Phase 2c stub と signature 一致、c 隠れる)
+ *   - `.run(...args, c)` → internal form (= unit test / dispatchServerFn 経路、c 末尾明示、ADR 0072 論点 3-A)
  *
  * runtime 実体は同一関数を public form 型にキャストしたもので、`.run` は
  * 同じ関数への direct reference (= internal form 型のまま)。`createPost(input)` も
- * `createPost.run(c, input)` も runtime では `internalForm(c, ...rest)` を呼ぶ。
+ * `createPost.run(input, c)` も runtime では `internalForm(...args, c)` を呼ぶ。
  *
  * client bundle 経路では `__vidroServerFnStub("/url")` に置換されて public form
  * のみが立つ (= `.run` は client 側に存在しない、stub の戻り値は普通の関数)。
  * client から `.run` を呼ぶと undefined エラー (= 想定外の使い方)。
  */
-export type ServerFn<P extends readonly unknown[], R> = ServerFnPublic<P, R> & {
+export type ServerFn<Args extends readonly unknown[], R> = ServerFnPublic<Args, R> & {
   /**
-   * Internal form (= context を第 1 引数で受ける)。unit test と
+   * Internal form (= context を末尾必須で受ける、ADR 0072 論点 3-A)。unit test と
    * dispatchServerFn (Phase 2c) が使う、client-side では存在しない。
    */
-  readonly run: ServerFnInternal<P, R>;
+  readonly run: ServerFnInternal<Args, R>;
 };
 
 /**
@@ -137,68 +221,94 @@ export type ServerFn<P extends readonly unknown[], R> = ServerFnPublic<P, R> & {
  * (= Hono `app.post(mw, h)` 同形式の typed rest)。TS の variadic tuple types
  * で表現。
  *
+ * Middleware は generic を緩く `Middleware<unknown, unknown>` で受ける。validator
+ * 等 type 連鎖を意図する middleware は `Middleware<unknown, T>` で自分の output
+ * を表明できるが、core の dispatch logic は generic を runtime で使わない
+ * (ADR 0072 論点 5-A、type 連鎖は別途 overload 等で実装する)。
+ *
  * 例:
  *   serverFn(handler)                       → middleware なし
  *   serverFn(authMw, handler)               → 1 middleware
  *   serverFn(authMw, rateLimit, handler)    → 2 middleware
+ *   serverFn(validator(schema), handler)    → validator が input override (ADR 0072)
  */
-type ServerFnArgs<P extends readonly unknown[], R> = readonly [...Middleware[], Handler<P, R>];
+type ServerFnArgs<Args extends readonly unknown[], R> = readonly [
+  ...Middleware<unknown, unknown>[],
+  Handler<Args, R>,
+];
 
 /**
  * `serverFn(...mw, handler)` factory。
  *
- * - middleware を chain で実行、`next()` を呼ぶことで次の middleware → 最終的に
- *   handler に到達 (= koa/express/hono の onion model)
+ * - middleware を chain で実行、`next(overrideArgs?)` を呼ぶことで次の middleware
+ *   → 最終的に handler に到達 (= koa/express/hono の onion model)
  * - middleware が `next()` を呼ばずに早期 Response return すると handler は実行
  *   されず、Response が呼出元に伝わる (= auth fail / 422 等)
+ * - middleware が `next([newInput])` で次段の args を override できる
+ *   (= validator middleware が typed input を handler に渡す経路、ADR 0072 論点 5-A)
  * - handler の戻り値が serverFn の戻り値として返る (= Phase 2 で JSON wire 化)
  *
  * 戻り値の **TS 型は public form** (`(...args: P) => Promise<R>`、= Phase 2c
- * の user code から見える形)。runtime 実体は internal form (= context が第 1
- * 引数) で、dispatchServerFn / Phase 1 unit test は `as unknown as
- * ServerFnInternal<P, R>` でキャストして c を渡す。
+ * の user code から見える形)。runtime 実体は internal form (= context が末尾、
+ * ADR 0072 論点 3-A) で、dispatchServerFn / unit test は `.run(...args, c)` で
+ * 呼ぶ経路を取る。
  *
  * @example
- * // Phase 7 dogfood の user 視点:
+ * // Phase 7 dogfood の user 視点 (ADR 0072 Path 4):
  * // server.ts
- * export const createPost = serverFn(async (c, input: Input) => {
+ * export const createPost = serverFn(validator(schema), async (input: Input) => {
  *   return db.posts.insert(input);
  * });
  *
- * // post-form.client.tsx
+ * // post-form.tsx
  * import { createPost } from "./server";
  * const post = await createPost(input); // public form、c を見せない
  *
  * @example
  * // unit test / direct invocation:
- * const fn = serverFn(async (c, name: string) => `hello ${name}`);
+ * const fn = serverFn(async (name: string) => `hello ${name}`);
  * const c = createContext({ request });
- * const result = await (fn as unknown as ServerFnInternal<[name: string], string>)(c, "world");
+ * const result = await fn.run("world", c); // c は末尾必須
  */
-export function serverFn<P extends readonly unknown[], R>(
-  ...args: ServerFnArgs<P, R>
-): ServerFn<P, R> {
-  // 最後が handler、残りが middleware (= TS variadic tuple の runtime 表現)
-  const handler = args[args.length - 1] as Handler<P, R>;
-  const middlewares = args.slice(0, -1) as Middleware[];
+export function serverFn<Args extends readonly unknown[], R>(
+  ...args: ServerFnArgs<Args, R>
+): ServerFn<Args, R> {
+  // 最後が handler、残りが middleware (= TS variadic tuple の runtime 表現)。
+  // handler は Args 型 signature を持つが、dispatch から `(...args, c)` で呼ぶため
+  // 内部では variadic unknown[] で扱う。Args が末尾に Context を含むなら c が bind、
+  // 含まないなら c は extra arg として variadic で無視される (= runtime safe)。
+  const handler = args[args.length - 1] as (...allArgs: unknown[]) => Promise<R> | R;
+  const middlewares = args.slice(0, -1) as Middleware<unknown, unknown>[];
 
-  const internalForm = async (c: Context, ...positionalArgs: P): Promise<R> => {
+  // internal form: c 末尾必須 (ADR 0072 論点 3-A)。dispatch / test から呼ばれる。
+  const internalForm = async (...allArgs: unknown[]): Promise<R> => {
+    if (allArgs.length === 0) {
+      throw new Error(
+        "[vidro/serverFn] internal form must be called with Context as the last argument",
+      );
+    }
+    const c = allArgs[allArgs.length - 1] as Context;
+    const initialArgs = allArgs.slice(0, -1);
+
     let result: R | undefined;
     let resultSet = false;
     let earlyResponse: Response | undefined;
 
     // chain を再帰で組み立てる: idx 番目 middleware を呼び、その next() で
-    // idx + 1 番目を呼ぶ。最後の next() で handler を呼ぶ。
-    const dispatch = async (idx: number): Promise<void> => {
+    // idx + 1 番目を呼ぶ。最後の next() で handler を呼ぶ。currentArgs は
+    // middleware が next(overrideArgs) で更新できる (= validator middleware が
+    // typed input を handler に渡すための経路、ADR 0072 論点 5-A)。
+    const dispatch = async (idx: number, currentArgs: readonly unknown[]): Promise<void> => {
       if (idx >= middlewares.length) {
-        // chain 終端 → handler 呼び出し
-        result = await handler(c, ...positionalArgs);
+        // chain 終端 → handler 呼び出し (c は末尾、ADR 0072 論点 3-A)。
+        // handler signature が `(input)` なら c は variadic で無視、`(input, c)` なら bind。
+        result = await handler(...currentArgs, c);
         resultSet = true;
         return;
       }
       const mw = middlewares[idx]!;
       let nextCalled = false;
-      const next = async () => {
+      const next = async (overrideArgs?: readonly unknown[]) => {
         if (nextCalled) {
           throw new Error(
             "[vidro/serverFn] middleware called next() multiple times " +
@@ -206,7 +316,11 @@ export function serverFn<P extends readonly unknown[], R>(
           );
         }
         nextCalled = true;
-        await dispatch(idx + 1);
+        // override が明示されていればそちらを使う、無ければ前段の args を継承
+        // (= 多くの middleware は args に手を入れない)。validator middleware は
+        // next([parsedInput]) で handler input を typed 値に置き換える経路。
+        const nextArgs = overrideArgs ?? currentArgs;
+        await dispatch(idx + 1, nextArgs);
       };
       const ret = await mw(c, next);
       if (ret instanceof Response && !nextCalled) {
@@ -222,7 +336,7 @@ export function serverFn<P extends readonly unknown[], R>(
       }
     };
 
-    await dispatch(0);
+    await dispatch(0, initialArgs);
 
     if (earlyResponse) {
       // Phase 1 では throw で表現。Phase 2 で server entry がこの throw を
@@ -242,11 +356,11 @@ export function serverFn<P extends readonly unknown[], R>(
     return result as R;
   };
 
-  // runtime は internal form (= c, ...args)、TS 型は public form + `.run` 経由で
-  // internal form 露出。`.run` は同 function への参照、cast 重ねて両 form 提供。
-  // Phase 2c の dispatchServerFn は `entry.handler(c, ...args)` 直呼出する経路で、
+  // runtime は internal form (= ...args, c 末尾)、TS 型は public form + `.run` 経由
+  // で internal form 露出。`.run` は同 function への参照、cast 重ねて両 form 提供。
+  // Phase 2c の dispatchServerFn は `entry.handler(...args, c)` 直呼出する経路で、
   // ServerFnRuntimeEntry["handler"] (= internal form) としての cast 済み。
-  const publicForm = internalForm as unknown as ServerFn<P, R>;
+  const publicForm = internalForm as unknown as ServerFn<Args, R>;
   Object.defineProperty(publicForm, "run", {
     value: internalForm,
     writable: false,
@@ -314,7 +428,7 @@ export function createContext(options: {
 /**
  * Phase 2c: server bundle 経由で eager 登録される 1 server function entry。
  * URL template (= file path 由来、`[xxx]` を含む) と handler (= serverFn 戻り値の
- * internal form `(c, ...args) => Promise<R>`) のペア。
+ * internal form `(...args, c) => Promise<R>`、c 末尾、ADR 0072 論点 3-A) のペア。
  *
  * Plugin 側 (= @vidro/plugin の `routeTypes()`) が build 時に discoverServerFns を
  * 走らせて `.vidro/server-fn-manifest.ts` を生成、そこから `serverFnManifest:
@@ -322,15 +436,20 @@ export function createContext(options: {
  * して `createServerHandler({ serverFns })` に渡す。
  *
  * 型は loose (= `unknown`)。実際の handler は具体型を持つが、registry レベルで
- * 列挙するため `(c, ...args: unknown[]) => Promise<unknown>` に統一。spread back
- * は server entry が body から JSON 配列として decode した結果を unknown[] として
- * 渡す経路。
+ * 列挙するため `(...args: unknown[]) => Promise<unknown>` に統一 (末尾の args が
+ * c という規約は doc レベル)。spread back は server entry が body から JSON 配列
+ * として decode した結果を unknown[] として渡す経路。
  */
 export type ServerFnRuntimeEntry = {
   /** URL template (= 例: "/posts/[slug]/edit/updatePost") */
   url: string;
-  /** serverFn(...) 戻り値の internal form (= context + 位置引数で受ける) */
-  handler: (c: Context, ...args: unknown[]) => Promise<unknown>;
+  /**
+   * serverFn(...) 戻り値の internal form (= 位置引数 + c 末尾で受ける、ADR 0072
+   * 論点 3-A)。dispatchServerFn が `handler(...params, ...bodyArgs, c)` で呼ぶ。
+   * readonly unknown[] で受けることで ServerFnInternal<Args, R> (= readonly tuple)
+   * からも assign 可能 (= variance 緩和)。
+   */
+  handler: (...args: readonly unknown[]) => Promise<unknown>;
 };
 
 /**
@@ -431,8 +550,25 @@ export async function dispatchServerFn(
       executionCtx: options.executionCtx,
     });
 
+    // body args を c.var.body に詰める (= validator middleware が schema parse する
+    // ために参照する経路、ADR 0072 論点 5-A)。bodyArgs.length === 1 なら通常の
+    // input 1 個 case で raw を入れる、複数 (= 想定外 / legacy) は配列ごと入れる。
+    // **bodyArgs.length === 0 (= 引数なし fn) は set しない** (= c.var.body は
+    // undefined のまま)。validator(schema) middleware は input ある fn 専用前提で
+    // 運用 — 引数なし fn に validator を付けると `schema.safeParse(undefined)` が
+    // 走って 422 を返してしまう (= ADR 0072 review 60th session で指摘あり、
+    // Phase 6 `@vidro/zod` 実装時に validator 例コードでも明示する)。
+    if (bodyArgs.length === 1) {
+      c.set("body", bodyArgs[0]);
+    } else if (bodyArgs.length > 1) {
+      c.set("body", bodyArgs);
+    }
+
     try {
-      const result = await entry.handler(c, ...params, ...bodyArgs);
+      // handler 呼び出し: dyn segment (= params) + body (= bodyArgs) + c (= 末尾、
+      // ADR 0072 論点 3-A)。handler signature が c を受けない場合 (= pure service
+      // form `(input) => R`) も TS variadic で安全に無視される。
+      const result = await entry.handler(...params, ...bodyArgs, c);
       if (result === undefined) {
         return new Response(null, { status: 204 });
       }

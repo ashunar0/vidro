@@ -37,7 +37,10 @@ export type CreatePostResult =
 // (= 判別共用体) に固定する。inline annotation だと TS の variadic tuple inference
 // で R が union のまま伝わらず、IDE の TS server が結果型を 1 branch に narrow する
 // 事象を観測したため (= dogfood 第 7 周目で発見)。明示的指定で robust に倒す。
-export const createPost = serverFn<[input: unknown], CreatePostResult>(async (_c, input) => {
+//
+// ADR 0072 採用後: handler signature は pure service form `(input) => R` (= c
+// 削除、9 割の case)。c が要る edge case は末尾で `(input, c) => R` 形で受ける。
+export const createPost = serverFn<[input: unknown], CreatePostResult>(async (input) => {
   const parsed = inputSchema.safeParse(input);
   if (!parsed.success) {
     const fields: Record<string, string> = {};

@@ -378,10 +378,17 @@ function renderPerRoutePlusTypes(routePath: string): string {
 //   ];
 //
 // `as unknown as ...` cast は **handler 型を loose に揃える** ため。serverFn(...)
-// は `(c, slug: string, input: Input) => Promise<Post>` のような具体型を返すが、
-// runtime registry は `(c, ...args: unknown[]) => Promise<unknown>` で統一する
-// (= dispatch 側で位置引数を spread back する経路)。TS の strictFunctionTypes 下
-// では parameter 型 contravariance で直接 assignable にならないため明示 cast。
+// は `(slug: string, input: Input) => Promise<Post>` のような具体型を返すが
+// (ADR 0072: handler signature は pure service form `(...args, c?) => R`)、
+// runtime registry は `(...args: readonly unknown[]) => Promise<unknown>` で統一
+// する (= dispatch 側が `entry.handler(...params, ...bodyArgs, c)` で c を末尾
+// spread する経路)。TS の variadic tuple contravariance で固定 length tuple
+// → readonly unknown[] への直接 assign が通らないため、明示 cast で逃がす。
+//
+// runtime 上は `$$0.createPost` (= public form) を呼んでも実体は `internalForm`
+// (= dispatch から `(...args, c)` で呼ばれる internal form)。`as unknown as` で
+// 型は loose に揃え、runtime 経路は internalForm が末尾の c を Context として
+// 取り出す。
 function renderServerFnManifest(
   entries: readonly ServerFnEntry[],
   manifestFileAbs: string,
