@@ -14,6 +14,7 @@
   "scripts": {
     "build": "vp pack --dts",
     "dev": "vp pack --dts --watch",
+    "test": "vp test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -29,7 +30,8 @@
     "@vidro/router": "workspace:*",
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "@vidro/router": "workspace:*",

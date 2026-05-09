@@ -12,3 +12,14 @@ export { jsxTransform } from "./jsx-transform";
 export { routeTypes, type RouteTypesOptions } from "./route-types";
 export { serverBoundary, type ServerBoundaryOptions } from "./server-boundary";
 export { serverComponent, type ServerComponentOptions } from "./server-component";
+export {
+  scanServerFnExports,
+  urlForServerFn,
+  discoverServerFns,
+  type ServerFnExport,
+  type ServerFnEntry,
+  type ServerFnKind,
+  type UrlForServerFnOptions,
+  type DiscoverServerFnsOptions,
+  type VirtualFs,
+} from "./server-fn-registry";
