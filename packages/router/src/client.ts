@@ -3,6 +3,43 @@ import { Router } from "./router";
 import type { RouteRecord } from "./route-tree";
 import { setupIslandHydration } from "./island";
 
+/**
+ * server function の 422 (= validator middleware の `throw new Response({fields}, 422)`)
+ * を client side で受け取って throw する custom error class (ADR 0071 + ADR 0072)。
+ *
+ * 使い方 (= post-form.tsx 等の island form):
+ *
+ *   import { ServerFnValidationError } from "@vidro/router/client";
+ *   import { createPost } from "./server";
+ *
+ *   try {
+ *     const result = await createPost(data);
+ *     // success path
+ *   } catch (err) {
+ *     if (err instanceof ServerFnValidationError) {
+ *       formControl.setFieldErrors(err.fields);
+ *     } else {
+ *       throw err; // 想定外
+ *     }
+ *   }
+ */
+export class ServerFnValidationError extends Error {
+  /** stub の URL template (= 例: "/posts/new/createPost") */
+  readonly url: string;
+  /**
+   * field 別 error message (= ADR 0059 規約)。`Record<string, string>` で
+   * field name → message。1 field 1 message 制約 (= ADR 0059 / ADR 0071 §論点 3 同形)。
+   */
+  readonly fields: Readonly<Record<string, string>>;
+
+  constructor(url: string, fields: Record<string, string>) {
+    super(`[vidro] validation failed for ${url}: ${Object.keys(fields).join(", ")}`);
+    this.name = "ServerFnValidationError";
+    this.url = url;
+    this.fields = fields;
+  }
+}
+
 // ADR 0070 Phase 2b: bundler が生成する client side stub の runtime 部品。
 //
 // server.ts / *.server.tsx 内の `serverFn(...)` named export は、client bundle
@@ -67,8 +104,33 @@ export function __vidroServerFnStub(urlTemplate: string): (...args: unknown[]) =
       body: JSON.stringify(body),
     });
     if (!res.ok) {
+      // 422 + content-type application/json + body shape が `{fields: ...}` なら
+      // ServerFnValidationError として deserialize (= ADR 0071 + ADR 0072 連動、
+      // validator middleware の 422 throw を user に typed error として届ける経路)。
+      // shape が想定外 (= 422 だが {fields} 構造でない) なら plain Error に fall through。
+      if (
+        res.status === 422 &&
+        (res.headers.get("content-type") ?? "").includes("application/json")
+      ) {
+        const data = (await res.json().catch(() => null)) as unknown;
+        if (
+          typeof data === "object" &&
+          data !== null &&
+          "fields" in data &&
+          typeof (data as { fields: unknown }).fields === "object" &&
+          (data as { fields: unknown }).fields !== null
+        ) {
+          throw new ServerFnValidationError(
+            urlTemplate,
+            (data as { fields: Record<string, string> }).fields,
+          );
+        }
+        // shape 不一致 → fall through に進むため status だけ stub の Error に詰める
+        throw new Error(
+          `[vidro] server function ${urlTemplate} failed: 422 (validation error shape mismatch)`,
+        );
+      }
       // body が読めれば message として混ぜる、駄目なら status 番号だけで例外。
-      // 詳細 error class 化は Open Question (ADR 0070 #6)、当面は plain Error。
       const text = await res.text().catch(() => "");
       throw new Error(
         `[vidro] server function ${urlTemplate} failed: ${res.status} ${res.statusText}` +
