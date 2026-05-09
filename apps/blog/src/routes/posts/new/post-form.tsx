@@ -24,19 +24,26 @@ const schema = z.object({
   body: z.string().min(1, "body is required"),
 });
 
+// user-defined type predicate で discriminated union を narrow する。
+// CLI `tsc -b` は `if (!result.ok)` 形で narrow 通るのに IDE TS server (TS 6.0.3)
+// が effect 反映しない事象を dogfood 第 7 周目で観測したため、最も robust な
+// type predicate 形に倒す。Phase 6 (`@vidro/zod` validator middleware) で
+// 422 throw → stub 側 deserialize 経路に移れば本 helper は不要になる。
+function isOk(r: CreatePostResult): r is { ok: true; slug: string } {
+  return r.ok;
+}
+
 export function PostForm() {
   const f = formControl({ schema });
 
   const handleSubmit = async (data: z.infer<typeof schema>): Promise<void> => {
-    // 型は server.ts から explicit annotation で固定 + narrowing は **失敗側を
-    // if 内で処理 + early return** 形に倒す (= IDE TS server で
-    // `if (result.ok) { return } / fields` 形の narrow が逆向きに残る事象を
-    // 観測したため、TS が最も robust に narrow する pattern に揃える)。
     const result: CreatePostResult = await createPost(data);
-    if (!result.ok) {
+
+    if (!isOk(result)) {
       f.setFieldErrors(result.fields);
       return;
     }
+
     f.reset();
     navigate(`/posts/${result.slug}`);
   };
