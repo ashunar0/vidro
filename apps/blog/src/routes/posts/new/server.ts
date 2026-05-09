@@ -28,7 +28,11 @@ const inputSchema = z.object({
 // 入れるかどうかは Open Question (= ADR 0070 #6, dogfood で痛み顕在化したら起票)。
 type CreatePostResult = { ok: true; slug: string } | { ok: false; fields: Record<string, string> };
 
-export const createPost = serverFn(async (_c, input: unknown): Promise<CreatePostResult> => {
+// serverFn に **明示的な generic 引数** を渡して Handler の R を CreatePostResult
+// (= 判別共用体) に固定する。inline annotation だと TS の variadic tuple inference
+// で R が union のまま伝わらず、IDE の TS server が結果型を 1 branch に narrow する
+// 事象を観測したため (= dogfood 第 7 周目で発見)。明示的指定で robust に倒す。
+export const createPost = serverFn<[input: unknown], CreatePostResult>(async (_c, input) => {
   const parsed = inputSchema.safeParse(input);
   if (!parsed.success) {
     const fields: Record<string, string> = {};
