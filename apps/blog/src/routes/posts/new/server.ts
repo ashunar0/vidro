@@ -1,18 +1,28 @@
-// dogfood Phase 7 (Phase 2c 実証): AppRouter mode の service 層。
+// dogfood Phase 7' (ADR 0071 + ADR 0072 連動): @vidro/zod validator middleware で
+// schema 重複 + safeParse boilerplate + union 戻り値が消えた。
 //
-// 旧: index.server.tsx の `action` named export (= ADR 0068 同 path co-location、
-//     POST /posts/new で受ける)
-// 新: 本 server.ts に `createPost = serverFn(...)` を named export、bundler が
-//     POST /posts/new/createPost に dispatch する table を auto-gen
-//     (= .vidro/server-fn-manifest.ts、ADR 0070 Phase 2c)
+// 旧 (Phase 7、ADR 0072 前):
+//   const parsed = schema.safeParse(input);
+//   if (!parsed.success) {
+//     const fields = {}; for (const issue of parsed.error.issues) {...}
+//     return { ok: false, fields };
+//   }
+//   const post = await db.createPost(parsed.data);
+//   return { ok: true, slug: post.slug };
 //
-// island form (post-form.tsx) は `import { createPost } from "./server"` で
-// stub 化された fetch を呼ぶ → server side で本 file の handler が走る。
-// 同 schema 定義は post-form.tsx 側にも残る (= dogfood で痛み点として観察、
-// Phase 6 `@vidro/zod` validator middleware 起票材料)。
+// 新 (Phase 7'、ADR 0071 + ADR 0072):
+//   serverFn(validator(schema), async (input) => {
+//     const post = await db.createPost(input);
+//     return { slug: post.slug };
+//   });
+//
+// island form (post-form.tsx) は `await createPost(input)` の戻り値が `{ slug }`
+// で typed (= 型貫通 #4 完成)、422 は ServerFnValidationError として throw され、
+// try/catch + setFieldErrors で field error に流す。
 
-import { z } from "zod";
 import { serverFn } from "@vidro/router";
+import { validator } from "@vidro/zod";
+import { z } from "zod";
 import { db } from "../../../data/posts";
 
 const inputSchema = z.object({
@@ -20,36 +30,14 @@ const inputSchema = z.object({
   body: z.string().min(1, "body is required"),
 });
 
-// validation 失敗を例外でなく union 結果で表現する。Phase 2c の `__vidroServerFnStub`
-// は `!res.ok` で plain Error を throw する設計のため、構造化 error (= field 別
-// メッセージ) を island で受けたければ普通の戻り値で返すのが今の素直な経路。
-// 将来 Phase 6 で `validator(schema)` middleware が 422 を Response throw して、
-// stub 側で `ServerFnValidationError` 等の custom class に deserialize する経路を
-// 入れるかどうかは Open Question (= ADR 0070 #6, dogfood で痛み顕在化したら起票)。
-// island form (post-form.tsx) で `await createPost(data) satisfies CreatePostResult`
-// 形に annotation したいので export する。Phase 6 (`@vidro/zod`) で
-// validator middleware が型 propagation する経路に置き換われば本 type も削除可。
-export type CreatePostResult =
-  | { ok: true; slug: string }
-  | { ok: false; fields: Record<string, string> };
+export type CreatePostInput = z.infer<typeof inputSchema>;
 
-// serverFn に **明示的な generic 引数** を渡して Handler の R を CreatePostResult
-// (= 判別共用体) に固定する。inline annotation だと TS の variadic tuple inference
-// で R が union のまま伝わらず、IDE の TS server が結果型を 1 branch に narrow する
-// 事象を観測したため (= dogfood 第 7 周目で発見)。明示的指定で robust に倒す。
-//
-// ADR 0072 採用後: handler signature は pure service form `(input) => R` (= c
-// 削除、9 割の case)。c が要る edge case は末尾で `(input, c) => R` 形で受ける。
-export const createPost = serverFn<[input: unknown], CreatePostResult>(async (input) => {
-  const parsed = inputSchema.safeParse(input);
-  if (!parsed.success) {
-    const fields: Record<string, string> = {};
-    for (const issue of parsed.error.issues) {
-      const path = issue.path[0];
-      if (typeof path === "string" && !(path in fields)) fields[path] = issue.message;
-    }
-    return { ok: false, fields };
-  }
-  const post = await db.createPost(parsed.data);
-  return { ok: true, slug: post.slug };
+// handler の input 型は明示的に annotation する (= validator の Out 型から
+// 推論で typed input を渡す経路は serverFn factory に overload を入れる必要が
+// あり、ADR 0072 dream code 完全達成は後続 ADR 候補)。現状は schema infer 型
+// を annotation で再指定する pragma 形 — ADR 0072 と Hono の `c.req.valid("json")`
+// の中間 (= signature に input 型が見える、boilerplate ほぼゼロ)。
+export const createPost = serverFn(validator(inputSchema), async (input: CreatePostInput) => {
+  const post = await db.createPost(input);
+  return { slug: post.slug };
 });

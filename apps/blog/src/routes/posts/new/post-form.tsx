@@ -1,51 +1,44 @@
-// dogfood Phase 7 (Phase 2c 実証): AppRouter mode の island form。
+// dogfood Phase 7' (ADR 0071 + ADR 0072 連動): try/catch + ServerFnValidationError。
 //
-// 旧: `fetch("/posts/new", { ... })` を手書き、ADR 0068 同 path action と JSON
-//     wire で対話
-// 新: `import { createPost } from "./server"` で stub 化された fetch を呼ぶ
-//     (= ADR 0070 Phase 2c 経路、bundler が serverBoundary で stub generation)
+// 旧 (Phase 7):
+//   - server.ts が CreatePostResult union 戻り値、isOk type predicate で narrow、
+//     IDE TS server narrowing 不整合の workaround 多数
+// 新 (Phase 7'):
+//   - server.ts が validator(schema) で 422 throw、戻り値は `{ slug }` typed
+//   - 本 file は `try { const { slug } = await createPost(data) } catch (err) { ... }`
+//     で ServerFnValidationError を instanceof で受けて setFieldErrors に流す
 //
-// `createPost` は server side では `serverFn` の handler、client bundle では
-// `__vidroServerFnStub("/posts/new/createPost")` に置換されてる。引数 1 個 (=
-// input) を渡すと body に JSON 配列で詰められて POST、result が JSON で戻る。
-//
-// validation 失敗 (= server 側 zod safeParse 不一致) は throw でなく
-// `{ ok: false, fields }` 戻り値として received、formControl.setFieldErrors に
-// 流す。同 schema 定義は server.ts 側にもあって重複している (= Phase 6
-// `@vidro/zod` validator middleware で解消候補)。
+// `__vidroServerFnStub` (= @vidro/router/client) が 422 + content-type JSON +
+// `{fields}` shape を ServerFnValidationError として deserialize する (= ADR 0071
+// + ADR 0072 連動)。同 schema 定義は server.ts 側にも残る (= 別 file 化は将来検討、
+// ADR 0072 dream code 整合)。
 
 import { formControl } from "@vidro/form";
 import { navigate } from "@vidro/router";
+import { ServerFnValidationError } from "@vidro/router/client";
 import { z } from "zod";
-import { createPost, type CreatePostResult } from "./server";
+import { createPost } from "./server";
 
 const schema = z.object({
   title: z.string().min(1, "title is required"),
   body: z.string().min(1, "body is required"),
 });
 
-// user-defined type predicate で discriminated union を narrow する。
-// CLI `tsc -b` は `if (!result.ok)` 形で narrow 通るのに IDE TS server (TS 6.0.3)
-// が effect 反映しない事象を dogfood 第 7 周目で観測したため、最も robust な
-// type predicate 形に倒す。Phase 6 (`@vidro/zod` validator middleware) で
-// 422 throw → stub 側 deserialize 経路に移れば本 helper は不要になる。
-function isOk(r: CreatePostResult): r is { ok: true; slug: string } {
-  return r.ok;
-}
-
 export function PostForm() {
   const f = formControl({ schema });
 
   const handleSubmit = async (data: z.infer<typeof schema>): Promise<void> => {
-    const result: CreatePostResult = await createPost(data);
-
-    if (!isOk(result)) {
-      f.setFieldErrors(result.fields);
-      return;
+    try {
+      const { slug } = await createPost(data);
+      f.reset();
+      navigate(`/posts/${slug}`);
+    } catch (err) {
+      if (err instanceof ServerFnValidationError) {
+        f.setFieldErrors(err.fields);
+        return;
+      }
+      throw err;
     }
-
-    f.reset();
-    navigate(`/posts/${result.slug}`);
   };
 
   // formControl で fetch を直接呼ぶ form は router の form delegation (= window

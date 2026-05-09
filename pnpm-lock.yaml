@@ -84,6 +84,9 @@ importers:
       '@vidro/router':
         specifier: workspace:*
         version: link:../../packages/router
+      '@vidro/zod':
+        specifier: workspace:*
+        version: link:../../packages/zod
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.44.7(@cloudflare/workers-types@4.20260507.1)
