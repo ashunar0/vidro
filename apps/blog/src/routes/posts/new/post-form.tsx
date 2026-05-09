@@ -28,16 +28,17 @@ export function PostForm() {
   const f = formControl({ schema });
 
   const handleSubmit = async (data: z.infer<typeof schema>): Promise<void> => {
-    // 型は server.ts から explicit に annotation する (= IDE TS server が
-    // serverFn の return 型推論で union を 1 branch に narrow する事象を観測した
-    // ため、堅実に固定。CLI tsc は通るが IDE 起因の差異も含めて回避)。
+    // 型は server.ts から explicit annotation で固定 + narrowing は **失敗側を
+    // if 内で処理 + early return** 形に倒す (= IDE TS server で
+    // `if (result.ok) { return } / fields` 形の narrow が逆向きに残る事象を
+    // 観測したため、TS が最も robust に narrow する pattern に揃える)。
     const result: CreatePostResult = await createPost(data);
-    if (result.ok) {
-      f.reset();
-      navigate(`/posts/${result.slug}`);
+    if (!result.ok) {
+      f.setFieldErrors(result.fields);
       return;
     }
-    f.setFieldErrors(result.fields);
+    f.reset();
+    navigate(`/posts/${result.slug}`);
   };
 
   // formControl で fetch を直接呼ぶ form は router の form delegation (= window
