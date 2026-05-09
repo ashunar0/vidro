@@ -776,12 +776,14 @@ memory `project_adr_0070_pending` の Sketch A は `defineAction({ input, handle
 2. **`c.redirect()` 相当の必要性** — server function は値返すモデル、redirect は別 throw 機構 (= `redirect()` primitive throw) で代替する案。Pages mode の `Response.redirect` との関係再評価が必要
 3. **Pages mode と AppRouter mode を同 project で混在検出をどう警告するか** — `vidro.config.ts` mode を見て build error にするか、warn 止まりか (= memory `project_fw_design_stance` 「強制せず機構誘導」整合判断)
 4. **AppRouter mode で `<form method="post">` を island から submit する場合の data 経路** — formControl が JSON にする想定で OK か、FormData wire を別途許容するか
-5. **server function の戻り値が `undefined` / `void` の時の wire** — 204 No Content か、空 JSON か、null か
-6. **server function 内で error を throw した時の wire** — JSON `{ message, status }` 形式か、純粋 5xx か、ADR 0063 (SSR throw shape) との整合
+5. **server function の戻り値が `undefined` / `void` の時の wire** — 204 No Content か、空 JSON か、null か (= Phase 2c では暫定 204 No Content)
+6. **server function 内で error を throw した時の wire** — JSON `{ message, status }` 形式か、純粋 5xx か、ADR 0063 (SSR throw shape) との整合 (= Phase 2c では暫定 500 + `{ error: message }`)
 7. **`server.ts` の naming** — AppRouter mode では service 集として意味が変わるが、命名は当面据え置き (= 後で動かせる、user 判断 2026-05-09 末)
 8. **read 系 service (= `getPost` 等) を island から呼ぶケース** — 本 ADR は write 系を主に整理したが、read 系も同形で stub 化される (= 同じ機構で動く、別途検証)
 9. **global middleware (= 全 server function 共通)** — TanStack Start の `start.ts functionMiddleware` 相当。CSRF token 検証 / リクエストロギング等の cross-cutting で需要可能。**初期 YAGNI**、痛み顕在化したら別 ADR で起票
 10. **routes/ 外配置時 middleware 書き忘れの lint warn** — `serverFn(handler)` (= middleware なし) の routes/ 外配置に warn 出すか、完全自由とするか
+11. **`executionCtx` の thread (= Phase 2c で表面化)** — `dispatchServerFn` は `options.executionCtx` を受け取れるが、`createServerHandler` の `ServerContext` 型と生成 `server-entry.ts` template に `executionCtx` が thread されておらず、Workers の `c.executionCtx?.waitUntil(...)` は常に undefined になる。Phase 7 dogfood で `waitUntil` を使いたい場面が出たら ServerContext 型拡張 + entry template 更新の小 commit
+12. **`request.text()` 後の body 二重読リスク (= Phase 2c で表面化)** — `dispatchServerFn` は match した entry の body を読む時 `await request.text()` で stream を消費する。現状 `Context` 型は raw `request.body` を露出していないので即時実害無いが、将来 `c.req.json()` 相当を追加する場合 body を剥いた clone を `createContext` に渡す経路に切替が必要
 
 ## Revisit when
 

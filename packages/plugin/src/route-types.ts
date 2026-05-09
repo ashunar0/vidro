@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import type { Plugin } from "vite";
+import { discoverServerFns, type ServerFnEntry } from "./server-fn-registry";
 
 // routes/ ディレクトリを walk して `.vidro/` 配下の静的 artifact を生成する
 // vite plugin。生成物は 3 種類:
@@ -35,6 +36,15 @@ export type RouteTypesOptions = {
   /** 出力先 server entry (vite root 相対)。default: ".vidro/server-entry.ts" */
   serverEntryFile?: string;
   /**
+   * 出力先 server function manifest .ts (vite root 相対)。
+   * default: ".vidro/server-fn-manifest.ts"
+   *
+   * ADR 0070 Phase 2c: src/ 配下の `server.ts` / `*.server.tsx` を walk して
+   * server function を列挙、URL ↔ handler の table として export する artifact。
+   * server entry が import して `createServerHandler({ serverFns })` に渡す。
+   */
+  serverFnManifestFile?: string;
+  /**
    * Per-route `+types.d.ts` の出力 base ディレクトリ (vite root 相対)。default: ".vidro/+types"
    *
    * ADR 0067: 各 route directory ごとに `Route` namespace を export する `+types.d.ts`
@@ -43,6 +53,11 @@ export type RouteTypesOptions = {
    * に解決される (= path B、per-route codegen 主軸)。
    */
   plusTypesDir?: string;
+  /**
+   * server function discovery の src ディレクトリ (vite root 相対)。default: "src"
+   * ADR 0070 論点 4-A: srcDir 配下を walk、routes/ 内は path strip。
+   */
+  srcDir?: string;
 };
 
 /** @vidro/plugin の routeTypes plugin 本体。 */
@@ -53,67 +68,77 @@ export function routeTypes(options: RouteTypesOptions = {}): Plugin {
   const outFileOpt = options.outFile ?? ".vidro/routes.d.ts";
   const manifestFileOpt = options.manifestFile ?? ".vidro/route-manifest.ts";
   const serverEntryFileOpt = options.serverEntryFile ?? ".vidro/server-entry.ts";
+  const serverFnManifestFileOpt = options.serverFnManifestFile ?? ".vidro/server-fn-manifest.ts";
   const plusTypesDirOpt = options.plusTypesDir ?? ".vidro/+types";
+  const srcDirOpt = options.srcDir ?? "src";
 
+  let projectRoot = "";
   let routesDirAbs = "";
   let outFileAbs = "";
   let manifestFileAbs = "";
   let serverEntryFileAbs = "";
+  let serverFnManifestFileAbs = "";
   let plusTypesDirAbs = "";
+
+  // routesDir 名 (= src 相対の strip 対象) を明示的に算出。urlForServerFn は
+  // `srcDir` 内 path の `routes/` prefix を strip するので、routesDirOpt が
+  // `"src/routes"` のような nested 形式なら srcDirOpt + "/" を頭から取って残す。
+  // user が `routesDirOpt: "src/custom/routes"` のような深い nested を指定した
+  // 場合でも `"custom/routes"` が strip 対象として正しく渡る。fallback は
+  // basename (= `"src/routes"` で srcDirOpt prefix を持たない単一 segment ケース)。
+  const routesDirName = routesDirOpt.startsWith(`${srcDirOpt}/`)
+    ? routesDirOpt.slice(srcDirOpt.length + 1)
+    : basenameOf(routesDirOpt);
+
+  const runAll = async (): Promise<void> => {
+    await generateAll(
+      projectRoot,
+      routesDirAbs,
+      outFileAbs,
+      manifestFileAbs,
+      serverEntryFileAbs,
+      serverFnManifestFileAbs,
+      plusTypesDirAbs,
+      srcDirOpt,
+      routesDirName,
+    );
+  };
 
   return {
     name: "vidro-route-types",
     async configResolved(config) {
+      projectRoot = config.root;
       routesDirAbs = resolve(config.root, routesDirOpt);
       outFileAbs = resolve(config.root, outFileOpt);
       manifestFileAbs = resolve(config.root, manifestFileOpt);
       serverEntryFileAbs = resolve(config.root, serverEntryFileOpt);
+      serverFnManifestFileAbs = resolve(config.root, serverFnManifestFileOpt);
       plusTypesDirAbs = resolve(config.root, plusTypesDirOpt);
-      await generateAll(
-        routesDirAbs,
-        outFileAbs,
-        manifestFileAbs,
-        serverEntryFileAbs,
-        plusTypesDirAbs,
-      );
+      await runAll();
     },
     async buildStart() {
       // watch 外から呼ばれる CLI (vp build 等) でも確実に生成されるよう二重化。
-      await generateAll(
-        routesDirAbs,
-        outFileAbs,
-        manifestFileAbs,
-        serverEntryFileAbs,
-        plusTypesDirAbs,
-      );
+      await runAll();
     },
     configureServer(server) {
       // routesDir 配下の routable file の add/unlink/rename で再生成。
       // 既存ファイルの編集は artifact の形を変えないので listen しない (再生成
       // コストを抑える)。
+      // ADR 0070 Phase 2c: src/ 配下の `server.ts` / `*.server.tsx` 追加削除も
+      // server-fn-manifest 再生成 trigger になる、`isServerFnShapeFile` で判定。
       const handler = async (file: string) => {
-        if (!file.startsWith(routesDirAbs)) return;
-        if (!isRouteShapeFile(file)) return;
-        await generateAll(
-          routesDirAbs,
-          outFileAbs,
-          manifestFileAbs,
-          serverEntryFileAbs,
-          plusTypesDirAbs,
-        );
+        const isRoute = file.startsWith(routesDirAbs) && isRouteShapeFile(file);
+        const isSrcServerFn =
+          file.startsWith(resolve(projectRoot, srcDirOpt)) && isServerFnShapeFile(file);
+        if (!isRoute && !isSrcServerFn) return;
+        await runAll();
       };
       server.watcher.on("add", handler);
       server.watcher.on("unlink", handler);
       // dir 単位の削除 (rename 等) は file 粒度の event が来ないことがあるので
       // 無条件で regenerate する。routes 数が多くない toy runtime 段階では十分。
       server.watcher.on("unlinkDir", () => {
-        void generateAll(
-          routesDirAbs,
-          outFileAbs,
-          manifestFileAbs,
-          serverEntryFileAbs,
-          plusTypesDirAbs,
-        );
+        void runAll();
       });
     },
   };
@@ -153,6 +178,17 @@ function basenameOf(filePath: string): string {
 
 function isRouteShapeFile(filePath: string): boolean {
   return basenameOf(filePath) in ROUTE_FILE_KIND;
+}
+
+// ADR 0070 Phase 2c: src/ 配下を walk する server function discovery 用の追加判定。
+// route-types とは別 axis (= routes/ 外も対象、layout.server.ts は除外) で用途が
+// 違うので関数を分ける。
+function isServerFnShapeFile(filePath: string): boolean {
+  const name = basenameOf(filePath);
+  if (name === "layout.server.ts" || name === "layout.server.js") return false;
+  if (name === "server.ts" || name === "server.js") return true;
+  if (/\.server\.(tsx|ts|jsx|js)$/.test(name)) return true;
+  return false;
 }
 
 // routes/ を再帰的に walk し、規約上の routable file を全部拾う。
@@ -326,6 +362,66 @@ function renderPerRoutePlusTypes(routePath: string): string {
   return lines.join("\n") + "\n";
 }
 
+// ADR 0070 Phase 2c: src/ 配下の server function を列挙して URL ↔ handler の
+// table を出す TS 文字列を組み立てる。
+//
+// 出力形:
+//
+//   import type { ServerFnRuntimeEntry } from "@vidro/router/server";
+//
+//   import * as $$0 from "../src/routes/posts/new/server";
+//   import * as $$1 from "../src/routes/posts/[slug]/edit/server";
+//
+//   export const serverFnManifest: ServerFnRuntimeEntry[] = [
+//     { url: "/posts/new/createPost", handler: $$0.createPost as unknown as ServerFnRuntimeEntry["handler"] },
+//     { url: "/posts/[slug]/edit/updatePost", handler: $$1.updatePost as unknown as ServerFnRuntimeEntry["handler"] },
+//   ];
+//
+// `as unknown as ...` cast は **handler 型を loose に揃える** ため。serverFn(...)
+// は `(c, slug: string, input: Input) => Promise<Post>` のような具体型を返すが、
+// runtime registry は `(c, ...args: unknown[]) => Promise<unknown>` で統一する
+// (= dispatch 側で位置引数を spread back する経路)。TS の strictFunctionTypes 下
+// では parameter 型 contravariance で直接 assignable にならないため明示 cast。
+function renderServerFnManifest(
+  entries: readonly ServerFnEntry[],
+  manifestFileAbs: string,
+): string {
+  const manifestDir = dirname(manifestFileAbs);
+  const lines: string[] = [];
+  lines.push("// AUTO-GENERATED by @vidro/plugin routeTypes() — DO NOT EDIT");
+  lines.push("// ADR 0070 Phase 2c: server function URL ↔ handler の table。");
+  lines.push("// server entry が createServerHandler({ serverFns: serverFnManifest }) で渡す。");
+  lines.push("");
+  lines.push('import type { ServerFnRuntimeEntry } from "@vidro/router/server";');
+  lines.push("");
+
+  if (entries.length === 0) {
+    lines.push("export const serverFnManifest: ServerFnRuntimeEntry[] = [];");
+    return lines.join("\n") + "\n";
+  }
+
+  // 各 entry の file を namespace import として並べ、entry を生成する形は user の
+  // 期待 (= "this fn at this URL") の素直な可視化。
+  entries.forEach((e, i) => {
+    const relImport = relative(manifestDir, e.filePath).replace(/\\/g, "/");
+    const importPath = relImport.startsWith(".") ? relImport : `./${relImport}`;
+    // .ts / .tsx 拡張子を strip (= TS module resolution と整合)。`.server.tsx` は
+    // 末尾 `.tsx` だけ削れば `.server` が残って正しい module 解決になる。
+    const noExt = importPath.replace(/\.(tsx?|jsx?)$/i, "");
+    lines.push(`import * as $$${i} from "${noExt}";`);
+  });
+  lines.push("");
+
+  lines.push("export const serverFnManifest: ServerFnRuntimeEntry[] = [");
+  entries.forEach((e, i) => {
+    lines.push(
+      `  { url: ${JSON.stringify(e.url)}, handler: $$${i}.${e.exportName} as unknown as ServerFnRuntimeEntry["handler"] },`,
+    );
+  });
+  lines.push("];");
+  return lines.join("\n") + "\n";
+}
+
 function renderServerEntry(): string {
   // 完全固定 template。user が拡張したくなったら将来 A with C override
   // (src/entry.server.ts があればそれを優先) で受ける方針 (案 B-2 Step 1.3)。
@@ -351,6 +447,10 @@ function renderServerEntry(): string {
   lines.push("");
   lines.push('import { createServerHandler } from "@vidro/router/server";');
   lines.push('import { routeManifest } from "./route-manifest";');
+  // ADR 0070 Phase 2c: server function dispatch 用の table を server entry が
+  // createServerHandler に渡す経路。空配列でも import + 引数で透過、Pages mode
+  // 互換を機構レベルで維持。
+  lines.push('import { serverFnManifest } from "./server-fn-manifest";');
   lines.push("");
   // Workers の env は wrangler.toml の bindings (D1 / KV / R2 / 任意) で生え方が
   // 変わるため、Vidro 側では `Record<string, unknown>` の base 型に ASSETS だけ
@@ -360,7 +460,9 @@ function renderServerEntry(): string {
   lines.push("  ASSETS?: { fetch: (request: Request) => Promise<Response> };");
   lines.push("} & Record<string, unknown>;");
   lines.push("");
-  lines.push("const handler = createServerHandler({ manifest: routeManifest });");
+  lines.push(
+    "const handler = createServerHandler({ manifest: routeManifest, serverFns: serverFnManifest });",
+  );
   lines.push("");
   lines.push("export default {");
   lines.push("  async fetch(request: Request, env: Env): Promise<Response> {");
@@ -379,17 +481,53 @@ function renderServerEntry(): string {
 // --- writers ---
 
 async function generateAll(
+  projectRoot: string,
   routesDirAbs: string,
   outFileAbs: string,
   manifestFileAbs: string,
   serverEntryFileAbs: string,
+  serverFnManifestFileAbs: string,
   plusTypesDirAbs: string,
+  srcDir: string,
+  routesDirName: string,
 ): Promise<void> {
   const files = await collectRouteFiles(routesDirAbs);
   writeIfChanged(outFileAbs, renderDts(files, routesDirAbs));
   writeIfChanged(manifestFileAbs, renderManifest(files, routesDirAbs, manifestFileAbs));
   writeIfChanged(serverEntryFileAbs, renderServerEntry());
   writePerRoutePlusTypes(files, routesDirAbs, plusTypesDirAbs);
+
+  // ADR 0070 Phase 2c: server function manifest 生成。projectRoot 配下の src/
+  // を walk、`server.ts` / `*.server.tsx` 内の `serverFn(...)` / async export を
+  // 列挙して URL ↔ handler table を出す。
+  // discoverServerFns が collision を throw したら configResolved で fail させる
+  // (= build error が user に明確に伝わる経路、silent な部分書きは不可)。
+  let serverFnEntries: ServerFnEntry[] = [];
+  try {
+    serverFnEntries = discoverServerFns({ projectRoot, srcDir, routesDir: routesDirName });
+  } catch (err) {
+    // collision はそのまま伝播 (= user に build error として届く)、その他 (= fs
+    // error 等) は warn して空 manifest で継続 (= user の build を止めない)。
+    if (err instanceof Error && err.message.includes("URL collision")) {
+      throw err;
+    }
+    console.warn(
+      `[vidro/plugin] discoverServerFns failed, generating empty manifest. ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  // ADR 0070 Phase 2c manifest filter: **serverFn-wrapped のみ** dispatch 対象に
+  // する。bare async function exports (= Pages mode の `loader` / `action` を含
+  // む) を載せると、本来 Pages mode で動くべき named export を server function
+  // として誤 dispatch しかねないため。Phase 2b の client stub policy (= serverFn-
+  // wrapped only) と policy 統一。
+  // 将来 Phase 5 (= vidro.config.ts mode field) で AppRouter mode 採用時に bare
+  // async function も dispatch 対象に拡張するか別 ADR で起票。
+  const wrappedOnly = serverFnEntries.filter((e) => e.kind === "serverFn-wrapped");
+  writeIfChanged(
+    serverFnManifestFileAbs,
+    renderServerFnManifest(wrappedOnly, serverFnManifestFileAbs),
+  );
 }
 
 // ADR 0067: 各 route directory ごとに `+types.d.ts` を書き出す。

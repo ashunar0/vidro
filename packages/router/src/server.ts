@@ -34,10 +34,15 @@ import {
 import { Router, type ResolvedModules, type SSRProps } from "./router";
 import { currentParams, currentPathname } from "./navigation";
 import { runWithRequestEnv } from "./request-env-scope";
+import { dispatchServerFn, type ServerFnRuntimeEntry } from "./server-fn";
 
 // `getRequestEnv<T>()` を server export にも露出。user は `.server.ts` /
 // loader / action / async function component から D1 / KV / 任意の env を取得する。
 export { getRequestEnv } from "./request-env-scope";
+
+// ADR 0070 Phase 2c: server function runtime entry の型を server export 経由で
+// 露出。plugin 側 (= `.vidro/server-fn-manifest.ts`) が型 import に使う。
+export type { ServerFnRuntimeEntry };
 
 /**
  * navigation 処理に必要な per-request context。dev middleware は渡さず、
@@ -62,6 +67,17 @@ export type CreateServerHandlerOptions = {
   manifest: RouteRecord;
   /** loader endpoint path。default: "/__loader" */
   endpoint?: string;
+  /**
+   * ADR 0070 Phase 2c: server function entries (= URL ↔ handler の table)。
+   * `.vidro/server-fn-manifest.ts` から `serverFnManifest` を import して渡す。
+   * POST request の dispatch path に組み込まれ、URL match した entry の handler を
+   * Phase 1 の serverFn factory 経由で実行 (= middleware chain 込み)。
+   *
+   * 未指定または空配列なら従来通り (= POST はすべて action 経路に流れる、Pages
+   * mode 互換)。AppRouter mode で server function を使う app は plugin が自動
+   * 生成する manifest を渡す。
+   */
+  serverFns?: readonly ServerFnRuntimeEntry[];
 };
 
 /**
@@ -72,7 +88,7 @@ export type CreateServerHandlerOptions = {
  *   4. それ以外 → 404 (entry 側で assets fallback する前提)
  */
 export function createServerHandler(options: CreateServerHandlerOptions): ServerHandler {
-  const { manifest, endpoint = "/__loader" } = options;
+  const { manifest, endpoint = "/__loader", serverFns } = options;
   const compiled = compileRoutes(manifest);
 
   return async (request, ctx = {}) => {
@@ -91,6 +107,16 @@ export function createServerHandler(options: CreateServerHandlerOptions): Server
       // 対称な internal infrastructure。
       if (url.pathname === "/__partial") {
         return handlePartialEndpoint(url, request, manifest, compiled);
+      }
+
+      // ADR 0070 Phase 2c: POST → server function dispatch を action より先に
+      // 試行。URL は file path 由来 (= 例: `/posts/new/createPost`、関数名 suffix
+      // 付き)、Pages mode の action POST URL (= page path = `/posts/new`) とは
+      // 構造的に分離されているので衝突しない。match なし (= null) なら body は
+      // 未読のまま action に流す (= dispatchServerFn は match 時のみ body を読む)。
+      if (request.method === "POST" && serverFns && serverFns.length > 0) {
+        const sfRes = await dispatchServerFn(request, serverFns, { env: ctx.env });
+        if (sfRes) return sfRes;
       }
 
       // POST は accept より method 優先で分岐 (form submit / programmatic 両対応)。

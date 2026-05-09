@@ -211,8 +211,8 @@ export function serverFn<P extends readonly unknown[], R>(
 /**
  * Request + env + executionCtx から Context を構築する helper。
  *
- * Phase 2 で bundler が server entry で context を自動構築する経路を組むが、
- * Phase 1 では unit test / server-side 直接呼び出し用に export する。
+ * Phase 2c で server entry の dispatch path から呼ばれる、Phase 1 では unit test /
+ * server-side 直接呼び出し用に export していた。ALS との統合は両方並行存続。
  *
  * env 解決規則:
  *   - 引数 `env` 明示 → そのまま使う
@@ -259,4 +259,153 @@ export function createContext(options: {
     env,
     executionCtx: options.executionCtx,
   };
+}
+
+// ---- Phase 2c: server runtime dispatch ----
+
+/**
+ * Phase 2c: server bundle 経由で eager 登録される 1 server function entry。
+ * URL template (= file path 由来、`[xxx]` を含む) と handler (= serverFn 戻り値の
+ * internal form `(c, ...args) => Promise<R>`) のペア。
+ *
+ * Plugin 側 (= @vidro/plugin の `routeTypes()`) が build 時に discoverServerFns を
+ * 走らせて `.vidro/server-fn-manifest.ts` を生成、そこから `serverFnManifest:
+ * ServerFnRuntimeEntry[]` として export される。user の server entry が import
+ * して `createServerHandler({ serverFns })` に渡す。
+ *
+ * 型は loose (= `unknown`)。実際の handler は具体型を持つが、registry レベルで
+ * 列挙するため `(c, ...args: unknown[]) => Promise<unknown>` に統一。spread back
+ * は server entry が body から JSON 配列として decode した結果を unknown[] として
+ * 渡す経路。
+ */
+export type ServerFnRuntimeEntry = {
+  /** URL template (= 例: "/posts/[slug]/edit/updatePost") */
+  url: string;
+  /** serverFn(...) 戻り値の internal form (= context + 位置引数で受ける) */
+  handler: (c: Context, ...args: unknown[]) => Promise<unknown>;
+};
+
+/**
+ * URL template と実 URL pathname を match させ、`[xxx]` segment の値を順に
+ * 配列で返す。**static segment が一致しなければ null**。
+ *
+ * 例:
+ *   matchServerFnUrl("/posts/[slug]/edit/updatePost", "/posts/abc/edit/updatePost")
+ *     → ["abc"]
+ *   matchServerFnUrl("/posts/new/createPost", "/posts/new/createPost") → []
+ *   matchServerFnUrl("/posts/[slug]/edit/updatePost", "/posts/abc/delete/updatePost") → null
+ *   matchServerFnUrl("/foo/bar", "/foo") → null (= segment 数違い)
+ *
+ * ADR 0070 論点 7-A の位置引数対応 (= dyn segment N 個 → 引数の最初の N 個)。
+ * 結果配列は decodeURIComponent 済 (= URL encoded を user code に渡る前に展開)。
+ */
+export function matchServerFnUrl(template: string, actualPathname: string): string[] | null {
+  const tplParts = template.split("/");
+  const actualParts = actualPathname.split("/");
+  if (tplParts.length !== actualParts.length) return null;
+
+  const params: string[] = [];
+  for (let i = 0; i < tplParts.length; i++) {
+    const tp = tplParts[i] ?? "";
+    const ap = actualParts[i] ?? "";
+    // dyn segment は `[name]` 形式で全体一致 (= partial match `/foo[bar]/x` は不採用)。
+    // 空 `[]` (= length 2) は意味のない placeholder なので static 扱いに倒す
+    // (= file path 上 `[]` directory が作れる environment でも user 想定外、
+    // length >= 3 で `[a]` 以上のみ採用)。
+    if (tp.length >= 3 && tp.startsWith("[") && tp.endsWith("]")) {
+      // ap に invalid percent encoding (= `%GG` 等) が含まれると
+      // decodeURIComponent が URIError を throw するので、catch して match 失敗
+      // 扱いに倒す。dispatchServerFn 側で 400 を返すより、match させずに次の
+      // entry を試行できる構造の方が defensive。最終的にどの entry にも match
+      // しなければ呼出元 (= createServerHandler) が次の path に流す。
+      try {
+        params.push(decodeURIComponent(ap));
+      } catch {
+        return null;
+      }
+      continue;
+    }
+    if (tp !== ap) return null;
+  }
+  return params;
+}
+
+/**
+ * 1 request に対して entries を順に試行、match した最初の entry の handler を
+ * 呼ぶ。何にも match しなければ null を返す (= 呼出元が次の dispatch path を試行
+ * できる、ADR 0068 action / navigation 等の既存経路を壊さない)。
+ *
+ * wire format:
+ *   - request body = JSON 配列 (= body 引数の列、`__vidroServerFnStub` が
+ *     `JSON.stringify(args.slice(i))` で送る)
+ *   - URL の dyn segment 値が引数の最初の N 個に振られる
+ *   - 戻り値: handler 結果を JSON.stringify、200 で返す
+ *   - 戻り値 undefined → 204 No Content
+ *   - middleware が `next()` 前に Response を返した (= 早期 return) → そのまま
+ *     wire (= Phase 1 が throw earlyResponse、本 fn が catch して return)
+ *   - 通常 throw → 500 + JSON {error}
+ */
+export async function dispatchServerFn(
+  request: Request,
+  entries: readonly ServerFnRuntimeEntry[],
+  options: { env?: unknown; executionCtx?: ExecutionContext } = {},
+): Promise<Response | null> {
+  if (request.method !== "POST") return null;
+  const url = new URL(request.url);
+
+  for (const entry of entries) {
+    const params = matchServerFnUrl(entry.url, url.pathname);
+    if (params === null) continue;
+
+    // body は JSON 配列。空 body は [] として解釈 (= 引数なしの fn を許容)。
+    let bodyArgs: unknown[] = [];
+    try {
+      const text = await request.text();
+      if (text.length > 0) {
+        const parsed: unknown = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          bodyArgs = parsed;
+        } else {
+          // legacy / 想定外 (= scalar や object 単体) は 1 引数として spread back
+          bodyArgs = [parsed];
+        }
+      }
+    } catch {
+      return new Response(JSON.stringify({ error: "[vidro] server function: invalid JSON body" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    const c = createContext({
+      request,
+      env: options.env,
+      executionCtx: options.executionCtx,
+    });
+
+    try {
+      const result = await entry.handler(c, ...params, ...bodyArgs);
+      if (result === undefined) {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    } catch (err) {
+      // serverFn factory は middleware 早期 return を Response throw で表現する
+      // (= server-fn.ts の dispatch 内 `throw earlyResponse`)。Response を直接
+      // wire 化する。
+      if (err instanceof Response) return err;
+      console.error("[vidro/dispatchServerFn] handler error:", err);
+      return new Response(
+        JSON.stringify({
+          error: err instanceof Error ? err.message : String(err),
+        }),
+        { status: 500, headers: { "content-type": "application/json" } },
+      );
+    }
+  }
+
+  return null;
 }
