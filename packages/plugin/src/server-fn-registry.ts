@@ -77,7 +77,7 @@ export type ServerFnEntry = ServerFnExport & {
  * の build error 系で「serverFn は alias 不可、または alias call も認識する」を
  * 決める。当面は alias = stub 化されない silent fail なので、test で意図確認のみ。
  */
-export function scanServerFnExports(source: string, filePath: string): ServerFnExport[] {
+export function scanServerFnExports(source: string, _filePath: string): ServerFnExport[] {
   const ast = parse(source, {
     sourceType: "module",
     plugins: ["jsx", "typescript"],

@@ -23,3 +23,9 @@ export {
   type DiscoverServerFnsOptions,
   type VirtualFs,
 } from "./server-fn-registry";
+export {
+  transformServerFnSourceForClient,
+  DEFAULT_STUB_HELPER_MODULE,
+  type TransformServerFnSourceOptions,
+  type TransformServerFnSourceResult,
+} from "./server-fn-transform";
