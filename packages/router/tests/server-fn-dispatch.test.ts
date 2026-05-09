@@ -205,7 +205,10 @@ describe("dispatchServerFn (Phase 2c)", () => {
       },
       async (_c: Context) => ({ should: "not-reach" }),
     );
-    const entries: ServerFnRuntimeEntry[] = [{ url: "/x/run", handler: fn }];
+    // serverFn の戻り値は public form (= ServerFn<P, R> = (...args) + .run)、
+    // ServerFnRuntimeEntry["handler"] は internal form (= (c, ...args)) なので
+    // .run 経由で internal form を取り出して entry に積む経路。
+    const entries: ServerFnRuntimeEntry[] = [{ url: "/x/run", handler: fn.run }];
     const req = new Request("https://x/x/run", { method: "POST", body: "[]" });
     const res = await dispatchServerFn(req, entries);
     expect(res!.status).toBe(401);

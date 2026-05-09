@@ -1,16 +1,23 @@
-// dogfood Form 第 3 周目: client island (`.tsx` = 両側実行)。
-// `.server.tsx` 内 (`./index.server.tsx`) から JSX で参照されると jsx-transform が
-// `<__VidroIsland>` で wrap し、SSR で marker emit + registry push、client で
-// hydrate される (ADR 0060)。
+// dogfood Phase 7 (Phase 2c 実証): AppRouter mode の island form。
 //
-// ADR 0069 dogfood: formControl({ schema }) で client form を fine-grained に制御。
-// zod schema で validation、handler は parsed data を受け取って fetch する形。
-// submission registry を使わないので submission() の per-route slot 不整合
-// (= 痛み点 1) が構造的に発生しない。
+// 旧: `fetch("/posts/new", { ... })` を手書き、ADR 0068 同 path action と JSON
+//     wire で対話
+// 新: `import { createPost } from "./server"` で stub 化された fetch を呼ぶ
+//     (= ADR 0070 Phase 2c 経路、bundler が serverBoundary で stub generation)
+//
+// `createPost` は server side では `serverFn` の handler、client bundle では
+// `__vidroServerFnStub("/posts/new/createPost")` に置換されてる。引数 1 個 (=
+// input) を渡すと body に JSON 配列で詰められて POST、result が JSON で戻る。
+//
+// validation 失敗 (= server 側 zod safeParse 不一致) は throw でなく
+// `{ ok: false, fields }` 戻り値として received、formControl.setFieldErrors に
+// 流す。同 schema 定義は server.ts 側にもあって重複している (= Phase 6
+// `@vidro/zod` validator middleware で解消候補)。
 
 import { formControl } from "@vidro/form";
 import { navigate } from "@vidro/router";
 import { z } from "zod";
+import { createPost } from "./server";
 
 const schema = z.object({
   title: z.string().min(1, "title is required"),
@@ -20,36 +27,21 @@ const schema = z.object({
 export function PostForm() {
   const f = formControl({ schema });
 
-  // user fn は parsed data を受け取る。fetch / encoding は user 自由 (ADR 0069 §論点 8)。
-  // 同 path co-location action (= ADR 0068 path: index.server.tsx の action export) に
-  // JSON で投げる。422 は server validation fail として fieldError に流す。
-  const handleSubmit = async (data: z.infer<typeof schema>) => {
-    const res = await fetch("/posts/new", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(data),
-    });
-    if (res.ok) {
-      // handleAction の plain value 経路は `{ actionResult, loaderData }` で wrap して
-      // 返す (= ADR 0037 R-min)。formControl は wire format に責務を持たないので、
-      // 受信側 (= 本 island) が actionResult を取り出す。
-      const body = (await res.json()) as { actionResult: { slug: string } };
+  const handleSubmit = async (data: z.infer<typeof schema>): Promise<void> => {
+    const result = await createPost(data);
+    if (result.ok) {
       f.reset();
-      navigate(`/posts/${body.actionResult.slug}`);
+      navigate(`/posts/${result.slug}`);
       return;
     }
-    if (res.status === 422) {
-      const body = (await res.json()) as { fields?: Record<string, string> };
-      f.setFieldErrors(body.fields ?? {});
-    }
+    f.setFieldErrors(result.fields);
   };
 
   // formControl で fetch を直接呼ぶ form は router の form delegation (= window
-  // capture submit listener、ADR 0051) と衝突して二重 POST になる (= 1 つ目は
-  // urlencoded で送られ action の `request.json()` が parse fail で 500)。
-  // `data-vidro-no-intercept` で router delegation を bypass、formControl.bind の
-  // onSubmit だけが走る形にする (= dogfood 第 3 周目で発見した DX 痛み、ADR 0069
-  // formControl が自動でこの marker を付ける拡張は将来検討)。
+  // capture submit listener、ADR 0051) と衝突して二重 POST になるため
+  // `data-vidro-no-intercept` で bypass する (= 第 3 周目の DX 痛み、
+  // Phase 2c でも引き続き同じ問題)。formControl が自動でこの marker を
+  // 付ける拡張は将来検討。
   return (
     <form onSubmit={f.bind(handleSubmit)} data-vidro-no-intercept class="mt-4 space-y-4">
       <div>

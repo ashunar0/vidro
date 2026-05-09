@@ -19,7 +19,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
     it("middleware なしで handler を呼べる", async () => {
       const fn = serverFn(async (_c: Context, name: string) => `hello ${name}`);
       const c = createContext({ request: new Request("https://example.com/") });
-      const result = await fn(c, "world");
+      const result = await fn.run(c, "world");
       expect(result).toBe("hello world");
     });
 
@@ -29,20 +29,20 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
         title: input.title,
       }));
       const c = createContext({ request: new Request("https://example.com/") });
-      const result = await fn(c, "abc", { title: "T" });
+      const result = await fn.run(c, "abc", { title: "T" });
       expect(result).toEqual({ slug: "abc", title: "T" });
     });
 
     it("handler 戻り値が serverFn の戻り値になる", async () => {
       const fn = serverFn(async () => 42);
       const c = createContext({ request: new Request("https://example.com/") });
-      expect(await fn(c)).toBe(42);
+      expect(await fn.run(c)).toBe(42);
     });
 
     it("sync handler でも動く (= async でなくても OK)", async () => {
       const fn = serverFn((_c: Context) => "sync");
       const c = createContext({ request: new Request("https://example.com/") });
-      expect(await fn(c)).toBe("sync");
+      expect(await fn.run(c)).toBe("sync");
     });
   });
 
@@ -59,7 +59,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
         return "ok";
       });
       const c = createContext({ request: new Request("https://example.com/") });
-      const result = await fn(c);
+      const result = await fn.run(c);
       expect(result).toBe("ok");
       expect(order).toEqual(["mw before", "handler", "mw after"]);
     });
@@ -80,7 +80,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
         order.push("handler");
       });
       const c = createContext({ request: new Request("https://example.com/") });
-      await fn(c);
+      await fn.run(c);
       expect(order).toEqual(["mw1 before", "mw2 before", "handler", "mw2 after", "mw1 after"]);
     });
 
@@ -91,7 +91,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       };
       const fn = serverFn(auth, async (c) => c.get<{ id: string }>("user")?.id);
       const c = createContext({ request: new Request("https://example.com/") });
-      expect(await fn(c)).toBe("u1");
+      expect(await fn.run(c)).toBe("u1");
     });
 
     it("c.var でも middleware set 値が引ける (= Hono と同形)", async () => {
@@ -101,7 +101,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       };
       const fn = serverFn(auth, async (c) => c.var.flag);
       const c = createContext({ request: new Request("https://example.com/") });
-      expect(await fn(c)).toBe(true);
+      expect(await fn.run(c)).toBe(true);
     });
 
     it("middleware が次段で c.set した値を after で読める (= 両方向値伝播)", async () => {
@@ -116,7 +116,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       };
       const fn = serverFn(recorder, setter, async () => "ok");
       const c = createContext({ request: new Request("https://example.com/") });
-      await fn(c);
+      await fn.run(c);
       expect(order).toEqual(["after: from setter"]);
     });
   });
@@ -126,7 +126,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       const denyAll: Middleware = async () => new Response("forbidden", { status: 403 });
       const fn = serverFn(denyAll, async () => "should not reach");
       const c = createContext({ request: new Request("https://example.com/") });
-      await expect(fn(c)).rejects.toBeInstanceOf(Response);
+      await expect(fn.run(c)).rejects.toBeInstanceOf(Response);
     });
 
     it("早期 return された Response の status を確認できる", async () => {
@@ -134,7 +134,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       const fn = serverFn(denyAll, async () => "x");
       const c = createContext({ request: new Request("https://example.com/") });
       try {
-        await fn(c);
+        await fn.run(c);
         expect.fail("should have thrown");
       } catch (err) {
         expect(err).toBeInstanceOf(Response);
@@ -149,7 +149,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       };
       const fn = serverFn(broken, async () => "x");
       const c = createContext({ request: new Request("https://example.com/") });
-      await expect(fn(c)).rejects.toThrow(/did not call next/);
+      await expect(fn.run(c)).rejects.toThrow(/did not call next/);
     });
 
     it("middleware が next() を 2 回呼ぶと error", async () => {
@@ -159,7 +159,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       };
       const fn = serverFn(buggy, async () => "x");
       const c = createContext({ request: new Request("https://example.com/") });
-      await expect(fn(c)).rejects.toThrow(/multiple times/);
+      await expect(fn.run(c)).rejects.toThrow(/multiple times/);
     });
 
     it("途中の middleware で短絡すると後続 handler は呼ばれない", async () => {
@@ -170,7 +170,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
         return "x";
       });
       const c = createContext({ request: new Request("https://example.com/") });
-      await expect(fn(c)).rejects.toBeInstanceOf(Response);
+      await expect(fn.run(c)).rejects.toBeInstanceOf(Response);
       expect(handlerCalled).toBe(false);
     });
 
@@ -183,7 +183,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       };
       const fn = serverFn(wrap, async () => "handler-result");
       const c = createContext({ request: new Request("https://example.com/") });
-      expect(await fn(c)).toBe("handler-result");
+      expect(await fn.run(c)).toBe("handler-result");
     });
   });
 
@@ -198,7 +198,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
           headers: { accept: "application/json" },
         }),
       });
-      const result = await fn(c);
+      const result = await fn.run(c);
       expect(result.url).toBe("https://example.com/foo");
       expect(result.accept).toBe("application/json");
     });
@@ -208,13 +208,13 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       const c = createContext({
         request: new Request("https://example.com/?q=hello"),
       });
-      expect(await fn(c)).toBe("hello");
+      expect(await fn.run(c)).toBe("hello");
     });
 
     it("c.req.query 未指定 key は undefined", async () => {
       const fn = serverFn(async (c) => c.req.query("missing"));
       const c = createContext({ request: new Request("https://example.com/") });
-      expect(await fn(c)).toBeUndefined();
+      expect(await fn.run(c)).toBeUndefined();
     });
 
     it("c.env が引数で渡された env と一致する", async () => {
@@ -225,13 +225,13 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
         request: new Request("https://example.com/"),
         env,
       });
-      expect(await fn(c)).toEqual(env);
+      expect(await fn.run(c)).toEqual(env);
     });
 
     it("env 未指定 + ALS scope 外なら c.env は undefined", async () => {
       const fn = serverFn(async (c) => c.env);
       const c = createContext({ request: new Request("https://example.com/") });
-      expect(await fn(c)).toBeUndefined();
+      expect(await fn.run(c)).toBeUndefined();
     });
 
     it("c.executionCtx.waitUntil() が動く", async () => {
@@ -251,7 +251,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
         request: new Request("https://example.com/"),
         executionCtx: ctx,
       });
-      await fn(c);
+      await fn.run(c);
       expect(calls.length).toBe(1);
     });
   });
@@ -262,7 +262,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       const fn = serverFn(async (c) => c.env as MyEnv);
       await runWithRequestEnv({ source: "als" } satisfies MyEnv, async () => {
         const c = createContext({ request: new Request("https://example.com/") });
-        const result = await fn(c);
+        const result = await fn.run(c);
         expect(result).toEqual({ source: "als" });
       });
     });
@@ -274,7 +274,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
           request: new Request("https://example.com/"),
           env: { source: "explicit" },
         });
-        const result = await fn(c);
+        const result = await fn.run(c);
         expect(result).toEqual({ source: "explicit" });
       });
     });
@@ -288,7 +288,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       const fn = serverFn(inspectMw, async (c) => c.get<string>("envFoo"));
       await runWithRequestEnv({ foo: "bar" } satisfies MyEnv, async () => {
         const c = createContext({ request: new Request("https://example.com/") });
-        expect(await fn(c)).toBe("bar");
+        expect(await fn.run(c)).toBe("bar");
       });
     });
   });
@@ -301,7 +301,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
         ok: input.title.length > 0,
       }));
       const c = createContext({ request: new Request("https://example.com/") });
-      const result = await fn(c, "post-1", { title: "Hello" });
+      const result = await fn.run(c, "post-1", { title: "Hello" });
       // result は推論で `{ slug: string; ok: boolean }`
       expect(result.slug).toBe("post-1");
       expect(result.ok).toBe(true);
@@ -313,7 +313,7 @@ describe("serverFn (ADR 0070 Phase 1)", () => {
       };
       const fn = serverFn(noopMw, noopMw, async (_c: Context, n: number) => n * 2);
       const c = createContext({ request: new Request("https://example.com/") });
-      expect(await fn(c, 21)).toBe(42);
+      expect(await fn.run(c, 21)).toBe(42);
     });
   });
 });

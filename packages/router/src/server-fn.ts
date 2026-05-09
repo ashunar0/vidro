@@ -94,15 +94,43 @@ export type Middleware = (
 export type Handler<P extends readonly unknown[], R> = (c: Context, ...args: P) => Promise<R> | R;
 
 /**
- * serverFn factory が返す internal form (= server-side direct invocation 用)。
- * Phase 2 で bundler が wrap して `(...args: P) => Promise<R>` (= 位置引数のみの
- * public form) として export する。本 type は internal、user code が直接見る
- * のは Phase 2 で wrap された後の form。
+ * serverFn factory の **internal form** (= context を第 1 引数で受ける形)。
+ * server-side dispatch (= Phase 2c の dispatchServerFn) と unit test (= Phase 1
+ * tests) が使う、user code が直接呼ぶ形ではない。
  */
 export type ServerFnInternal<P extends readonly unknown[], R> = (
   c: Context,
   ...args: P
 ) => Promise<R>;
+
+/**
+ * serverFn factory の **public form** (= Phase 2c で user が import して呼ぶ形)。
+ * 位置引数のみで context は省く (= server-side では bundler stub / dispatch が
+ * c を inject、client-side では bundler stub が fetch wire 化)。
+ */
+export type ServerFnPublic<P extends readonly unknown[], R> = (...args: P) => Promise<R>;
+
+/**
+ * serverFn factory の戻り値型 (= public form + `.run` で internal form 露出)。
+ *
+ *   - `(...args)` 直呼出 → public form (= user code 経路、Phase 2c stub と signature 一致)
+ *   - `.run(c, ...args)` → internal form (= unit test / dispatchServerFn 経路、c 明示)
+ *
+ * runtime 実体は同一関数を public form 型にキャストしたもので、`.run` は
+ * 同じ関数への direct reference (= internal form 型のまま)。`createPost(input)` も
+ * `createPost.run(c, input)` も runtime では `internalForm(c, ...rest)` を呼ぶ。
+ *
+ * client bundle 経路では `__vidroServerFnStub("/url")` に置換されて public form
+ * のみが立つ (= `.run` は client 側に存在しない、stub の戻り値は普通の関数)。
+ * client から `.run` を呼ぶと undefined エラー (= 想定外の使い方)。
+ */
+export type ServerFn<P extends readonly unknown[], R> = ServerFnPublic<P, R> & {
+  /**
+   * Internal form (= context を第 1 引数で受ける)。unit test と
+   * dispatchServerFn (Phase 2c) が使う、client-side では存在しない。
+   */
+  readonly run: ServerFnInternal<P, R>;
+};
 
 /**
  * `serverFn(...mw, handler)` の引数型。最後が Handler、それ以外は Middleware
@@ -125,29 +153,36 @@ type ServerFnArgs<P extends readonly unknown[], R> = readonly [...Middleware[], 
  *   されず、Response が呼出元に伝わる (= auth fail / 422 等)
  * - handler の戻り値が serverFn の戻り値として返る (= Phase 2 で JSON wire 化)
  *
- * Phase 1 では context (`c`) を引数で受ける internal form として定義。Phase 2
- * で bundler が `c` 構築 + wrapping を行い、user code から見える form は
- * `(...args: P) => Promise<R>` になる。
+ * 戻り値の **TS 型は public form** (`(...args: P) => Promise<R>`、= Phase 2c
+ * の user code から見える形)。runtime 実体は internal form (= context が第 1
+ * 引数) で、dispatchServerFn / Phase 1 unit test は `as unknown as
+ * ServerFnInternal<P, R>` でキャストして c を渡す。
  *
  * @example
- * // Phase 1 の direct invocation 形式 (= unit test / server-side direct call):
- * const updatePost = serverFn(
- *   authMw,
- *   async (c, slug: string, input: { title: string }) => {
- *     return db.posts.update(slug, input);
- *   },
- * );
- * const c = createContext({ request, env, executionCtx });
- * const result = await updatePost(c, "abc-slug", { title: "Hello" });
+ * // Phase 7 dogfood の user 視点:
+ * // server.ts
+ * export const createPost = serverFn(async (c, input: Input) => {
+ *   return db.posts.insert(input);
+ * });
+ *
+ * // post-form.client.tsx
+ * import { createPost } from "./server";
+ * const post = await createPost(input); // public form、c を見せない
+ *
+ * @example
+ * // unit test / direct invocation:
+ * const fn = serverFn(async (c, name: string) => `hello ${name}`);
+ * const c = createContext({ request });
+ * const result = await (fn as unknown as ServerFnInternal<[name: string], string>)(c, "world");
  */
 export function serverFn<P extends readonly unknown[], R>(
   ...args: ServerFnArgs<P, R>
-): ServerFnInternal<P, R> {
+): ServerFn<P, R> {
   // 最後が handler、残りが middleware (= TS variadic tuple の runtime 表現)
   const handler = args[args.length - 1] as Handler<P, R>;
   const middlewares = args.slice(0, -1) as Middleware[];
 
-  return async (c: Context, ...positionalArgs: P): Promise<R> => {
+  const internalForm = async (c: Context, ...positionalArgs: P): Promise<R> => {
     let result: R | undefined;
     let resultSet = false;
     let earlyResponse: Response | undefined;
@@ -206,6 +241,19 @@ export function serverFn<P extends readonly unknown[], R>(
     }
     return result as R;
   };
+
+  // runtime は internal form (= c, ...args)、TS 型は public form + `.run` 経由で
+  // internal form 露出。`.run` は同 function への参照、cast 重ねて両 form 提供。
+  // Phase 2c の dispatchServerFn は `entry.handler(c, ...args)` 直呼出する経路で、
+  // ServerFnRuntimeEntry["handler"] (= internal form) としての cast 済み。
+  const publicForm = internalForm as unknown as ServerFn<P, R>;
+  Object.defineProperty(publicForm, "run", {
+    value: internalForm,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+  return publicForm;
 }
 
 /**
