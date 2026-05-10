@@ -2,11 +2,18 @@
 
 ## Status
 
-**Proposed** — 2026-05-10 (62nd session)
+**Accepted** — 2026-05-10 (63rd session、dogfood 第 5 周目完走で着地確定)
+
+経緯:
+
+- 2026-05-10 (62nd): Proposed として起票 + path B / 流派 1 / c 完全排除 / 型付き ctx / 2 slot YAGNI を決定
+- 2026-05-10 (63rd): Phase 1〜5 + dogfood 完走、`Accepted` に昇格
+
+着地時 commit: `ae11663 feat: ADR 0073 着地 — serverFn を object slot form に改修` (router 169 + zod 4 + plugin 40 tests pass、apps/blog vp build (SSR + client) 成功、curl smoke で createPost / updatePost (URL params + data 同時) / deletePost / 422 validation error 全通過)
 
 依存: ADR 0070 (server function pattern)、ADR 0072 (pure handler signature)
 関連: ADR 0071 (`@vidro/zod`)、ADR 0069 (`@vidro/form`)、ADR 0067 (per-route +types codegen)、ADR 0057 (fw design stance)
-**Supersedes**: ADR 0070 論点 7-A (位置引数で dyn segment を受ける)、ADR 0072 論点 1-C (`(input, c?: Context)` 末尾 optional form)
+**Supersedes**: ADR 0070 論点 7-A (位置引数で dyn segment を受ける)、ADR 0072 論点 1-C (`(input, c?: Context)` 末尾 optional form)、ADR 0071 `validator(schema)` middleware (= router の serverFn config の validator slot に統合)
 
 ## Context
 
