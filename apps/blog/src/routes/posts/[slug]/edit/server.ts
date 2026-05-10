@@ -1,5 +1,6 @@
 // dogfood 第 5 周目 (2026-05-10、ADR 0073): updatePost を `[slug]/edit/` に
 // **co-location 復活**。
+// dogfood 第 6 周目 (2026-05-10): schema を ./schema.ts に集約、island と共有。
 //
 // 旧 (61st、ADR 0072 第 4 周目): F1 (= validator middleware × URL 動的 segment
 // 共存不可) を回避するため updatePost を `posts/server.ts` に追い出し、slug を
@@ -11,6 +12,7 @@
 //
 // dogfood 観察:
 //   - schema 分離: paramsSchema (= URL 識別子) + dataSchema (= form payload)
+//   - 第 6 周目で schema は ./schema.ts に切り出し、edit-form.tsx と共有
 //   - handler は `({ params, data }) => ...` で純関数、c (HTTP) を知らない
 //   - 404 は `throw new Response(..., { status: 404 })` で server entry が wire 化
 //
@@ -18,14 +20,8 @@
 // (= Route.PageProps の params 型源)、0068 = action placement (= 同 dir co-location)。
 
 import { serverFn } from "@vidro/router";
-import { z } from "zod";
 import { db } from "../../../../data/posts";
-
-const paramsSchema = z.object({ slug: z.string().min(1) });
-const dataSchema = z.object({
-  title: z.string().min(1, "title is required"),
-  body: z.string().min(1, "body is required"),
-});
+import { dataSchema, paramsSchema } from "./schema";
 
 export const updatePost = serverFn({
   validator: { params: paramsSchema, data: dataSchema },

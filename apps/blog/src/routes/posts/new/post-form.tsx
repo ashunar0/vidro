@@ -1,4 +1,5 @@
 // dogfood Phase 7' (ADR 0071 + ADR 0072 連動): try/catch + ServerFnValidationError。
+// dogfood 第 6 周目 (2026-05-10): schema を ./schema.ts に集約、server.ts と共有。
 //
 // 旧 (Phase 7):
 //   - server.ts が CreatePostResult union 戻り値、isOk type predicate で narrow、
@@ -7,27 +8,25 @@
 //   - server.ts が validator(schema) で 422 throw、戻り値は `{ slug }` typed
 //   - 本 file は `try { const { slug } = await createPost(data) } catch (err) { ... }`
 //     で ServerFnValidationError を instanceof で受けて setFieldErrors に流す
+// 第 6 周目:
+//   - schema 定義は ./schema.ts に切り出し、本 file と server.ts 両方が import
+//     (= "別 file 化は将来検討" の TODO を解消、規約のみで解決 = D 案)
 //
 // `__vidroServerFnStub` (= @vidro/router/client) が 422 + content-type JSON +
 // `{fields}` shape を ServerFnValidationError として deserialize する (= ADR 0071
-// + ADR 0072 連動)。同 schema 定義は server.ts 側にも残る (= 別 file 化は将来検討、
-// ADR 0072 dream code 整合)。
+// + ADR 0072 連動)。
 
 import { formControl } from "@vidro/form";
 import { navigate } from "@vidro/router";
 import { ServerFnValidationError } from "@vidro/router/client";
-import { z } from "zod";
+import type { CreatePostInput } from "./schema";
+import { dataSchema } from "./schema";
 import { createPost } from "./server";
 
-const schema = z.object({
-  title: z.string().min(1, "title is required"),
-  body: z.string().min(1, "body is required"),
-});
-
 export function PostForm() {
-  const f = formControl({ schema });
+  const f = formControl({ schema: dataSchema });
 
-  const handleSubmit = async (data: z.infer<typeof schema>): Promise<void> => {
+  const handleSubmit = async (data: CreatePostInput): Promise<void> => {
     try {
       // ADR 0073: data は data slot に詰める、`{ data }` で渡す。
       const { slug } = await createPost({ data });
