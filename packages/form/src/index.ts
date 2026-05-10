@@ -17,6 +17,7 @@ export { formControl } from "./form-control";
 export type {
   FormControl,
   FormControlOptions,
+  FormControlBindProps,
   FormFieldProps,
   ParseSchema,
   SafeParseResult,

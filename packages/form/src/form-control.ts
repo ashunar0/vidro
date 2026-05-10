@@ -47,13 +47,34 @@ export type FormFieldProps<K extends string> = {
   onBlur: () => void;
 };
 
+/**
+ * `f.bind(fn)` の戻り値 (= ADR 0075 で導入)。`<form {...f.bind(handler)}>` の spread
+ * 経路で、submit handler と router intercept escape marker を 1 度に注入する。
+ *
+ * - `onSubmit`: preventDefault → schema.safeParse → user fn 呼出 + pending 管理
+ * - `data-vidro-no-intercept`: router の global form interceptor (ADR 0051) から
+ *   逃げる marker。formControl で fetch を直接呼ぶ island form は SPA 遷移経路に
+ *   流したくないので、必ず付ける必要がある (= 旧形式は user 手書き、ADR 0075 で
+ *   formControl が自動注入する形に変更)
+ */
+export type FormControlBindProps = {
+  onSubmit: (event: SubmitEvent) => void;
+  "data-vidro-no-intercept": "";
+};
+
 export type FormControl<T extends Record<string, unknown>> = {
   /**
-   * `<form onSubmit={f.bind(handleSubmit)}>` で渡す handler factory。preventDefault →
-   * schema.safeParse → success なら user fn 呼び出し + pending 管理、failure なら per-field
-   * error signal 更新。pending 中の double submit は no-op。
+   * `<form {...f.bind(handleSubmit)}>` で渡す form props factory (ADR 0075)。
+   * 戻り値は `{ onSubmit, "data-vidro-no-intercept": "" }` で、JSX spread 経由で
+   * form node に注入する。preventDefault → schema.safeParse → success なら user fn
+   * 呼出 + pending 管理、failure なら per-field error signal 更新。pending 中の
+   * double submit は no-op。
+   *
+   * marker (= `data-vidro-no-intercept`) は router の global form interceptor
+   * (ADR 0051) から逃げる escape hatch。formControl で fetch を直叩きする island
+   * form は SPA 遷移経路に乗せたくないので必須、formControl 内で隠蔽する。
    */
-  bind(fn: (data: T) => Promise<void> | void): (event: SubmitEvent) => void;
+  bind(fn: (data: T) => Promise<void> | void): FormControlBindProps;
   /**
    * field props を返す。spread して `<input>` に渡す形を想定。type は schema の keyof T
    * で絞られているので、schema にない field 名は build error (型貫通 #4)。
@@ -172,18 +193,23 @@ export function formControl<T extends Record<string, unknown>>(
   }
 
   return {
-    bind(fn) {
-      return (event: SubmitEvent) => {
-        event.preventDefault();
-        if (pending.peek()) return;
-        const validation = validateAll();
-        if (!validation.ok) return;
-        pending.value = true;
-        // pending を確実に降ろすため finally。Promise chain は handler 側で await
-        // されないので void で意図を明示 (= no-floating-promises)。
-        void Promise.resolve(fn(validation.data)).finally(() => {
-          pending.value = false;
-        });
+    bind(fn): FormControlBindProps {
+      // ADR 0075: 戻り値は form props object (= JSX spread 用)。onSubmit handler
+      // と router intercept escape marker を同時に注入する。
+      return {
+        onSubmit: (event: SubmitEvent) => {
+          event.preventDefault();
+          if (pending.peek()) return;
+          const validation = validateAll();
+          if (!validation.ok) return;
+          pending.value = true;
+          // pending を確実に降ろすため finally。Promise chain は handler 側で await
+          // されないので void で意図を明示 (= no-floating-promises)。
+          void Promise.resolve(fn(validation.data)).finally(() => {
+            pending.value = false;
+          });
+        },
+        "data-vidro-no-intercept": "",
       };
     },
     field<K extends keyof T & string>(name: K): FormFieldProps<K> {

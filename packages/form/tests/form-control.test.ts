@@ -59,12 +59,12 @@ describe("formControl — ADR 0069", () => {
     let called: FormShape | null = null;
     let resolveSubmit: (() => void) | null = null;
     const submitDone = new Promise<void>((res) => (resolveSubmit = res));
-    const handler = f.bind(async (data) => {
+    const props = f.bind(async (data) => {
       called = data;
       await submitDone;
     });
 
-    fireSubmit(handler);
+    fireSubmit(props.onSubmit);
     // 同期 part 終了直後: pending true、user fn は呼び出し済み
     expect(called).toEqual({ title: "Hello", body: "World" });
     expect(f.pending.value).toBe(true);
@@ -80,11 +80,11 @@ describe("formControl — ADR 0069", () => {
     const f = formControl({ schema: makeSchema() });
 
     let called = false;
-    const handler = f.bind(() => {
+    const props = f.bind(() => {
       called = true;
     });
 
-    const result = fireSubmit(handler);
+    const result = fireSubmit(props.onSubmit);
     expect(result.prevented).toBe(true);
     expect(called).toBe(false);
     expect(f.error("title").value).toBe("Title is required");
@@ -154,15 +154,15 @@ describe("formControl — ADR 0069", () => {
     fireInput(f.field("body").onInput, "B");
 
     let callCount = 0;
-    const handler = f.bind(() => {
+    const props = f.bind(() => {
       callCount += 1;
       // 完了させない (Promise resolve しない) → pending true のまま
       return new Promise<void>(() => {});
     });
 
-    fireSubmit(handler);
-    fireSubmit(handler);
-    fireSubmit(handler);
+    fireSubmit(props.onSubmit);
+    fireSubmit(props.onSubmit);
+    fireSubmit(props.onSubmit);
 
     expect(callCount).toBe(1);
     expect(f.pending.value).toBe(true);
@@ -189,10 +189,10 @@ describe("formControl — ADR 0069", () => {
     // 検証も初期 snapshot で通る → user 入力なしでも submit OK (= edit で title 変えず
     // body だけ変えるケースで「title 必須」error が出ない)
     let called: FormShape | null = null;
-    const handler = f.bind((data) => {
+    const props = f.bind((data) => {
       called = data;
     });
-    fireSubmit(handler);
+    fireSubmit(props.onSubmit);
     expect(called).toEqual({ title: "Hello", body: "World" });
   });
 
@@ -208,5 +208,37 @@ describe("formControl — ADR 0069", () => {
     f.reset();
     expect(f.field("title").value()).toBe("Hello");
     expect(f.field("body").value()).toBe("World");
+  });
+
+  // ADR 0075: bind 戻り値は form props object、spread で marker と onSubmit が同時注入される。
+  // 旧形式 (= bind が event handler を返す) は廃止、user は `<form {...f.bind(fn)}>` の
+  // 1 expression で router intercept escape も手に入れる。
+  describe("ADR 0075: bind 戻り値は form props object", () => {
+    test("bind 戻り値に onSubmit と data-vidro-no-intercept marker が含まれる", () => {
+      const f = formControl({ schema: makeSchema() });
+      const props = f.bind(() => {});
+
+      // shape: object (= 旧 event handler 関数ではない)
+      expect(typeof props).toBe("object");
+      expect(typeof props.onSubmit).toBe("function");
+      // router の global form interceptor (ADR 0051) escape marker、空文字列で OK
+      // (= dataset 経由の判定は値ではなく key の存在を見る)
+      expect(props["data-vidro-no-intercept"]).toBe("");
+    });
+
+    test("bind 戻り値の onSubmit は従来通り validate / pending を回す", () => {
+      const f = formControl({ schema: makeSchema() });
+      fireInput(f.field("title").onInput, "T");
+      fireInput(f.field("body").onInput, "B");
+
+      let called: FormShape | null = null;
+      const props = f.bind((data) => {
+        called = data;
+      });
+      const result = fireSubmit(props.onSubmit);
+
+      expect(result.prevented).toBe(true);
+      expect(called).toEqual({ title: "T", body: "B" });
+    });
   });
 });

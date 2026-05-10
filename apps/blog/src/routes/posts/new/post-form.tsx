@@ -46,13 +46,11 @@ export function PostForm() {
     }
   };
 
-  // formControl で fetch を直接呼ぶ form は router の form delegation (= window
-  // capture submit listener、ADR 0051) と衝突して二重 POST になるため
-  // `data-vidro-no-intercept` で bypass する (= 第 3 周目の DX 痛み、
-  // Phase 2c でも引き続き同じ問題)。formControl が自動でこの marker を
-  // 付ける拡張は将来検討。
+  // ADR 0075: bind 戻り値は form props object (= onSubmit + data-vidro-no-intercept
+  // marker)。spread で form 全体に注入、router の global form interceptor (ADR 0051)
+  // から自動 escape。第 3 周目から第 8 周目まで手書きしてた marker が不要に。
   return (
-    <form onSubmit={f.bind(handleSubmit)} data-vidro-no-intercept class="mt-4 space-y-4">
+    <form {...f.bind(handleSubmit)} class="mt-4 space-y-4">
       <div>
         <label class="block text-sm font-medium" for="title">
           Title

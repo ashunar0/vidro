@@ -47,10 +47,10 @@ export function EditPostForm({ post }: { post: Post }) {
     }
   };
 
-  // post-form.tsx と同じ理由で `data-vidro-no-intercept` で router の form delegation
-  // を bypass する (= ADR 0051 capture submit と二重 POST 衝突回避)。
+  // ADR 0075: bind 戻り値が form props object、spread で marker (= router intercept
+  // escape) と onSubmit を同時注入。post-form.tsx と同じ pattern。
   return (
-    <form onSubmit={f.bind(handleSubmit)} data-vidro-no-intercept class="mt-4 space-y-4">
+    <form {...f.bind(handleSubmit)} class="mt-4 space-y-4">
       <div>
         <label class="block text-sm font-medium" for="title">
           Title
