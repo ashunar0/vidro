@@ -8,6 +8,7 @@
 
 import { Link } from "@vidro/router";
 import { db } from "./server";
+import { DeleteButton } from "./delete-button";
 
 export default async function PostsIndex() {
   const posts = await db.postsAsync();
@@ -30,16 +31,11 @@ export default async function PostsIndex() {
               <Link href={`/posts/${p.slug}/edit`} class="text-blue-600 hover:underline">
                 Edit
               </Link>
-              {/* ADR 0068 dogfood: resource route で delete を受ける。
-                   `/posts/[slug]/delete/server.ts` 単独 directory が action only
-                   route として認識される (= 痛み点 6 解消)。一覧 page は async
-                   server component なので pending/error 表示は依然なし — JS-rich UX
-                   が必要なら row ごと island 化する (= ADR 0069 別軸の応用)。 */}
-              <form method="post" action={`/posts/${p.slug}/delete`} class="inline">
-                <button type="submit" class="text-red-600 hover:underline">
-                  Delete
-                </button>
-              </form>
+              {/* dogfood Path 4 (2026-05-10、61st session): resource route 経路を
+                   廃止して row 単位 island に置換 (= ADR 0070 統一)。trade-off:
+                   JS なしでは動かない (= form delegation の progressive enhancement
+                   失う)、行ごとに island instance、navigate 経由 reload で再描画。 */}
+              <DeleteButton slug={p.slug} />
             </div>
           </li>
         ))}
