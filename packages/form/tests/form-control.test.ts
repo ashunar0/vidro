@@ -175,4 +175,38 @@ describe("formControl — ADR 0069", () => {
     fireInput(f.field("title").onInput, "Filled");
     expect(f.field("title").value()).toBe("Filled");
   });
+
+  test("defaultValues: edit form の prefill が signal に seed される", () => {
+    const f = formControl({
+      schema: makeSchema(),
+      defaultValues: { title: "Hello", body: "World" },
+    });
+
+    // prefill 値が field.value() で返る → spread 経由で SSR / hydrate で同じ値が DOM に乗る
+    expect(f.field("title").value()).toBe("Hello");
+    expect(f.field("body").value()).toBe("World");
+
+    // 検証も初期 snapshot で通る → user 入力なしでも submit OK (= edit で title 変えず
+    // body だけ変えるケースで「title 必須」error が出ない)
+    let called: FormShape | null = null;
+    const handler = f.bind((data) => {
+      called = data;
+    });
+    fireSubmit(handler);
+    expect(called).toEqual({ title: "Hello", body: "World" });
+  });
+
+  test("defaultValues: reset で seed 値に戻る (= 「変更を破棄」操作)", () => {
+    const f = formControl({
+      schema: makeSchema(),
+      defaultValues: { title: "Hello", body: "World" },
+    });
+
+    fireInput(f.field("title").onInput, "Modified");
+    expect(f.field("title").value()).toBe("Modified");
+
+    f.reset();
+    expect(f.field("title").value()).toBe("Hello");
+    expect(f.field("body").value()).toBe("World");
+  });
 });
