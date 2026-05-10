@@ -19,10 +19,10 @@
 import { formControl } from "@vidro/form";
 import { navigate } from "@vidro/router";
 import { ServerFnValidationError } from "@vidro/router/client";
+import type { Post } from "../../../../data/posts";
 import type { PostContentInput } from "../../../../features/posts/schema";
 import { postContentSchema } from "../../../../features/posts/schema";
 import { updatePost } from "../../../../features/posts/server";
-import type { Post } from "../../server";
 
 export function EditPostForm({ post }: { post: Post }) {
   // formControl は data slot 用、defaultValues も title + body のみ。

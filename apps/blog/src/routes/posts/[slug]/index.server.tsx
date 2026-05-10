@@ -4,7 +4,7 @@
 // ファイル位置 `[slug]` が single source of truth、params.slug は string で型推論される。
 
 import { Link } from "@vidro/router";
-import { db } from "../server";
+import { db } from "../../../data/posts";
 import type { Route } from "./+types";
 
 export default async function PostDetail({ params }: Route.PageProps) {

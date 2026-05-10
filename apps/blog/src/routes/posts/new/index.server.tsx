@@ -1,9 +1,9 @@
 // dogfood Phase 7 (Phase 2c 実証): AppRouter mode page shell。
 //
-// action は ./server.ts の `createPost` serverFn に移行 (ADR 0070 Phase 2c)。
-// 本 file は default export (= page component) のみの薄い shell に戻る。
-// island form (post-form.tsx) が `import { createPost } from "./server"` で
-// stub 化された fetch を呼ぶ経路。
+// action 本体は features/posts/server.ts の `createPost` serverFn (= 65th 第 7 周目で features 化)。
+// 本 file は default export (= page component) のみの薄い shell。
+// island form (post-form.tsx) が `import { createPost } from "../../../features/posts/server"`
+// で stub 化された fetch を呼ぶ経路。
 
 import { PostForm } from "./post-form";
 import type { Route } from "./+types";

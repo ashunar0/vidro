@@ -7,7 +7,7 @@
 // 詳細 page は posts/[slug]/index.server.tsx で別途。
 
 import { Link } from "@vidro/router";
-import { db } from "./server";
+import { db } from "../../data/posts";
 import { DeleteButton } from "./delete-button";
 
 export default async function PostsIndex() {
