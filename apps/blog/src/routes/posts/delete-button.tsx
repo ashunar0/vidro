@@ -15,9 +15,10 @@
 import { ServerFnValidationError } from "@vidro/router/client";
 import { revalidate } from "@vidro/router";
 import { signal } from "@vidro/core";
-// ADR 0073 第 5 周目: deletePost は `[slug]/delete/server.ts` に co-location 復活、
-// import path も対応 (= 旧 `./server` から本 dir 内 server に移行)。
-import { deletePost } from "./[slug]/delete/server";
+// dogfood 第 7 周目 (2026-05-10): feature-based 切り分け、deletePost を features/posts から import。
+// routes/posts/[slug]/delete/server.ts は wire boundary 用の 1 行 re-export に縮小、
+// island からは features 直 import に統一 (post-form / edit-form と一貫)。
+import { deletePost } from "../../features/posts/server";
 
 export function DeleteButton({ slug }: { slug: string }) {
   const pending = signal(false);

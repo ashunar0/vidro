@@ -1,5 +1,6 @@
 // dogfood 第 5 周目 (2026-05-10、ADR 0073): edit form island を object slot wire に migration。
 // dogfood 第 6 周目 (2026-05-10): schema 重複解消、./schema.ts に集約して server.ts と共有。
+// dogfood 第 7 周目 (2026-05-10): feature-based 切り分け、schema は features/posts/schema に移動。
 //
 // 構造的変化:
 //   1. server.ts が **co-location 復活** (= `posts/[slug]/edit/server.ts`)、
@@ -9,6 +10,8 @@
 //   3. `<input type="hidden" {...f.field("slug")} />` 撤去 (= URL params で完結)
 //   4. 呼出形: `await updatePost(data)` → `await updatePost({ params: { slug }, data })`
 //   5. (第 6 周目) schema は ./schema.ts に切り出し、本 file の重複 z.object() 撤去
+//   6. (第 7 周目) schema を features/posts/schema に移動、create/update で同 shape の
+//      postContentSchema を共有 (= feature-based)。updatePost も features/posts/server から import
 //
 // formControl の data slot と wire の data slot が **同名で一貫**するのが ADR 0069 +
 // ADR 0073 連動の利点。schema 共有 (= 第 6 周目) で「同じ z.object を 2 度書く」も解消。
@@ -16,21 +19,21 @@
 import { formControl } from "@vidro/form";
 import { navigate } from "@vidro/router";
 import { ServerFnValidationError } from "@vidro/router/client";
+import type { PostContentInput } from "../../../../features/posts/schema";
+import { postContentSchema } from "../../../../features/posts/schema";
+import { updatePost } from "../../../../features/posts/server";
 import type { Post } from "../../server";
-import type { UpdatePostInput } from "./schema";
-import { dataSchema } from "./schema";
-import { updatePost } from "./server";
 
 export function EditPostForm({ post }: { post: Post }) {
   // formControl は data slot 用、defaultValues も title + body のみ。
   // hydrate 後に signal が空文字で DOM を上書きする問題を defaultValues で回避
   // (= ADR 0069 + 第 4 周目発見の経路)。
   const f = formControl({
-    schema: dataSchema,
+    schema: postContentSchema,
     defaultValues: { title: post.title, body: post.body },
   });
 
-  const handleSubmit = async (data: UpdatePostInput): Promise<void> => {
+  const handleSubmit = async (data: PostContentInput): Promise<void> => {
     try {
       // ADR 0073: params slot に URL 識別子 (slug)、data slot に form payload。
       const { slug } = await updatePost({ params: { slug: post.slug }, data });
