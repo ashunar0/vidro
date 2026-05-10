@@ -48,9 +48,24 @@ export { loaderData } from "./loader-data";
 // ADR 0052 — searchParams() primitive。URL search 部分を reactive store として扱う
 // client URL state primitive。`revalidate()` は Path Y で必要な loader 再 fire 経路。
 export { searchParams, revalidate } from "./search-params";
-// ADR 0070 Phase 1 — serverFn() factory + Hono c subset context。
-// Phase 1 は internal form (= context を引数で受ける) として export、Phase 2 で
-// bundler が wrap して位置引数のみの public form として client / server 両側に
-// 露出する経路を組む。
-export { serverFn, createContext } from "./server-fn";
-export type { Context, Middleware, Handler, ServerFnInternal, ExecutionContext } from "./server-fn";
+// ADR 0073 — serverFn() factory (object slot form) + Context + defineMiddleware。
+// `serverFn({ middleware, validator, handler })` で宣言、handler は `({ params, data, ctx })`
+// を受ける object slot 形。client は `__vidroServerFnStub` 経由 (bundler が置換)、
+// unit test / dispatch は `.run(input, c)` で internal form 露出。
+export { serverFn, createContext, defineMiddleware } from "./server-fn";
+export type {
+  Context,
+  Middleware,
+  MiddlewareArgs,
+  NextDelta,
+  Handler,
+  HandlerInput,
+  ValidatorConfig,
+  ServerFnConfig,
+  ServerFnInput,
+  ServerFnInternal,
+  ServerFnPublic,
+  ServerFn,
+  MergeCtx,
+  ExecutionContext,
+} from "./server-fn";

@@ -4,8 +4,13 @@ import type { RouteRecord } from "./route-tree";
 import { setupIslandHydration } from "./island";
 
 /**
- * server function の 422 (= validator middleware の `throw new Response({fields}, 422)`)
- * を client side で受け取って throw する custom error class (ADR 0071 + ADR 0072)。
+ * server function の 422 (= ADR 0073 で `serverFn({ validator: { params, data } })`
+ * slot が parse 失敗時に投げる Response、または user 自身が手動で同 shape の
+ * 422 Response を throw した場合) を client side で受け取って throw する custom
+ * error class (ADR 0073、旧 ADR 0071 + ADR 0072 supersede)。
+ *
+ * wire shape (= ADR 0059): `{ fields: Record<string, string>, slot?: "params" | "data" }`、
+ * 422 + content-type application/json の場合に deserialize される。
  *
  * 使い方 (= post-form.tsx 等の island form):
  *
@@ -13,7 +18,7 @@ import { setupIslandHydration } from "./island";
  *   import { createPost } from "./server";
  *
  *   try {
- *     const result = await createPost(data);
+ *     const result = await createPost({ data });
  *     // success path
  *   } catch (err) {
  *     if (err instanceof ServerFnValidationError) {
@@ -40,49 +45,62 @@ export class ServerFnValidationError extends Error {
   }
 }
 
-// ADR 0070 Phase 2b: bundler が生成する client side stub の runtime 部品。
+// ADR 0073: bundler が生成する client side stub の runtime 部品。
 //
-// server.ts / *.server.tsx 内の `serverFn(...)` named export は、client bundle
-// pass で `__vidroServerFnStub("/url-template")` 呼び出しに置換される (= plugin
-// 側 transformServerFnSourceForClient)。本 helper は URL template の動的
-// segment を引数 [0..N-1] で置換、残り引数を JSON 配列として body に詰めて
-// POST 1 回 → JSON parse する thin wrapper。
+// server.ts / *.server.tsx 内の `serverFn({ ... })` named export は、client
+// bundle pass で `__vidroServerFnStub("/url-template")` 呼び出しに置換される
+// (= plugin 側 transformServerFnSourceForClient)。本 helper は URL template の
+// `[xxx]` 動的 segment を `input.params[xxx]` で置換、`{ params, data }` を
+// JSON object として body に詰めて POST 1 回 → JSON parse する thin wrapper。
 //
-// URL template の `[xxx]` segment は file path 由来 (= ADR 0070 論点 4-A、
+// URL template の `[xxx]` segment は file path 由来 (= ADR 0067 + ADR 0073、
 // `routes/posts/[slug]/edit/server.ts` → `/posts/[slug]/edit/updatePost`)。
-// 引数 0..N-1 が dyn segment、残りが body args (= 通常 1 個の input object、
-// ADR 0070 論点 7-A)。
+// `input.params.slug` の値で `[slug]` を置換、`input.data` は body にそのまま流す。
+//
+// 旧 wire (= ADR 0070、JSON array body + positional args) との incompat:
+//   - body は **JSON array → JSON object** (`{ params?, data? }`)
+//   - public form の signature は **可変長引数 → input 1 個** (`(input?: {...})`)
+//   - URL `[xxx]` の値取り元は **args[i] → input.params[xxx]** (key で直接引く)
 //
 // design notes:
 //   - 戻り値は content-type で判定: application/json なら res.json()、
 //     204 No Content なら undefined、それ以外は text として返す
 //   - error は res.ok === false なら throw、status + body の詳細は ServerFnError
-//     等の専用 class 化を Open Question として保留
+//     等の専用 class 化を Open Question として保留 (ADR 0073 Q3)
 //   - middleware が早期 return した Response は普通に !ok or 4xx として降りてくる
 //     (= Phase 1 の throw earlyResponse は server entry が catch → wire に流す)
+//   - `input` 全体省略可 (= no params / no data の serverFn 呼出)、内部 `{}` 扱い
+
+/** stub に渡す入力 object (= ADR 0073 採用 form)、両 slot とも optional。 */
+export type ServerFnStubInput = {
+  readonly params?: Record<string, unknown>;
+  readonly data?: unknown;
+};
 
 /**
  * bundler 生成 stub の runtime 実体。`urlTemplate` は file path 由来の URL
- * (= 例: `/posts/[slug]/edit/updatePost`) を受け取り、引数で `[xxx]` を埋めて
- * POST + JSON wire を行う関数を返す。
+ * (= 例: `/posts/[slug]/edit/updatePost`) を受け取り、`input.params` で `[xxx]`
+ * を埋めて `{ params, data }` を POST + JSON wire する関数を返す。
  *
  * 通常 user は直接呼ばない (= bundler が `import { fn } from "./server"` を
  * `__vidroServerFnStub("/url")` 呼び出しに置換する経路で使われる)。
  */
-export function __vidroServerFnStub(urlTemplate: string): (...args: unknown[]) => Promise<unknown> {
-  return async (...args: unknown[]): Promise<unknown> => {
-    let i = 0;
-    // [xxx] segment を順に args[i] で置換。null / undefined / object は不正値
-    // として throw (= 空文字 fallback は `/posts//edit/...` を生んで silent に
-    // 404 化する debug 困難パターン、object は `[object Object]` URL になる)。
+export function __vidroServerFnStub(
+  urlTemplate: string,
+): (input?: ServerFnStubInput) => Promise<unknown> {
+  return async (input?: ServerFnStubInput): Promise<unknown> => {
+    const params = input?.params;
+    // [xxx] segment を `input.params[xxx]` で置換。null / undefined / object は
+    // 不正値として throw (= 空文字 fallback は `/posts//edit/...` を生んで silent
+    // に 404 化する debug 困難パターン、object は `[object Object]` URL になる)。
     // user の引数誤りを早く可視化することを優先 (= 想定外を生やさない)。
     const url = urlTemplate.replace(/\[(\w+)\]/g, (_match, name: string) => {
-      const v = args[i++];
+      const v = params?.[name];
       if (v === null || v === undefined) {
         throw new Error(
           `[vidro] server function ${urlTemplate}: dynamic segment "${name}" is ${
             v === null ? "null" : "undefined"
-          }, expected string|number|boolean|bigint.`,
+          }, expected string|number|boolean|bigint in input.params.${name}.`,
         );
       }
       const tv = typeof v;
@@ -92,16 +110,17 @@ export function __vidroServerFnStub(urlTemplate: string): (...args: unknown[]) =
       }
       throw new Error(
         `[vidro] server function ${urlTemplate}: dynamic segment "${name}" expects ` +
-          `string|number|boolean|bigint, got ${tv}.`,
+          `string|number|boolean|bigint in input.params.${name}, got ${tv}.`,
       );
     });
-    // 残った引数は body 用 (= 通常 1 個の input object、複数も配列で送って server
-    // side で spread back する設計)。0 個なら空配列で OK。
-    const body = args.slice(i);
+    // body wire = `{ params, data }` JSON object (ADR 0073)。両 slot とも省略可、
+    // server 側 dispatchServerFn は URL params を URL = source of truth として優先、
+    // body の params はそのまま merge される (= 通常 stub は URL 側に値を埋めるが
+    // body にも params を入れて double safety にしておく)。
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ params: input?.params, data: input?.data }),
     });
     if (!res.ok) {
       // 422 + content-type application/json + body shape が `{fields: ...}` なら

@@ -1,43 +1,36 @@
-// dogfood Phase 7' (ADR 0071 + ADR 0072 連動): @vidro/zod validator middleware で
-// schema 重複 + safeParse boilerplate + union 戻り値が消えた。
+// dogfood 第 5 周目 (2026-05-10、ADR 0073): createPost を object slot syntax に migration。
 //
-// 旧 (Phase 7、ADR 0072 前):
-//   const parsed = schema.safeParse(input);
-//   if (!parsed.success) {
-//     const fields = {}; for (const issue of parsed.error.issues) {...}
-//     return { ok: false, fields };
-//   }
-//   const post = await db.createPost(parsed.data);
-//   return { ok: true, slug: post.slug };
+// 旧 (Phase 7'、ADR 0071 + ADR 0072):
+//   serverFn(validator(schema), async (input) => { ... })
 //
-// 新 (Phase 7'、ADR 0071 + ADR 0072):
-//   serverFn(validator(schema), async (input) => {
-//     const post = await db.createPost(input);
-//     return { slug: post.slug };
-//   });
+// 新 (ADR 0073、流派 1 object slot):
+//   serverFn({ validator: { data: schema }, handler: async ({ data }) => { ... } })
 //
-// island form (post-form.tsx) は `await createPost(input)` の戻り値が `{ slug }`
-// で typed (= 型貫通 #4 完成)、422 は ServerFnValidationError として throw され、
-// try/catch + setFieldErrors で field error に流す。
+// 構造的変化:
+//   - validator middleware の `validator(schema)` が **廃止**、`@vidro/router` の
+//     serverFn config の validator slot に統合 (= F1 構造解決の副産物)
+//   - handler 引数が positional `(input)` → object slot `({ data })`、c は完全排除
+//   - `@vidro/zod` import は削除、zod 自体は schema 定義で残る
+//
+// island form (post-form.tsx) は `await createPost({ data })` で呼ぶ、戻り値
+// `{ slug }` typed (= 型貫通 #4 + ADR 0073)、422 は ServerFnValidationError として
+// throw され、try/catch + setFieldErrors で field error に流す経路は不変。
 
 import { serverFn } from "@vidro/router";
-import { validator } from "@vidro/zod";
 import { z } from "zod";
 import { db } from "../../../data/posts";
 
-const inputSchema = z.object({
+const dataSchema = z.object({
   title: z.string().min(1, "title is required"),
   body: z.string().min(1, "body is required"),
 });
 
-export type CreatePostInput = z.infer<typeof inputSchema>;
+export type CreatePostInput = z.infer<typeof dataSchema>;
 
-// handler の input 型は明示的に annotation する (= validator の Out 型から
-// 推論で typed input を渡す経路は serverFn factory に overload を入れる必要が
-// あり、ADR 0072 dream code 完全達成は後続 ADR 候補)。現状は schema infer 型
-// を annotation で再指定する pragma 形 — ADR 0072 と Hono の `c.req.valid("json")`
-// の中間 (= signature に input 型が見える、boilerplate ほぼゼロ)。
-export const createPost = serverFn(validator(inputSchema), async (input: CreatePostInput) => {
-  const post = await db.createPost(input);
-  return { slug: post.slug };
+export const createPost = serverFn({
+  validator: { data: dataSchema },
+  handler: async ({ data }) => {
+    const post = await db.createPost(data);
+    return { slug: post.slug };
+  },
 });

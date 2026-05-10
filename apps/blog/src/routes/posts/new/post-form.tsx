@@ -29,7 +29,8 @@ export function PostForm() {
 
   const handleSubmit = async (data: z.infer<typeof schema>): Promise<void> => {
     try {
-      const { slug } = await createPost(data);
+      // ADR 0073: data は data slot に詰める、`{ data }` で渡す。
+      const { slug } = await createPost({ data });
       f.reset();
       navigate(`/posts/${slug}`);
     } catch (err) {

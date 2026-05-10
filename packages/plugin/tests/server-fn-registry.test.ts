@@ -1,4 +1,4 @@
-// ADR 0070 Phase 2a + ADR 0072: server function registry の単体 test。
+// ADR 0070 Phase 2a + ADR 0073: server function registry の単体 test。
 //
 // 3 つの関数を独立に test:
 //   1. scanServerFnExports — AST scan、export 抽出
@@ -8,8 +8,10 @@
 // fs walk は VirtualFs override で in-memory tree を組んで test する (= 実 fs
 // に手を入れない、CI 環境差異も避ける)。
 //
-// ADR 0072 採用後の fixture: handler signature は pure service form
-// (`async (input) => R`) を default、c が要る case のみ末尾で受ける。
+// ADR 0073 採用後の fixture: serverFn は object slot config 1 個渡し
+// (`serverFn({ middleware?, validator?, handler })`)、handler は
+// `({ params, data, ctx })` で受ける。scanner は callee.name のみ見るので
+// 内部 args 形には透過、本 fixture は user 側 syntax を新形式に揃えた表現。
 
 import { describe, expect, it } from "vitest";
 import {
@@ -25,20 +27,21 @@ describe("scanServerFnExports", () => {
   it("picks up serverFn-wrapped const export", () => {
     const source = `
       import { serverFn } from "@vidro/router";
-      export const createPost = serverFn(async (input) => {
-        return { id: 1 };
+      export const createPost = serverFn({
+        handler: async ({ data }) => ({ id: 1, ...data }),
       });
     `;
     const exports = scanServerFnExports(source, "/proj/src/routes/posts/server.ts");
     expect(exports).toEqual([{ exportName: "createPost", kind: "serverFn-wrapped" }]);
   });
 
-  it("picks up serverFn with multiple middleware", () => {
+  it("picks up serverFn with middleware + validator config", () => {
     const source = `
       import { serverFn } from "@vidro/router";
-      import { validator } from "@vidro/zod";
-      export const createPost = serverFn(authMw, validator(schema), async (input) => {
-        return input;
+      export const createPost = serverFn({
+        middleware: [authMw],
+        validator: { data: dataSchema },
+        handler: async ({ data, ctx }) => ({ ...data, by: ctx.user }),
       });
     `;
     const exports = scanServerFnExports(source, "/proj/src/routes/posts/server.ts");
@@ -68,8 +71,8 @@ describe("scanServerFnExports", () => {
   it("picks up multiple exports from one file", () => {
     const source = `
       import { serverFn } from "@vidro/router";
-      export const createPost = serverFn(async (input) => input);
-      export const deletePost = serverFn(async (slug) => slug);
+      export const createPost = serverFn({ handler: async ({ data }) => data });
+      export const deletePost = serverFn({ handler: async ({ params }) => params.slug });
       export async function getPost(slug: string) { return slug; }
     `;
     const exports = scanServerFnExports(source, "/proj/src/routes/posts/server.ts");
@@ -103,7 +106,7 @@ describe("scanServerFnExports", () => {
   it("ignores default export (= page component in *.server.tsx)", () => {
     const source = `
       import { serverFn } from "@vidro/router";
-      export const createPost = serverFn(async (input) => input);
+      export const createPost = serverFn({ handler: async ({ data }) => data });
       export default async function NewPost() {
         return null;
       }
@@ -126,7 +129,7 @@ describe("scanServerFnExports", () => {
   it("does NOT pick up aliased serverFn call (= current limitation)", () => {
     const source = `
       import { serverFn as sf } from "@vidro/router";
-      export const createPost = sf(async (input) => input);
+      export const createPost = sf({ handler: async ({ data }) => data });
     `;
     const exports = scanServerFnExports(source, "/proj/src/routes/posts/server.ts");
     // sf(...) は CallExpression だが callee.name === "sf" なので serverFn-wrapped
@@ -138,7 +141,7 @@ describe("scanServerFnExports", () => {
   it("handles JSX in *.server.tsx alongside server function exports", () => {
     const source = `
       import { serverFn } from "@vidro/router";
-      export const createPost = serverFn(async (input) => input);
+      export const createPost = serverFn({ handler: async ({ data }) => data });
       export default async function NewPost() {
         return <div>hello</div>;
       }
@@ -296,7 +299,7 @@ describe("discoverServerFns", () => {
       "/proj/src/routes/posts": "DIR",
       "/proj/src/routes/posts/server.ts": `
         import { serverFn } from "@vidro/router";
-        export const createPost = serverFn(async (input) => input);
+        export const createPost = serverFn({ handler: async ({ data }) => data });
       `,
     });
     const entries = discoverServerFns({ projectRoot, fs });
@@ -318,7 +321,7 @@ describe("discoverServerFns", () => {
       "/proj/src/routes/posts/new": "DIR",
       "/proj/src/routes/posts/new/index.server.tsx": `
         import { serverFn } from "@vidro/router";
-        export const createPost = serverFn(async (input) => input);
+        export const createPost = serverFn({ handler: async ({ data }) => data });
         export default async function NewPost() { return null; }
       `,
     });
@@ -348,13 +351,14 @@ describe("discoverServerFns", () => {
       "/proj/src": "DIR",
       "/proj/src/node_modules": "DIR",
       "/proj/src/node_modules/foo": "DIR",
-      "/proj/src/node_modules/foo/server.ts": "export const fn = serverFn(async () => {});",
+      "/proj/src/node_modules/foo/server.ts":
+        "export const fn = serverFn({ handler: async () => {} });",
       "/proj/src/.vidro": "DIR",
-      "/proj/src/.vidro/server.ts": "export const fn = serverFn(async () => {});",
+      "/proj/src/.vidro/server.ts": "export const fn = serverFn({ handler: async () => {} });",
       "/proj/src/dist": "DIR",
-      "/proj/src/dist/server.ts": "export const fn = serverFn(async () => {});",
+      "/proj/src/dist/server.ts": "export const fn = serverFn({ handler: async () => {} });",
       "/proj/src/.git": "DIR",
-      "/proj/src/.git/server.ts": "export const fn = serverFn(async () => {});",
+      "/proj/src/.git/server.ts": "export const fn = serverFn({ handler: async () => {} });",
     });
     const entries = discoverServerFns({ projectRoot, fs });
     expect(entries).toEqual([]);
@@ -367,13 +371,13 @@ describe("discoverServerFns", () => {
       "/proj/src/features/posts": "DIR",
       "/proj/src/features/posts/server.ts": `
         import { serverFn } from "@vidro/router";
-        export const createPost = serverFn(async (input) => input);
+        export const createPost = serverFn({ handler: async ({ data }) => data });
       `,
       "/proj/src/api": "DIR",
       "/proj/src/api/upload": "DIR",
       "/proj/src/api/upload/server.ts": `
         import { serverFn } from "@vidro/router";
-        export const uploadFile = serverFn(async (file) => file);
+        export const uploadFile = serverFn({ handler: async ({ data }) => data });
       `,
     });
     const entries = discoverServerFns({ projectRoot, fs });
@@ -388,11 +392,11 @@ describe("discoverServerFns", () => {
       "/proj/src/routes/posts": "DIR",
       "/proj/src/routes/posts/server.ts": `
         import { serverFn } from "@vidro/router";
-        export const createPost = serverFn(async (input) => input);
+        export const createPost = serverFn({ handler: async ({ data }) => data });
       `,
       "/proj/src/routes/posts/index.server.tsx": `
         import { serverFn } from "@vidro/router";
-        export const createPost = serverFn(async (input) => input);
+        export const createPost = serverFn({ handler: async ({ data }) => data });
         export default function () { return null; }
       `,
     });
@@ -408,12 +412,12 @@ describe("discoverServerFns", () => {
       "/proj/src/routes/posts/[slug]/edit": "DIR",
       "/proj/src/routes/posts/[slug]/edit/server.ts": `
         import { serverFn } from "@vidro/router";
-        export const updatePost = serverFn(async (slug, input) => ({ slug, input }));
+        export const updatePost = serverFn({ handler: async ({ params, data }) => ({ slug: params.slug, input: data }) });
       `,
       "/proj/src/routes/posts/new": "DIR",
       "/proj/src/routes/posts/new/index.server.tsx": `
         import { serverFn } from "@vidro/router";
-        export const createPost = serverFn(async (input) => input);
+        export const createPost = serverFn({ handler: async ({ data }) => data });
         export default async function NewPost() { return null; }
       `,
       "/proj/src/api": "DIR",

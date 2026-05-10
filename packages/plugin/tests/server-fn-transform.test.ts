@@ -22,7 +22,7 @@ describe("transformServerFnSourceForClient", () => {
   it("replaces serverFn(...) with __vidroServerFnStub('/url') call", () => {
     const source = `
       import { serverFn } from "@vidro/router";
-      export const createPost = serverFn(async (input) => input);
+      export const createPost = serverFn({ handler: async ({ data }) => data });
     `;
     const { code, entries } = transformServerFnSourceForClient({
       source,
@@ -51,7 +51,7 @@ describe("transformServerFnSourceForClient", () => {
       import { z } from "zod";
       import { serverFn } from "@vidro/router";
       export const createPostSchema = z.object({ title: z.string() });
-      export const createPost = serverFn(async (input) => input);
+      export const createPost = serverFn({ handler: async ({ data }) => data });
     `;
     const { code } = transformServerFnSourceForClient({
       source,
@@ -68,8 +68,8 @@ describe("transformServerFnSourceForClient", () => {
     const source = `
       import { db } from "@/data/posts";
       import { serverFn } from "@vidro/router";
-      export const createPost = serverFn(async (input) => {
-        return db.insert(input);
+      export const createPost = serverFn({
+        handler: async ({ data }) => db.insert(data),
       });
     `;
     const { code } = transformServerFnSourceForClient({
@@ -91,7 +91,7 @@ describe("transformServerFnSourceForClient", () => {
       import { CONST } from "./shared";
       import { serverFn } from "@vidro/router";
       export const schema = z.object({ x: z.string().default(CONST) });
-      export const fn = serverFn(async (input) => input);
+      export const fn = serverFn({ handler: async ({ data }) => data });
     `;
     const { code } = transformServerFnSourceForClient({
       source,
@@ -135,8 +135,12 @@ describe("transformServerFnSourceForClient", () => {
     const source = `
       import { db } from "@/data/posts";
       import { serverFn } from "@vidro/router";
-      export const updatePost = serverFn(async (slug, input) => db.update(slug, input));
-      export const deletePost = serverFn(async (slug) => db.delete(slug));
+      export const updatePost = serverFn({
+        handler: async ({ params, data }) => db.update(params.slug, data),
+      });
+      export const deletePost = serverFn({
+        handler: async ({ params }) => db.delete(params.slug),
+      });
     `;
     const { code, entries } = transformServerFnSourceForClient({
       source,
@@ -157,7 +161,7 @@ describe("transformServerFnSourceForClient", () => {
     const source = `
       import type { Post } from "@/data/posts";
       import { serverFn } from "@vidro/router";
-      export const createPost = serverFn(async (input: Post) => input);
+      export const createPost = serverFn({ handler: async ({ data }: { data: Post }) => data });
     `;
     const { code } = transformServerFnSourceForClient({
       source,
@@ -172,7 +176,7 @@ describe("transformServerFnSourceForClient", () => {
     const source = `
       import "./side-effect";
       import { serverFn } from "@vidro/router";
-      export const fn = serverFn(async (input) => input);
+      export const fn = serverFn({ handler: async ({ data }) => data });
     `;
     const { code } = transformServerFnSourceForClient({
       source,
@@ -186,7 +190,7 @@ describe("transformServerFnSourceForClient", () => {
   it("supports custom helperModuleId for testing", () => {
     const source = `
       import { serverFn } from "@vidro/router";
-      export const fn = serverFn(async (input) => input);
+      export const fn = serverFn({ handler: async ({ data }) => data });
     `;
     const { code } = transformServerFnSourceForClient({
       source,
@@ -220,7 +224,7 @@ describe("transformServerFnSourceForClient", () => {
     // pattern を documented にする)。
     const source = `
       import { serverFn } from "@vidro/router";
-      const _fn = serverFn(async (input) => input);
+      const _fn = serverFn({ handler: async ({ data }) => data });
       export { _fn as createPost };
     `;
     const { code, entries } = transformServerFnSourceForClient({
@@ -242,7 +246,7 @@ describe("transformServerFnSourceForClient", () => {
     const source = `
       import { boot } from "@vidro/router/client";
       import { serverFn } from "@vidro/router";
-      export const fn = serverFn(async (input) => input);
+      export const fn = serverFn({ handler: async ({ data }) => data });
       export const _kept = boot;
     `;
     const { code } = transformServerFnSourceForClient({

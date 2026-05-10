@@ -15,7 +15,9 @@
 import { ServerFnValidationError } from "@vidro/router/client";
 import { revalidate } from "@vidro/router";
 import { signal } from "@vidro/core";
-import { deletePost } from "./server";
+// ADR 0073 第 5 周目: deletePost は `[slug]/delete/server.ts` に co-location 復活、
+// import path も対応 (= 旧 `./server` から本 dir 内 server に移行)。
+import { deletePost } from "./[slug]/delete/server";
 
 export function DeleteButton({ slug }: { slug: string }) {
   const pending = signal(false);
@@ -26,7 +28,8 @@ export function DeleteButton({ slug }: { slug: string }) {
 
     pending.value = true;
     try {
-      await deletePost({ slug });
+      // ADR 0073: slug は URL params 経由、`{ params: { slug } }` で渡す。
+      await deletePost({ params: { slug } });
       // 削除後に現 route の loader を再 fire して一覧を更新。`navigate(samePath)` は
       // signal の Object.is ガードで no-op するので使えない (= dogfood 第 4 周目発見)。
       // ただし async server component (= 本一覧 page) で revalidate が効くかは別途
