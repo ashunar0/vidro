@@ -2,7 +2,13 @@
 
 ## Status
 
-**Proposed** — 2026-05-10 (66th session、dogfood 第 8 周目で見えた痛み点解消)
+**Accepted** — 2026-05-10 (66th session、dogfood 第 10 周目で着地確定)
+
+経緯:
+
+- 2026-05-10 (66th): ADR 0069 Revisit 条件「marker 自動付与の DX 改善」を起点に Proposed 起票 + 案 X 実装 + dogfood smoke、Accepted に昇格
+
+着地時 commit: `70649b5 feat(form): ADR 0075 — formControl.bind を form props 形式 (= spread) に変更`
 
 依存: ADR 0069 (formControl primitive)、ADR 0051 (form submit auto-intercept)
 関連: `feedback_dx_first_design`, `feedback_ai_first_api_design`
