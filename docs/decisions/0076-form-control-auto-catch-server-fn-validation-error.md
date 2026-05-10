@@ -2,11 +2,13 @@
 
 ## Status
 
-**Proposed** — 2026-05-10 (67th session、dogfood 第 11 周目で着地予定)
+**Accepted** — 2026-05-10 (67th session、dogfood 第 11 周目で着地確定)
 
 経緯:
 
-- 2026-05-10 (67th): ADR 0069 + ADR 0073 + ADR 0075 連動の延長として、`@vidro/router` の `validator` 経路で吐かれる `ServerFnValidationError` を formControl が default で消化する設計を Proposed 起票
+- 2026-05-10 (67th): ADR 0069 + ADR 0073 + ADR 0075 連動の延長として、`@vidro/router` の `validator` 経路で吐かれる `ServerFnValidationError` を formControl が default で消化する設計を Proposed 起票 + 案 B 実装 + 514 test pass + dogfood smoke (= post-form / edit-form 想定通り動作確認)、Accepted に昇格
+
+着地時 commit: `1dc692b feat(form): ADR 0076 — formControl.bind が ServerFnValidationError を自動 catch する + dogfood 第 11 周目`
 
 依存: ADR 0069 (formControl primitive)、ADR 0071 (`@vidro/zod`)、ADR 0072 (handler pure service form)、ADR 0073 (serverFn object slot)、ADR 0075 (formControl.bind を form props 化)
 関連: `project_3tier_architecture`, `feedback_dev_restart_after_dist_change`, `feedback_dx_first_design`, `project_layer_separation_principle`
