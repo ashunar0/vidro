@@ -135,12 +135,13 @@ describe("formControl — ADR 0069", () => {
     expect(f.error("body").value).toBeUndefined();
   });
 
-  test("reset: 全 field 値 + error + pending クリア", () => {
+  test("reset: 全 field 値 + error + pending + formError クリア", () => {
     const f = formControl({ schema: makeSchema() });
 
     fireInput(f.field("title").onInput, "Filled");
     f.field("title").onBlur();
     f.setFieldErrors({ body: "required" });
+    f.setFormError("Network error");
 
     f.reset();
 
@@ -148,6 +149,8 @@ describe("formControl — ADR 0069", () => {
     expect(f.error("title").value).toBeUndefined();
     expect(f.error("body").value).toBeUndefined();
     expect(f.pending.value).toBe(false);
+    // ADR 0077: formError も reset で undefined に戻る (= per-field error / values と一貫)
+    expect(f.formError.value).toBeUndefined();
   });
 
   test("pending 中の double submit は no-op (= 二重 submit 防止)", () => {
@@ -410,6 +413,140 @@ describe("formControl — ADR 0069", () => {
         expect(isServerFnValidationError(undefined)).toBe(false);
         expect(isServerFnValidationError("ServerFnValidationError")).toBe(false);
       });
+    });
+  });
+
+  // ADR 0077: form-level error signal (= rhf `formState.errors.root` 相当)。
+  // network error / 500 / business error 等、per-field に紐付かない error 表示用。
+  // bind 内部の自動 catch chain (= ADR 0076) は変更なし、user の try/catch + setFormError
+  // で手動流入する設計。reset で formError も clear、pending と独立。
+  describe("ADR 0077: form-level error signal", () => {
+    test("初期 formError は undefined", () => {
+      const f = formControl({ schema: makeSchema() });
+      expect(f.formError.value).toBeUndefined();
+    });
+
+    test("setFormError(message) で値が入る、reactive 表示用", () => {
+      const f = formControl({ schema: makeSchema() });
+      f.setFormError("Network error, please retry");
+      expect(f.formError.value).toBe("Network error, please retry");
+    });
+
+    test("setFormError(undefined) で clear", () => {
+      const f = formControl({ schema: makeSchema() });
+      f.setFormError("Something went wrong");
+      expect(f.formError.value).toBe("Something went wrong");
+      f.setFormError(undefined);
+      expect(f.formError.value).toBeUndefined();
+    });
+
+    test("setFormError は pending と独立 (= submit 中じゃなくても呼べる、pending を触らない)", () => {
+      const f = formControl({ schema: makeSchema() });
+      expect(f.pending.value).toBe(false);
+      f.setFormError("Something went wrong");
+      // pending は触らない、user が手動 set する形
+      expect(f.pending.value).toBe(false);
+      expect(f.formError.value).toBe("Something went wrong");
+    });
+
+    test("bind 内部の自動 catch chain は formError を触らない (= validation error は setFieldErrors のみ)", async () => {
+      const f = formControl({ schema: makeSchema() });
+      fireInput(f.field("title").onInput, "T");
+      fireInput(f.field("body").onInput, "B");
+
+      // ADR 0076 の duck-type 形式の validation error を throw
+      const validationError = Object.assign(new Error("validation failed"), {
+        name: "ServerFnValidationError",
+        fields: { title: "already taken" },
+      });
+
+      const props = f.bind(() => Promise.reject(validationError));
+      fireSubmit(props.onSubmit);
+      // microtask flush 待ち
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // validation error は per-field error に流れる、formError は触られない
+      expect(f.error("title").value).toBe("already taken");
+      expect(f.formError.value).toBeUndefined();
+    });
+
+    test("bind の onError option で validation 以外の error を formError に流す (= 典型経路)", async () => {
+      const f = formControl({ schema: makeSchema() });
+      fireInput(f.field("title").onInput, "T");
+      fireInput(f.field("body").onInput, "B");
+
+      // handler は throw 任せ (= try/catch しない、ADR 0076 経路を bypass しない)。
+      // bind の catch chain で「validation = 自動 setFieldErrors、それ以外 = onError」
+      // と分離されるので、user は onError 内で business decision を書くだけ。
+      const props = f.bind(() => Promise.reject(new Error("fetch failed")), {
+        onError: (err) =>
+          f.setFormError(err instanceof Error ? err.message : "Something went wrong"),
+      });
+      fireSubmit(props.onSubmit);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(f.formError.value).toBe("fetch failed");
+      // pending は finally で false に戻る (= ADR 0076 維持)
+      expect(f.pending.value).toBe(false);
+    });
+
+    test("bind の onError は validation error には呼ばれない (= ADR 0076 経路を bypass しない)", async () => {
+      const f = formControl({ schema: makeSchema() });
+      fireInput(f.field("title").onInput, "T");
+      fireInput(f.field("body").onInput, "B");
+
+      // ADR 0076 の duck-type validation error
+      const validationError = Object.assign(new Error("validation failed"), {
+        name: "ServerFnValidationError",
+        fields: { title: "already taken" },
+      });
+
+      let onErrorCalledWith: unknown = "untouched";
+      const props = f.bind(() => Promise.reject(validationError), {
+        onError: (err) => {
+          onErrorCalledWith = err;
+        },
+      });
+      fireSubmit(props.onSubmit);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // onError は呼ばれない、validation error は ADR 0076 で setFieldErrors に流れる
+      expect(onErrorCalledWith).toBe("untouched");
+      expect(f.error("title").value).toBe("already taken");
+      expect(f.formError.value).toBeUndefined();
+    });
+
+    test("bind の onError 省略は従来挙動 (= validation 以外は再 throw、unhandled rejection)", async () => {
+      const f = formControl({ schema: makeSchema() });
+      fireInput(f.field("title").onInput, "T");
+      fireInput(f.field("body").onInput, "B");
+
+      // jsdom 環境では unhandled rejection は window event でなく Node.js の process
+      // event で発火する (= vitest jsdom 環境の挙動、真の browser とは差異あり)。
+      // process.on で観測 + vitest reporter の noise を消すため event を消化する。
+      const capturedRejections: unknown[] = [];
+      const handler = (reason: unknown) => {
+        capturedRejections.push(reason);
+      };
+      process.on("unhandledRejection", handler);
+
+      try {
+        const props = f.bind(() => Promise.reject(new Error("network down")));
+        fireSubmit(props.onSubmit);
+        // unhandled rejection は microtask 後に発火、複数 tick 待つ
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(capturedRejections).toHaveLength(1);
+        expect((capturedRejections[0] as Error).message).toBe("network down");
+        // formError は触られない (= onError 渡してないので機構が hook を呼ばない)
+        expect(f.formError.value).toBeUndefined();
+        expect(f.pending.value).toBe(false);
+      } finally {
+        process.off("unhandledRejection", handler);
+      }
     });
   });
 });

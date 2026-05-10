@@ -86,6 +86,33 @@ export type FormControlBindProps = {
   "data-vidro-no-intercept": "";
 };
 
+/**
+ * ADR 0077: `f.bind(handler, options)` の第 2 引数。`onError` で「ADR 0076 の自動 catch
+ * (= validation error) で消化されなかった error」を user 経路に渡す hook。
+ *
+ * `<form {...f.bind(handler, { onError: (err) => f.setFormError(err.message) })}>` で
+ * form-level error UI に流すのが典型 use case。`onError` を渡さない場合は従来通り
+ * 再 throw されて unhandled rejection 経路 (= JS 標準、global handler / devtools console
+ * が拾う) に落ちる、既存挙動と互換。
+ *
+ * 業界 trend (= Conform / TanStack Form / React 19 useActionState / Remix useActionData
+ * 等) は「server-side error の自動消化 + user hook で flexibility」方向、本 option は
+ * その路線を formControl primitive 内で完結させる設計。
+ */
+export type FormControlBindOptions = {
+  /**
+   * `bind` 内部 catch chain で validation error 以外の error が出た場合に呼ばれる。
+   * 渡されない場合は再 throw されて unhandled rejection 経路に落ちる (= 既存挙動)。
+   * `f.setFormError(err.message)` で form-level UI に流すのが典型、business decision
+   * (= retry / redirect / Sentry 通知 / ignore 等) は user の onError 内で書き分ける。
+   *
+   * 注: `onError` 内で sync throw すると、その error は機構が再 catch せず unhandled
+   * rejection になる (= 2 重に出る経路はないが、`onError` の責務は「副作用で UI / log
+   * 系に流す」までで、business 判断の throw は不向き)。
+   */
+  onError?: (err: unknown) => void;
+};
+
 export type FormControl<T extends Record<string, unknown>> = {
   /**
    * `<form {...f.bind(handleSubmit)}>` で渡す form props factory (ADR 0075)。
@@ -97,8 +124,15 @@ export type FormControl<T extends Record<string, unknown>> = {
    * marker (= `data-vidro-no-intercept`) は router の global form interceptor
    * (ADR 0051) から逃げる escape hatch。formControl で fetch を直叩きする island
    * form は SPA 遷移経路に乗せたくないので必須、formControl 内で隠蔽する。
+   *
+   * ADR 0077: 第 2 引数 `options.onError` で「ADR 0076 自動 catch で消化されなかった
+   * error」を user に渡す hook。`onError` を渡さない場合は従来通り再 throw → unhandled
+   * rejection (= 既存挙動)、user code は無改修で OK。
    */
-  bind(fn: (data: T) => Promise<void> | void): FormControlBindProps;
+  bind(
+    fn: (data: T) => Promise<void> | void,
+    options?: FormControlBindOptions,
+  ): FormControlBindProps;
   /**
    * field props を返す。spread して `<input>` に渡す形を想定。type は schema の keyof T
    * で絞られているので、schema にない field 名は build error (型貫通 #4)。
@@ -113,7 +147,22 @@ export type FormControl<T extends Record<string, unknown>> = {
    * したが server side validation で fail (= unique constraint 違反等) のケース。
    */
   setFieldErrors(fields: Partial<Record<keyof T & string, string>>): void;
-  /** 全 field 値 + error + pending をクリア。success navigate 後等に user が明示的に呼ぶ。 */
+  /**
+   * ADR 0077: form-level error signal (= rhf `formState.errors.root` 相当)。
+   * network error / 500 / business error 等、per-field に紐付かない error 表示用。
+   * `<form>` 直下に `{f.formError.value && <p>{f.formError.value}</p>}` で reactive 表示。
+   * bind 内部の自動 catch chain (= ADR 0076) は touch しない (= validation だけ自動、
+   * その他 error は user の try/catch で setFormError 呼ぶ手動経路、business decision
+   * 余地を保つ)。
+   */
+  formError: Signal<string | undefined>;
+  /**
+   * ADR 0077: form-level error を手動 set。`undefined` 渡しで clear。
+   * `f.reset()` でも自動 clear される (= per-field error / values と一貫)。
+   * 値は string only (= `Error` 渡しは user 側で `err.message` 取って渡す、型単純化)。
+   */
+  setFormError(message: string | undefined): void;
+  /** 全 field 値 + error + pending + formError をクリア。success navigate 後等に user が明示的に呼ぶ。 */
   reset(): void;
 };
 
@@ -168,6 +217,10 @@ export function formControl<T extends Record<string, unknown>, D extends Partial
   const values = new Map<string, Signal<string>>();
   const errors = new Map<string, Signal<string | undefined>>();
   const pending = signal(false);
+  // ADR 0077: form-level error signal。network/500/business error 等、per-field
+  // に紐付かない error を user の try/catch + setFormError 経由で表示するための
+  // reactive primitive。bind 内部の自動 catch chain は変更なし、自動流入は無し。
+  const formError = signal<string | undefined>(undefined);
 
   // defaultValues seed: edit form の prefill 経路 (2026-05-10、61st session)。
   // 与えられた field を eager に signal 初期化して、`f.field(name).value()` thunk が
@@ -255,7 +308,7 @@ export function formControl<T extends Record<string, unknown>, D extends Partial
   }
 
   return {
-    bind(fn): FormControlBindProps {
+    bind(fn, options): FormControlBindProps {
       // ADR 0075: 戻り値は form props object (= JSX spread 用)。onSubmit handler
       // と router intercept escape marker を同時に注入する。
       return {
@@ -266,12 +319,13 @@ export function formControl<T extends Record<string, unknown>, D extends Partial
           if (!validation.ok) return;
           pending.value = true;
           // ADR 0076: handler が ServerFnValidationError 形 (= name + fields shape)
-          // を throw したら自動で setFieldErrors に流す。それ以外の error は bubble
-          // up (= user 側で必要なら try/catch、network error / 500 / business error 等)。
-          // duck-type 判定で `@vidro/router/client` への peer dep を避け、cross-bundle
-          // で `instanceof` が壊れる事象 (memory feedback_dev_restart_after_dist_change)
-          // も構造的に回避する。pending を確実に降ろすため finally、Promise chain は
-          // handler 側で await されないので void で意図を明示 (= no-floating-promises)。
+          // を throw したら自動で setFieldErrors に流す。それ以外の error は ADR 0077
+          // の onError option があれば user に渡す、無ければ bubble up (= unhandled
+          // rejection、JS 標準挙動)。duck-type 判定で `@vidro/router/client` への peer
+          // dep を避け、cross-bundle で `instanceof` が壊れる事象 (memory
+          // feedback_dev_restart_after_dist_change) も構造的に回避する。pending を確実
+          // に降ろすため finally、Promise chain は handler 側で await されないので void
+          // で意図を明示 (= no-floating-promises)。
           //
           // try/catch で sync throw を Promise.reject に変換: 素朴な `Promise.resolve(fn(...))`
           // は fn の同期評価で throw した瞬間に呼出元 (= onSubmit) で uncaught に流れて
@@ -288,6 +342,13 @@ export function formControl<T extends Record<string, unknown>, D extends Partial
             .catch((err: unknown) => {
               if (isServerFnValidationError(err)) {
                 applyFieldErrors(err.fields);
+                return;
+              }
+              // ADR 0077: validation 以外の error を user の onError hook に渡す。user
+              // が `f.setFormError(...)` で form-level UI に流すのが典型。onError を渡さ
+              // ない場合は従来通り再 throw → unhandled rejection (= 既存挙動と互換)。
+              if (options?.onError) {
+                options.onError(err);
                 return;
               }
               throw err;
@@ -328,6 +389,12 @@ export function formControl<T extends Record<string, unknown>, D extends Partial
     setFieldErrors(fields) {
       applyFieldErrors(fields);
     },
+    formError,
+    setFormError(message) {
+      // ADR 0077: 単純 set。`undefined` 渡しで clear、reactive 表示が自動更新。
+      // batch 不要 (= 1 signal 単独 write、他 signal と coalesce 必要なし)。
+      formError.value = message;
+    },
     reset() {
       batch(() => {
         // defaultValues 与えられてればそこに戻す (= edit form の「変更を破棄」操作)、
@@ -338,6 +405,9 @@ export function formControl<T extends Record<string, unknown>, D extends Partial
         }
         for (const sig of errors.values()) sig.value = undefined;
         pending.value = false;
+        // ADR 0077: form-level error も reset で undefined に戻す (= per-field
+        // error / values と一貫、user が手動 clear する手間を消す)。
+        formError.value = undefined;
       });
     },
   };

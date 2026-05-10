@@ -43,7 +43,10 @@ export function EditPostForm({ post }: { post: Post }) {
 
   const handleSubmit = async (data: PostContentInput): Promise<void> => {
     // ADR 0073: params slot に URL 識別子 (slug)、data slot に form payload。
-    // ADR 0076: 422 は bind が自動で setFieldErrors に流すので try/catch 不要。
+    // ADR 0076: 422 は bind が自動で setFieldErrors に流す。
+    // ADR 0077: 422 以外 (= network/500/business) は bind の onError option で受けて
+    // f.setFormError に流す経路、handler 自体は throw 任せで OK (= 内部 try/catch を
+    // 書くと bind の自動 catch chain を bypass する不整合があるため)。
     const { slug } = await updatePost({ params: { slug: post.slug }, data });
     navigate(`/posts/${slug}`);
   };
@@ -51,7 +54,22 @@ export function EditPostForm({ post }: { post: Post }) {
   // ADR 0075: bind 戻り値が form props object、spread で marker (= router intercept
   // escape) と onSubmit を同時注入。post-form.tsx と同じ pattern。
   return (
-    <form {...f.bind(handleSubmit)} class="mt-4 space-y-4">
+    <form
+      {...f.bind(handleSubmit, {
+        // ADR 0077: validation 以外の error (= network/500/business) を formError に流す。
+        // 再試行 / redirect / Sentry 通知等の business decision はこの onError 内で書き分ける。
+        onError: (err) =>
+          f.setFormError(err instanceof Error ? err.message : "Something went wrong"),
+      })}
+      class="mt-4 space-y-4"
+    >
+      {/* ADR 0077: form-level error 表示 (= rhf formState.errors.root 相当)。 */}
+      {f.formError.value && (
+        <p class="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {f.formError.value}
+        </p>
+      )}
+
       <div>
         <label class="block text-sm font-medium" for="title">
           Title
