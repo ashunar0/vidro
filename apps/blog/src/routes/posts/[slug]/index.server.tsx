@@ -28,7 +28,7 @@ export default async function PostDetail({ params }: Route.PageProps) {
 
   // 隣接 post を全件 (publishedAt desc 済) から計算。toy data 量なので全 fetch で良い
   // (= 本格的な blog なら index 経由で前後 1 件だけ select する SQL に置換)。
-  const all = await listPosts({});
+  const all = await listPosts();
   const idx = all.findIndex((p) => p.slug === post.slug);
   const newer = idx > 0 ? all[idx - 1] : null;
   const older = idx >= 0 && idx < all.length - 1 ? all[idx + 1] : null;

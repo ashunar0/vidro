@@ -15,7 +15,7 @@ import { listPosts } from "../../features/posts/server";
 import { DeleteButton } from "./delete-button";
 
 export default async function PostsIndex() {
-  const posts = await listPosts({});
+  const posts = await listPosts();
 
   return (
     <section>

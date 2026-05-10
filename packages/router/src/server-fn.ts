@@ -230,10 +230,41 @@ export type ServerFnConfig<
 };
 
 /**
+ * `T` が `unknown` (= `any` 含む top type) かを判定する type-level helper。
+ * ADR 0074: validator なし時に input arg を optional にするための判定軸。
+ *
+ * 仕組み: `unknown extends T` は `T` が `unknown` (or `any`) の時にだけ `true`。
+ * specific 型 (= `{slug:string}` 等) には `unknown` は assignable じゃないので `false`。
+ *
+ *   IsUnknown<unknown>      → true
+ *   IsUnknown<any>          → true (any は何でも互換、unknown 扱いで実害なし)
+ *   IsUnknown<{slug:string}> → false
+ *   IsUnknown<undefined>     → false (= 明示 undefined は input required を維持)
+ *
+ * 逆方向 (= `T extends unknown`) で書くと、specific 型も unknown に assignable
+ * なので全部 true になる落とし穴がある。ADR 0074 Options 案 B 参照。
+ */
+type IsUnknown<T> = unknown extends T ? true : false;
+
+/**
  * Public form (= client / 普通の呼び出し経路から見える signature)。
  * client bundle 経路では `__vidroServerFnStub("/url")` に置換、戻り値はこの型。
+ *
+ * ADR 0074: validator が両 slot とも指定されていない時 (= Params/Data 両方
+ * unknown に倒れる) は input arg を **optional** に倒す (= `await listPosts()`
+ * を許容)。validator あり (片方でも) は input required を維持して安全性を担保。
+ *
+ *   no-validator (Params=unknown, Data=unknown)            → optional
+ *   params-only (Params=typed,   Data=unknown)             → required
+ *   data-only   (Params=unknown, Data=typed)               → required
+ *   both        (Params=typed,   Data=typed)               → required
  */
-export type ServerFnPublic<Params, Data, R> = (input: ServerFnInput<Params, Data>) => Promise<R>;
+export type ServerFnPublic<Params, Data, R> =
+  IsUnknown<Params> extends true
+    ? IsUnknown<Data> extends true
+      ? (input?: ServerFnInput<Params, Data>) => Promise<R>
+      : (input: ServerFnInput<Params, Data>) => Promise<R>
+    : (input: ServerFnInput<Params, Data>) => Promise<R>;
 
 /**
  * Internal form (= unit test / dispatchServerFn から呼ばれる、c 末尾必須、
@@ -309,14 +340,22 @@ export function serverFn<
   const handler = config.handler as Handler<unknown, unknown, Record<string, unknown>, R>;
 
   // internal form: c 末尾必須 (ADR 0072 path 継承)。dispatch / unit test から呼ばれる。
-  const internalForm = async (input: ServerFnInput<unknown, unknown>, c: Context): Promise<R> => {
+  // ADR 0074: input は optional。SSR 中の server-side 直 invoke (= `.server.tsx`
+  // 内で `await listPosts()`) で undefined が渡る case を許容。client stub 経路
+  // も同様に no-arg 呼出 → 内部 `{}` 扱い。validator あり fn は public form 型で
+  // input required になっているので、ここでは defensive に default するだけ。
+  const internalForm = async (
+    input: ServerFnInput<unknown, unknown> | undefined,
+    c: Context,
+  ): Promise<R> => {
+    const safeInput = input ?? {};
     // 1. validator: params / data を schema で parse、失敗時は 422 throw。
     //    旧 `c.var.body` 経路は廃止、input.data を直接 parse する経路に統合 (ADR 0073)。
-    let params: unknown = input.params;
-    let data: unknown = input.data;
+    let params: unknown = safeInput.params;
+    let data: unknown = safeInput.data;
 
     if (validatorParams) {
-      const parsed = validatorParams.safeParse(input.params);
+      const parsed = validatorParams.safeParse(safeInput.params);
       if (!parsed.success) {
         const fields = flattenZodFields(parsed.error);
         throw new Response(JSON.stringify({ fields, slot: "params" }), {
@@ -328,7 +367,7 @@ export function serverFn<
     }
 
     if (validatorData) {
-      const parsed = validatorData.safeParse(input.data);
+      const parsed = validatorData.safeParse(safeInput.data);
       if (!parsed.success) {
         const fields = flattenZodFields(parsed.error);
         throw new Response(JSON.stringify({ fields, slot: "data" }), {

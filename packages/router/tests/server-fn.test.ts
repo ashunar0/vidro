@@ -690,4 +690,114 @@ describe("serverFn (ADR 0073 object slot form)", () => {
       expect(await fn.run({}, c)).toBe(0);
     });
   });
+
+  // ADR 0074: validator なし時の input arg optional 化。
+  //
+  // public form の type signature が conditional type で:
+  //   - validator なし (Params/Data 両方 unknown) → (input?: ...) (= optional)
+  //   - validator あり (片方でも typed) → (input: ...) (= required)
+  //
+  // type test は @ts-expect-error directive で TS error を assert する。
+  // runtime は internalForm の `input ??= {}` 防御で undefined 入力も crash しない。
+  describe("ADR 0074: validator なし時の input arg optional", () => {
+    // 共通の zod-like validator stub (= ValidatorSlot duck typing)。
+    const stringSlugSchema: ValidatorSlot<{ slug: string }> = {
+      safeParse(input: unknown) {
+        if (
+          typeof input === "object" &&
+          input !== null &&
+          "slug" in input &&
+          typeof (input as { slug: unknown }).slug === "string"
+        ) {
+          return { success: true, data: input as { slug: string } };
+        }
+        return { success: false, error: { issues: [{ path: ["slug"], message: "required" }] } };
+      },
+    };
+    const titleDataSchema: ValidatorSlot<{ title: string }> = {
+      safeParse(input: unknown) {
+        if (
+          typeof input === "object" &&
+          input !== null &&
+          "title" in input &&
+          typeof (input as { title: unknown }).title === "string"
+        ) {
+          return { success: true, data: input as { title: string } };
+        }
+        return { success: false, error: { issues: [{ path: ["title"], message: "required" }] } };
+      },
+    };
+
+    it("type: validator なし fn は input なしで呼べる + {} 渡しも依然 OK", async () => {
+      const fn = serverFn({ handler: async () => 42 });
+      // 型と runtime の両方を確認。public form を直接 call する経路。
+      // (= `.run` ではなく fn() 経路 = ADR 0074 で改修した optional 化が効く)
+      void (await fn());
+      void (await fn({}));
+      void (await fn({ params: { x: 1 } })); // params/data 中身は unknown 型 widening で許容
+    });
+
+    it("type: validator.params あり fn は input が required (no-arg は TS error)", async () => {
+      const fn = serverFn({
+        validator: { params: stringSlugSchema },
+        handler: async ({ params }) => params.slug,
+      });
+      // 直下の TS error 期待 directive で type-level error を assert する。
+      // runtime では validator が 422 throw するので await + catch で silence (=
+      // type test の副作用として runtime が走る、結果 422 は想定通り)。
+      try {
+        // @ts-expect-error: input 引数が required (= validator あり、TS error 期待)
+        await fn();
+      } catch (err) {
+        if (!(err instanceof Response) || err.status !== 422) throw err;
+      }
+      // 正常呼出: validator の input shape に沿って渡せば OK
+      await fn({ params: { slug: "abc" } });
+    });
+
+    it("type: validator.data あり fn は input が required (no-arg は TS error)", async () => {
+      const fn = serverFn({
+        validator: { data: titleDataSchema },
+        handler: async ({ data }) => data.title,
+      });
+      try {
+        // @ts-expect-error: input 引数が required (= validator あり、TS error 期待)
+        await fn();
+      } catch (err) {
+        if (!(err instanceof Response) || err.status !== 422) throw err;
+      }
+      await fn({ data: { title: "hello" } });
+    });
+
+    it("type: validator.params + data 両方ありも依然 input required", async () => {
+      const fn = serverFn({
+        validator: { params: stringSlugSchema, data: titleDataSchema },
+        handler: async ({ params, data }) => `${params.slug}/${data.title}`,
+      });
+      try {
+        // @ts-expect-error: input 引数が required (= validator あり、TS error 期待)
+        await fn();
+      } catch (err) {
+        if (!(err instanceof Response) || err.status !== 422) throw err;
+      }
+      await fn({ params: { slug: "abc" }, data: { title: "hi" } });
+    });
+
+    it("runtime: SSR 直 invoke で fn() (= input undefined) を許容、handler が default 値で動く", async () => {
+      const fn = serverFn({ handler: async () => ({ posts: [1, 2, 3] }) });
+      // 直 invoke 経路 = `.run` でも internalForm の `input ??= {}` 防御が効く。
+      // public form は `.run` 経由じゃないが、internalForm が単一 runtime なので
+      // どちらの経路でも undefined 入力が crash しない。
+      const result = await fn();
+      expect(result).toEqual({ posts: [1, 2, 3] });
+    });
+
+    it("runtime: validator なし fn を {} で呼んでも従来通り動く (= 後方互換)", async () => {
+      const fn = serverFn({ handler: async () => "ok" });
+      expect(await fn({})).toBe("ok");
+      // .run 経路 (= internal form、c 必須) も従来通り
+      const c = createContext({ request: new Request("https://example.com/") });
+      expect(await fn.run({}, c)).toBe("ok");
+    });
+  });
 });
