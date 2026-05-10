@@ -27,12 +27,15 @@ import { postContentSchema } from "../../../../features/posts/schema";
 import { updatePost } from "../../../../features/posts/server";
 
 export function EditPostForm({ post }: { post: Post }) {
-  // formControl は data slot 用、defaultValues も title + body のみ。
+  // formControl は data slot 用、defaultValues は post まるごと渡す (第 12 周目 実験)。
+  // schema (= postContentSchema、title + body) は keyof T で限定された field のみ
+  // pick して seed、Post 型の余計 field (id / slug / createdAt 等) は TypeScript の
+  // structural typing で許容される (= Post is super-type of Partial<{title, body}>)。
   // hydrate 後に signal が空文字で DOM を上書きする問題を defaultValues で回避
   // (= ADR 0069 + 第 4 周目発見の経路)。
   const f = formControl({
     schema: postContentSchema,
-    defaultValues: { title: post.title, body: post.body },
+    defaultValues: post,
   });
 
   const handleSubmit = async (data: PostContentInput): Promise<void> => {
