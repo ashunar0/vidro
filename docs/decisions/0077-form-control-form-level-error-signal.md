@@ -2,12 +2,14 @@
 
 ## Status
 
-**Proposed** — 2026-05-10 (68th session、第 14 周目で起票)
+**Accepted** — 2026-05-10 (68th session、dogfood 第 14 周目完走で着地確定)
 
 経緯:
 
 - ADR 0076 (= 67th、第 11 周目) §拡張余地で「form-level error signal (= rhf `formState.errors.root` 相当) を追加して network error / 500 等を formControl の form-level UI に流す primitive」を別 ADR 候補として明示
-- 2026-05-10 (68th、本 ADR): 第 14 周目として起票、formError signal + setFormError method を formControl 公式 API に追加
+- 2026-05-10 (68th、本 ADR): 第 14 周目で起票 + 案 A (= formError + setFormError) draft、code-reviewer 指摘 (= handler 内 try/catch が ADR 0076 chain を bypass) を受けて案 b (= bind onError hook 追加) に pivot、528 test pass + apps/blog dogfood (= post-form / edit-form を bind onError 経由に書き直し、tsc -b pass) + code-reviewer 2 回目 review OK、Accepted に昇格
+
+着地時 commit: `76786a7 feat(form): ADR 0077 — formError + setFormError + bind onError hook + dogfood 第 14 周目`
 
 依存: ADR 0069 (formControl primitive)、ADR 0075 (bind を form props 化)、ADR 0076 (bind 自動 catch)
 関連: `project_form_design_decided`, `project_api_design_philosophy_object_one_spread`, `feedback_dx_first_design`, `feedback_ai_first_api_design`
