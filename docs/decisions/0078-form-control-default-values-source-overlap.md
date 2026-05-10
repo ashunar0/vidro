@@ -2,13 +2,15 @@
 
 ## Status
 
-**Proposed** — 2026-05-10 (68th session、第 13 周目で起票)
+**Accepted** — 2026-05-10 (68th session、dogfood 第 13 周目完走で着地確定)
 
 経緯:
 
 - 2026-05-09 (66th〜67th): ADR 0073/0074/0075/0076 連動で formControl の周辺機構が完成、第 11 周目で try/catch 撲滅
 - 2026-05-10 (67th、第 12 周目、commit 51f947b): `defaultValues: { title: post.title, body: post.body }` を `defaultValues: post` (= Post 型まるごと) に書換、規約として格上げ
-- 2026-05-10 (68th、本 ADR): 第 12 周目で着地した「post まるごと渡せる」が **silent breakage を許す** 弱点に気付き、source data ⟷ schema field の type-level 一致を制約する型強化を起票
+- 2026-05-10 (68th、本 ADR): 第 12 周目で着地した「post まるごと渡せる」が **silent breakage を許す** 弱点に気付き、`ValidDefaults<T, D>` で source ⟷ schema overlap 制約を起票 + 案 A 実装 + 520 test pass + apps/blog dogfood (= 故意 typo で TS2559 出ること実証) + code-reviewer OK、Accepted に昇格
+
+着地時 commit: `d564719 feat(form): ADR 0078 — formControl({defaultValues}) を source ⟷ schema overlap で型制約 + dogfood 第 13 周目`
 
 依存: ADR 0069 (formControl primitive)、ADR 0075 (bind を form props 化)、ADR 0076 (bind 自動 catch)
 関連: `project_type_vertical_propagation`, `project_form_design_decided`, `feedback_dx_first_design`, `project_3tier_architecture`
