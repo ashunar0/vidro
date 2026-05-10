@@ -1,17 +1,21 @@
 // 公開側: 全記事一覧 (`.server.tsx`)。
-// ADR 0066 dogfood: `async function Component() { const posts = await db.postsAsync(); ... }`
+// ADR 0066 dogfood: `async function Component() { const posts = await listPosts(); ... }`
 // 直書き形式。core の h() が Promise<Node> を VAsyncSlot に包んで AsyncScope に register、
 // renderToReadableStream / renderToStringAsync の allSettled 待ち合わせ後に markup に展開される。
 // signal / computed / effect は使えない (= 全部 static HTML として焼かれる、ADR 0058)。
 //
+// dogfood 第 8 周目 (2026-05-10): db 直叩き → listPosts() serverFn 経由に変更。
+// SSR pass では server-boundary plugin が stub に置換しないので in-process 直 invoke、
+// HTTP loopback は発生しない (= packages/plugin/src/server-boundary.ts 参照)。
+//
 // 詳細 page は posts/[slug]/index.server.tsx で別途。
 
 import { Link } from "@vidro/router";
-import { db } from "../../data/posts";
+import { listPosts } from "../../features/posts/server";
 import { DeleteButton } from "./delete-button";
 
 export default async function PostsIndex() {
-  const posts = await db.postsAsync();
+  const posts = await listPosts({});
 
   return (
     <section>
