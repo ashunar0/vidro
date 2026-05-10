@@ -19,7 +19,26 @@ export interface ParseSchema<T> {
   safeParse(input: unknown): SafeParseResult<T>;
 }
 
-export type FormControlOptions<T> = {
+/**
+ * ADR 0078: source data D と schema 推論 T の field overlap を要求する制約。
+ *
+ *   - `keyof D extends never` (= D が `{}` 等 empty object) → 制約スキップで D を返す
+ *     (= `defaultValues: {}` の明示渡しを許可、reject すると意味のない strictness)
+ *   - `(keyof D & keyof T) extends never` (= source に schema field が 1 個も存在しない)
+ *     → `never` を要求して build error 化 (= typo 単独 / 全 field rename 検出)
+ *   - それ以外 (= 1 field 以上 overlap) → そのまま D を返す (= post まるごと OK、
+ *     partial OK)
+ *
+ * `defaultValues` 省略時は generic D が default `Partial<T>` で固定されるので
+ * `keyof D = keyof T` で第 2 枝の overlap check を pass する (= 第 1 枝には入らない、
+ * 結果は同じく pass)。
+ *
+ * partial rename (= 1 field だけ rename、もう 1 field は match) は overlap が残るので
+ * 検出限界 (= 案 C = 親 → 子 props vertical 型貫通の領域、本 ADR scope 外)。
+ */
+type ValidDefaults<T, D> = keyof D extends never ? D : keyof D & keyof T extends never ? never : D;
+
+export type FormControlOptions<T, D extends Partial<T> = Partial<T>> = {
   schema: ParseSchema<T>;
   /**
    * 初期値の seed。edit form (= prefill 必要) で必須。例: `{ title: post.title }`。
@@ -31,8 +50,13 @@ export type FormControlOptions<T> = {
    * `Partial<T>` で受けて非 string は string 化する (= number 1 → "1" 等)。
    * non-string 値の defaultValues は ADR 0069 範囲外、formControl は string DOM
    * value のみ扱う規約。
+   *
+   * ADR 0078: source data の型 D を generic で infer して `ValidDefaults<T, D>` で
+   * 「schema field と 1 個でも overlap してるか」を build 時 check。typo 単独
+   * (= `{ titlee: "x" }`) と全 field rename を build error 化、`post` (= Post 型
+   * まるごと、第 12 周目規約) は title/body overlap で素通り。
    */
-  defaultValues?: Partial<T>;
+  defaultValues?: ValidDefaults<T, D>;
 };
 
 /**
@@ -134,8 +158,8 @@ export function isServerFnValidationError(
  *   - blur: 該当 field のみ validate (= 業界標準 UX、過剰表示しない)
  *   - input (error 表示中のみ): 該当 field 再 validate (= once-errored becomes reactive)
  */
-export function formControl<T extends Record<string, unknown>>(
-  opts: FormControlOptions<T>,
+export function formControl<T extends Record<string, unknown>, D extends Partial<T> = Partial<T>>(
+  opts: FormControlOptions<T, D>,
 ): FormControl<T> {
   const { schema, defaultValues } = opts;
 

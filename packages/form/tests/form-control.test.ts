@@ -212,6 +212,74 @@ describe("formControl — ADR 0069", () => {
     expect(f.field("body").value()).toBe("World");
   });
 
+  // ADR 0078: defaultValues に渡す source data の型 D を generic で infer、
+  // `(keyof D & keyof T) extends never` (= source に schema field が 1 個も
+  // 存在しない) なら never を要求して build error 化する。typo 単独 / 全 field
+  // rename を build 時に検出、`post` (= Post 型まるごと、第 12 周目規約) は
+  // title/body overlap で素通り。partial rename (= 1 field だけ rename、もう
+  // 1 field は match) は overlap が残るので検出限界 (= ADR 0078 §検出限界)。
+  describe("ADR 0078: defaultValues source ⟷ schema field overlap", () => {
+    test("post まるごと (= 第 12 周目規約) は overlap 成立で型 pass + 値 seed", () => {
+      type Post = {
+        id: string;
+        slug: string;
+        title: string;
+        body: string;
+        createdAt: number;
+      };
+      const post: Post = {
+        id: "1",
+        slug: "test",
+        title: "Hello",
+        body: "World",
+        createdAt: 0,
+      };
+      // keyof Post & keyof FormShape = "title" | "body" → not never → D を返す
+      const f = formControl({ schema: makeSchema(), defaultValues: post });
+      expect(f.field("title").value()).toBe("Hello");
+      expect(f.field("body").value()).toBe("World");
+    });
+
+    test("partial (= title だけ prefill) は overlap 成立で型 pass", () => {
+      const f = formControl({
+        schema: makeSchema(),
+        defaultValues: { title: "Hello" },
+      });
+      expect(f.field("title").value()).toBe("Hello");
+      // body は seed されないので空 (= signal 初期値)
+      expect(f.field("body").value()).toBe("");
+    });
+
+    test("defaultValues 省略は型 pass (= D が default Partial<T> で固定、第 2 枝 overlap で素通り)", () => {
+      const f = formControl({ schema: makeSchema() });
+      expect(f.field("title").value()).toBe("");
+      expect(f.field("body").value()).toBe("");
+    });
+
+    test("defaultValues 空 object {} は制約スキップで型 pass (= 第 1 枝 keyof D extends never)", () => {
+      const f = formControl({ schema: makeSchema(), defaultValues: {} });
+      expect(f.field("title").value()).toBe("");
+    });
+
+    test("typo 単独 (= 変数経由で source に schema field 0 個) は build error", () => {
+      const opts = { titlee: "typo" };
+      // @ts-expect-error ADR 0078: keyof {titlee} & keyof FormShape = never で
+      // ValidDefaults が never を要求 → build error。変数経由 (= excess check 無し)
+      // でも ADR 0078 制約で reject される、これが本 ADR の core 効用。
+      formControl({ schema: makeSchema(), defaultValues: opts });
+    });
+
+    test("全 field rename 想定 (= 変数経由で schema 想定外 field のみ) は build error", () => {
+      const opts: { headline: string; content: string } = {
+        headline: "h",
+        content: "c",
+      };
+      // @ts-expect-error ADR 0078: schema を title→headline + body→content と
+      // 全 rename したのに source は旧 field のまま、というケースを build 時 catch
+      formControl({ schema: makeSchema(), defaultValues: opts });
+    });
+  });
+
   // ADR 0075: bind 戻り値は form props object、spread で marker と onSubmit が同時注入される。
   // 旧形式 (= bind が event handler を返す) は廃止、user は `<form {...f.bind(fn)}>` の
   // 1 expression で router intercept escape も手に入れる。

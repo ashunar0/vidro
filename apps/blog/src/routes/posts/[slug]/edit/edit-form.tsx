@@ -27,10 +27,13 @@ import { postContentSchema } from "../../../../features/posts/schema";
 import { updatePost } from "../../../../features/posts/server";
 
 export function EditPostForm({ post }: { post: Post }) {
-  // formControl は data slot 用、defaultValues は post まるごと渡す (第 12 周目 実験)。
+  // formControl は data slot 用、defaultValues は post まるごと渡す
+  // (第 12 周目で規約格上げ → 第 13 周目 ADR 0078 で型保証化)。
   // schema (= postContentSchema、title + body) は keyof T で限定された field のみ
-  // pick して seed、Post 型の余計 field (id / slug / createdAt 等) は TypeScript の
-  // structural typing で許容される (= Post is super-type of Partial<{title, body}>)。
+  // pick して seed、Post 型の余計 field (id / slug / createdAt 等) は ADR 0078 の
+  // ValidDefaults<T, D> 制約で「source ⟷ schema overlap が 1 個でもあれば許可」と
+  // して明示的に通る (= title/body overlap で素通り、typo 単独や全 field rename は
+  // build error 化されるので silent breakage 防止)。
   // hydrate 後に signal が空文字で DOM を上書きする問題を defaultValues で回避
   // (= ADR 0069 + 第 4 周目発見の経路)。
   const f = formControl({
