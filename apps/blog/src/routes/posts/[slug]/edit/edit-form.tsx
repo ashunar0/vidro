@@ -1,8 +1,11 @@
-// dogfood 第 5 周目 (2026-05-10、ADR 0073): edit form island を object slot wire に migration。
-// dogfood 第 6 周目 (2026-05-10): schema 重複解消、./schema.ts に集約して server.ts と共有。
-// dogfood 第 7 周目 (2026-05-10): feature-based 切り分け、schema は features/posts/schema に移動。
+// dogfood 第 11 周目 (2026-05-10、ADR 0076): try/catch boilerplate 撲滅。
 //
-// 構造的変化:
+// 旧 (第 5 周目〜第 10 周目): post-form と同じく handleSubmit に try/catch +
+// ServerFnValidationError instanceof + setFieldErrors の 5 行 boilerplate。
+// 新 (第 11 周目、ADR 0076): formControl が validation error を自動 catch するので
+// try/catch も `@vidro/router/client` import も消える。
+//
+// 第 5 周目以前の構造的変化:
 //   1. server.ts が **co-location 復活** (= `posts/[slug]/edit/server.ts`)、
 //      import 元が `../../server` → `./server` に変わる
 //   2. schema は **data slot 専用** (= `{ title, body }` のみ)、slug は URL params
@@ -18,7 +21,6 @@
 
 import { formControl } from "@vidro/form";
 import { navigate } from "@vidro/router";
-import { ServerFnValidationError } from "@vidro/router/client";
 import type { Post } from "../../../../data/posts";
 import type { PostContentInput } from "../../../../features/posts/schema";
 import { postContentSchema } from "../../../../features/posts/schema";
@@ -34,17 +36,10 @@ export function EditPostForm({ post }: { post: Post }) {
   });
 
   const handleSubmit = async (data: PostContentInput): Promise<void> => {
-    try {
-      // ADR 0073: params slot に URL 識別子 (slug)、data slot に form payload。
-      const { slug } = await updatePost({ params: { slug: post.slug }, data });
-      navigate(`/posts/${slug}`);
-    } catch (err) {
-      if (err instanceof ServerFnValidationError) {
-        f.setFieldErrors(err.fields);
-        return;
-      }
-      throw err;
-    }
+    // ADR 0073: params slot に URL 識別子 (slug)、data slot に form payload。
+    // ADR 0076: 422 は bind が自動で setFieldErrors に流すので try/catch 不要。
+    const { slug } = await updatePost({ params: { slug: post.slug }, data });
+    navigate(`/posts/${slug}`);
   };
 
   // ADR 0075: bind 戻り値が form props object、spread で marker (= router intercept

@@ -1,29 +1,21 @@
-// dogfood Phase 7' (ADR 0071 + ADR 0072 連動): try/catch + ServerFnValidationError。
-// dogfood 第 6 周目 (2026-05-10): schema を ./schema.ts に集約、server.ts と共有。
-// dogfood 第 7 周目 (2026-05-10): feature-based 切り分け、schema は features/posts/schema へ移動。
+// dogfood 第 11 周目 (2026-05-10、ADR 0076): try/catch boilerplate 撲滅。
 //
-// 旧 (Phase 7):
-//   - server.ts が CreatePostResult union 戻り値、isOk type predicate で narrow、
-//     IDE TS server narrowing 不整合の workaround 多数
-// 新 (Phase 7'):
-//   - server.ts が validator(schema) で 422 throw、戻り値は `{ slug }` typed
-//   - 本 file は `try { const { slug } = await createPost(data) } catch (err) { ... }`
-//     で ServerFnValidationError を instanceof で受けて setFieldErrors に流す
-// 第 6 周目:
-//   - schema 定義は ./schema.ts に切り出し、本 file と server.ts 両方が import
-//     (= "別 file 化は将来検討" の TODO を解消、規約のみで解決 = D 案)
-// 第 7 周目:
-//   - schema は features/posts/schema に集約 (= feature-based 切り分け)、
-//     create/update で同 shape の postContentSchema を共有
-//   - createPost も features/posts/server から import (routes/ の server.ts は re-export)
+// 旧 (第 7 周目〜第 10 周目): handleSubmit で
+//   try { const { slug } = await createPost({ data }) } catch (err) {
+//     if (err instanceof ServerFnValidationError) f.setFieldErrors(err.fields); else throw err;
+//   }
+// と毎 form 同じ 5 行 + ServerFnValidationError import を user に書かせていた。
+// 新 (第 11 周目、ADR 0076): formControl の bind が `name === "ServerFnValidationError"`
+// + fields shape を duck-type で自動 catch して setFieldErrors に流すので、user code から
+// try/catch も import も消える。throw しっぱなしで OK、想定外 error (network / 500 等) は
+// bubble up するので必要なら別途 try/catch する。
 //
-// `__vidroServerFnStub` (= @vidro/router/client) が 422 + content-type JSON +
-// `{fields}` shape を ServerFnValidationError として deserialize する (= ADR 0071
-// + ADR 0072 連動)。
+// 関連 ADR: 0069 (formControl)、0073 (serverFn object slot)、0075 (bind を spread props 化)、
+// 0076 (本 ADR、validation error の自動消化)。schema は features/posts/schema、createPost
+// は features/posts/server から import (= 第 7 周目 feature-based 切り分け)。
 
 import { formControl } from "@vidro/form";
 import { navigate } from "@vidro/router";
-import { ServerFnValidationError } from "@vidro/router/client";
 import type { PostContentInput } from "../../../features/posts/schema";
 import { postContentSchema } from "../../../features/posts/schema";
 import { createPost } from "../../../features/posts/server";
@@ -32,18 +24,11 @@ export function PostForm() {
   const f = formControl({ schema: postContentSchema });
 
   const handleSubmit = async (data: PostContentInput): Promise<void> => {
-    try {
-      // ADR 0073: data は data slot に詰める、`{ data }` で渡す。
-      const { slug } = await createPost({ data });
-      f.reset();
-      navigate(`/posts/${slug}`);
-    } catch (err) {
-      if (err instanceof ServerFnValidationError) {
-        f.setFieldErrors(err.fields);
-        return;
-      }
-      throw err;
-    }
+    // ADR 0073: data slot に詰めて渡す。ADR 0076: 422 (= ServerFnValidationError) は
+    // bind が自動で setFieldErrors に流すので try/catch 不要、throw しっぱなしで OK。
+    const { slug } = await createPost({ data });
+    f.reset();
+    navigate(`/posts/${slug}`);
   };
 
   // ADR 0075: bind 戻り値は form props object (= onSubmit + data-vidro-no-intercept

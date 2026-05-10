@@ -14,6 +14,9 @@
 // 別軸、両方共存可能 (1 page 内で混ぜないだけ、ADR 0068 + memory `project_form_design_decided`)。
 
 export { formControl } from "./form-control";
+// ADR 0076: bind の duck-type 判定を test で直接 verify するため export。@internal、
+// user code からの呼び出しは想定外 (= bind が自動で消化するので普通は呼ぶ理由がない)。
+export { isServerFnValidationError } from "./form-control";
 export type {
   FormControl,
   FormControlOptions,

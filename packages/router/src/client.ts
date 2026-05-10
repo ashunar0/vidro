@@ -12,21 +12,37 @@ import { setupIslandHydration } from "./island";
  * wire shape (= ADR 0059): `{ fields: Record<string, string>, slot?: "params" | "data" }`、
  * 422 + content-type application/json の場合に deserialize される。
  *
- * 使い方 (= post-form.tsx 等の island form):
+ * 使い方:
  *
- *   import { ServerFnValidationError } from "@vidro/router/client";
- *   import { createPost } from "./server";
+ *   - **`@vidro/form` の `formControl({schema})` を使う場合 (= 推奨)**: ADR 0076 で
+ *     formControl が本 error を duck-type で自動 catch + setFieldErrors に流すので、
+ *     user code は try/catch 不要。bind した handler は throw しっぱなしで OK。
+ *   - **手動で扱う場合**: `instanceof ServerFnValidationError` で判定して `err.fields`
+ *     を取り出す。または `err.name === "ServerFnValidationError"` で duck-type 判定 (=
+ *     cross-bundle / peer dep 回避目的)。
  *
+ *   ```ts
  *   try {
  *     const result = await createPost({ data });
- *     // success path
  *   } catch (err) {
  *     if (err instanceof ServerFnValidationError) {
- *       formControl.setFieldErrors(err.fields);
+ *       // err.fields を UI に流す
  *     } else {
  *       throw err; // 想定外
  *     }
  *   }
+ *   ```
+ *
+ * ## public contract
+ *
+ * 以下は ADR 0076 で固定された public contract、変更時は ADR 起票 + 一斉移行が必要:
+ *
+ *   - `name === "ServerFnValidationError"` (= duck-type 判定の identity)
+ *   - `fields: Record<string, string>` (= per-field error message、1 field 1 message)
+ *   - `Error` subclass (= `instanceof Error` が true)
+ *
+ * `@vidro/form` (= +pack tier) は本 class を直接 import せず `name` 文字列で判定する
+ * (memory `project_3tier_architecture` + `feedback_dev_restart_after_dist_change`)。
  */
 export class ServerFnValidationError extends Error {
   /** stub の URL template (= 例: "/posts/new/createPost") */
@@ -39,6 +55,8 @@ export class ServerFnValidationError extends Error {
 
   constructor(url: string, fields: Record<string, string>) {
     super(`[vidro] validation failed for ${url}: ${Object.keys(fields).join(", ")}`);
+    // ADR 0076: name は public contract、`@vidro/form` の duck-type 判定 identity。
+    // 変更時は ADR 0076 update + `@vidro/form` の isServerFnValidationError 同期改修。
     this.name = "ServerFnValidationError";
     this.url = url;
     this.fields = fields;

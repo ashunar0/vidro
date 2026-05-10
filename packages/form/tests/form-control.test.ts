@@ -3,7 +3,7 @@
 // `safeParse` を持つ duck-type schema を test 内で手書きする (= schema lib agnostic
 // の確認も兼ねる)。
 import { describe, expect, test } from "vite-plus/test";
-import { formControl, type ParseSchema } from "../src";
+import { formControl, isServerFnValidationError, type ParseSchema } from "../src";
 
 type FormShape = { title: string; body: string };
 
@@ -69,8 +69,10 @@ describe("formControl — ADR 0069", () => {
     expect(called).toEqual({ title: "Hello", body: "World" });
     expect(f.pending.value).toBe(true);
 
-    // user fn 完了後: pending false (= microtask 待ち)
+    // user fn 完了後: pending false (= microtask 待ち)。ADR 0076 で .catch() が
+    // chain に挟まり 1 周深くなったので、microtask を 3 周待つ。
     resolveSubmit!();
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     expect(f.pending.value).toBe(false);
@@ -239,6 +241,107 @@ describe("formControl — ADR 0069", () => {
 
       expect(result.prevented).toBe(true);
       expect(called).toEqual({ title: "T", body: "B" });
+    });
+  });
+
+  // ADR 0076: bind が `ServerFnValidationError` 形 (= name + fields shape) を duck-type で
+  // 自動 catch、setFieldErrors に流す。user の handleSubmit から try/catch boilerplate が消える。
+  // 判定は `@vidro/router/client` への peer dep を避けるため duck-type、cross-bundle で
+  // instanceof が壊れる事象 (memory feedback_dev_restart_after_dist_change) も回避する。
+  describe("ADR 0076: bind が ServerFnValidationError を自動 catch", () => {
+    /**
+     * `@vidro/router/client` の `ServerFnValidationError` を test 内で再現した mock。
+     * formControl は import せず duck-type で判定するので、本 class は同 file に依存しない
+     * (= cross-bundle で同じ name + shape なら判定が通ることの検証も兼ねる)。
+     */
+    class FakeServerFnValidationError extends Error {
+      readonly fields: Record<string, string>;
+      constructor(fields: Record<string, string>) {
+        super("validation failed");
+        this.name = "ServerFnValidationError";
+        this.fields = fields;
+      }
+    }
+
+    test("handler が ServerFnValidationError 形 throw → setFieldErrors が呼ばれる + pending false", async () => {
+      const f = formControl({ schema: makeSchema() });
+      fireInput(f.field("title").onInput, "T");
+      fireInput(f.field("body").onInput, "B");
+
+      const props = f.bind(() => {
+        throw new FakeServerFnValidationError({ title: "already taken" });
+      });
+      fireSubmit(props.onSubmit);
+
+      // catch / finally 解決待ち (= microtask 2 周)
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(f.error("title").value).toBe("already taken");
+      expect(f.error("body").value).toBeUndefined();
+      expect(f.pending.value).toBe(false);
+    });
+
+    test("handler が ServerFnValidationError 形 reject → setFieldErrors 経路で消化", async () => {
+      const f = formControl({ schema: makeSchema() });
+      fireInput(f.field("title").onInput, "T");
+      fireInput(f.field("body").onInput, "B");
+
+      const props = f.bind(async () => {
+        throw new FakeServerFnValidationError({ body: "too short" });
+      });
+      fireSubmit(props.onSubmit);
+
+      // async handler の microtask 連鎖を捌く
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(f.error("body").value).toBe("too short");
+      expect(f.pending.value).toBe(false);
+    });
+
+    // bubble up 経路 (= 非 ServerFnValidationError throw 時に setFieldErrors に
+    // 流さず再 throw する) の behavior verify は、`isServerFnValidationError` helper
+    // の直接 unit test で代替する。bind 内部の Promise chain が rethrow した結果は
+    // unhandled rejection として vitest reporter に拾われ、test 環境を汚すため。
+    // 機構契約 (= 「name + fields shape を持つ error だけ catch」) は本 helper の
+    // 振る舞いそのものなので、helper を直接 verify すれば十分。
+    describe("isServerFnValidationError: duck-type 判定", () => {
+      test("name + fields shape が揃った Error で true", () => {
+        class FakeServerFnValidationError extends Error {
+          readonly fields: Record<string, string>;
+          constructor(fields: Record<string, string>) {
+            super("validation failed");
+            this.name = "ServerFnValidationError";
+            this.fields = fields;
+          }
+        }
+        const err = new FakeServerFnValidationError({ title: "x" });
+        expect(isServerFnValidationError(err)).toBe(true);
+      });
+
+      test("name が違う Error で false (= 通常の Error は素通り)", () => {
+        const err = new Error("network down");
+        expect(isServerFnValidationError(err)).toBe(false);
+      });
+
+      test("name は ServerFnValidationError だが fields を持たない場合 false", () => {
+        const err = new Error("not really validation");
+        err.name = "ServerFnValidationError";
+        expect(isServerFnValidationError(err)).toBe(false);
+      });
+
+      test("fields があっても Error subclass でない plain object は false", () => {
+        const fake = { name: "ServerFnValidationError", fields: { title: "x" } };
+        expect(isServerFnValidationError(fake)).toBe(false);
+      });
+
+      test("null / undefined / 文字列等の primitive は false", () => {
+        expect(isServerFnValidationError(null)).toBe(false);
+        expect(isServerFnValidationError(undefined)).toBe(false);
+        expect(isServerFnValidationError("ServerFnValidationError")).toBe(false);
+      });
     });
   });
 });

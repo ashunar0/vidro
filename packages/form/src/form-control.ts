@@ -94,6 +94,34 @@ export type FormControl<T extends Record<string, unknown>> = {
 };
 
 /**
+ * ADR 0076: `@vidro/router/client` の `ServerFnValidationError` を duck-type で判定する。
+ *
+ * 直接 import せず `err.name === "ServerFnValidationError"` で見るのは:
+ *   1. `@vidro/form` (= +pack tier) → `@vidro/router` (= +router tier) の peer dep を
+ *      避けて 3-tier 構造を維持するため (memory `project_3tier_architecture`)
+ *   2. cross-bundle で `instanceof` が壊れる事象 (= HMR / package re-pack 中に class が
+ *      複数 instance 化、memory `feedback_dev_restart_after_dist_change`) を構造的に
+ *      回避するため
+ *   3. `Error.name` で error を discriminate するのは `DOMException`/`SyntaxError` 等が
+ *      踏んでる古典 JS 規約、Vidro 独自規約ではない
+ *
+ * `ServerFnValidationError.name === "ServerFnValidationError"` は ADR 0076 で固定された
+ * public contract。`@vidro/router/client` 側で name を変えると本判定が break する。
+ *
+ * @internal — public API ではないが、duck-type 判定の責務を test で直接 verify するため
+ * export している。user code から直接呼ぶことは想定していない (= bind の自動 catch 経由)。
+ */
+export function isServerFnValidationError(
+  err: unknown,
+): err is { name: "ServerFnValidationError"; fields: Record<string, string> } {
+  if (!(err instanceof Error)) return false;
+  if (err.name !== "ServerFnValidationError") return false;
+  if (!("fields" in err)) return false;
+  const fields = (err as { fields: unknown }).fields;
+  return typeof fields === "object" && fields !== null;
+}
+
+/**
  * ADR 0069 §Decision: `formControl({ schema })` で client form の state machine を作る。
  *
  * 内部実装:
@@ -192,6 +220,16 @@ export function formControl<T extends Record<string, unknown>>(
     getErrorSignal(name).value = issue?.message;
   }
 
+  // server 戻り {fields} を field error に流す共通実装。返り値の setFieldErrors
+  // (= public method) と bind の自動 catch 経路 (ADR 0076) で共有する。
+  function applyFieldErrors(fields: Partial<Record<string, string>>): void {
+    batch(() => {
+      for (const [name, msg] of Object.entries(fields)) {
+        if (typeof msg === "string") getErrorSignal(name).value = msg;
+      }
+    });
+  }
+
   return {
     bind(fn): FormControlBindProps {
       // ADR 0075: 戻り値は form props object (= JSX spread 用)。onSubmit handler
@@ -203,11 +241,36 @@ export function formControl<T extends Record<string, unknown>>(
           const validation = validateAll();
           if (!validation.ok) return;
           pending.value = true;
-          // pending を確実に降ろすため finally。Promise chain は handler 側で await
-          // されないので void で意図を明示 (= no-floating-promises)。
-          void Promise.resolve(fn(validation.data)).finally(() => {
-            pending.value = false;
-          });
+          // ADR 0076: handler が ServerFnValidationError 形 (= name + fields shape)
+          // を throw したら自動で setFieldErrors に流す。それ以外の error は bubble
+          // up (= user 側で必要なら try/catch、network error / 500 / business error 等)。
+          // duck-type 判定で `@vidro/router/client` への peer dep を避け、cross-bundle
+          // で `instanceof` が壊れる事象 (memory feedback_dev_restart_after_dist_change)
+          // も構造的に回避する。pending を確実に降ろすため finally、Promise chain は
+          // handler 側で await されないので void で意図を明示 (= no-floating-promises)。
+          //
+          // try/catch で sync throw を Promise.reject に変換: 素朴な `Promise.resolve(fn(...))`
+          // は fn の同期評価で throw した瞬間に呼出元 (= onSubmit) で uncaught に流れて
+          // catch chain に入らない。fn 自体は同期評価したい (= 既存 test の「pending true 確認
+          // 直後に handler 内代入が見える」順序を維持) ので、`Promise.resolve().then()` 形
+          // でなく try/catch wrap が正解。
+          let promise: Promise<unknown>;
+          try {
+            promise = Promise.resolve(fn(validation.data));
+          } catch (err) {
+            promise = Promise.reject(err);
+          }
+          void promise
+            .catch((err: unknown) => {
+              if (isServerFnValidationError(err)) {
+                applyFieldErrors(err.fields);
+                return;
+              }
+              throw err;
+            })
+            .finally(() => {
+              pending.value = false;
+            });
         },
         "data-vidro-no-intercept": "",
       };
@@ -239,11 +302,7 @@ export function formControl<T extends Record<string, unknown>>(
     },
     pending,
     setFieldErrors(fields) {
-      batch(() => {
-        for (const [name, msg] of Object.entries(fields)) {
-          if (typeof msg === "string") getErrorSignal(name).value = msg;
-        }
-      });
+      applyFieldErrors(fields);
     },
     reset() {
       batch(() => {
