@@ -16,13 +16,14 @@ import { hibanaVite } from "@vidro/hibana/vite";
 
 export default defineConfig(({ mode }) => {
   if (mode === "client") {
-    // client mode: browser bundle を生成 (= src/client.ts を entry に静的に bundle)。
-    // prod 配信時に serveStatic 経由で /static/client.js として返す前提。
+    // client mode: browser bundle を生成。Phase B-2 で entry を user の src/client.ts から
+    // plugin 提供の virtual entry に切り替えた (= user は client.ts を書かなくて済む)。
+    // prod 配信時に serveStatic 経由で /static/client.js として返す前提 (= Step 6 で整備)。
     return {
       plugins: [hibanaVite(), jsxTransform()],
       build: {
         rollupOptions: {
-          input: "./src/client.ts",
+          input: "virtual:hibana/client-entry",
           output: {
             dir: "./dist/static",
             entryFileNames: "client.js",

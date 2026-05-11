@@ -1,6 +1,8 @@
 // @vidro/hibana — Vidro の sibling、Hono の上に薄く乗る backend 主導 FW。
-// Phase 1 Step 2 進行中: c.render(Component, props) middleware + defineIsland primitive。
-// client-side hydration runtime / Vite plugin / navigation はまだ無い (= 後続 Step で追加)。
+// Phase 1 Step 3-b Phase B-2 完了時点の API:
+//   - `hibana()` middleware: Hono の `c.render(Component, props)` を SSR HTML として返す
+//   - `.island.tsx` の auto-wrap / 自動発見 / virtual client entry は `@vidro/hibana/vite` plugin が担当
+//   - `defineIsland` は internal helper として `@vidro/hibana/internal` に移動 (= user 語彙から消えた)
 //
 // 設計書: ~/brain/docs/backend-first FW 設計骨格.md
 // roadmap: docs/roadmap-hibana.md
@@ -8,8 +10,6 @@
 import type { MiddlewareHandler } from "hono";
 import { h } from "@vidro/core";
 import { renderToString } from "@vidro/core/server";
-
-export { defineIsland } from "./island";
 
 // Hibana の component 型 (server-side、関数参照ベース)。
 // 関数参照で受け取るのは Inertia のような文字列識別子と違い、TS の型推論 / リファクタ追従 /
@@ -31,17 +31,21 @@ declare module "hono" {
 }
 
 export type HibanaOptions = {
-  /**
-   * Client-side bundle の URL path。設定すると shell HTML の <head> 内に
-   * <script type="module" src="..."></script> を inject する。
-   * 例: `"/static/client.js"` (= app 側で Hono `serveStatic` 等で配信する前提)。
-   *
-   * Step 2 で導入。Step 3 の Vite plugin が走るようになったら bundle URL も
-   * plugin 側で決まる予定なので、本 option は移行期の手書き設定として扱う。
-   */
-  clientScript?: string;
   /** shell HTML の <title> default。route ごとの上書きは未実装 (= Step 4 で扱う)。 */
   title?: string;
+};
+
+// client bundle の URL path。Phase B-2 で auto-detect 化:
+//   - dev (= vite が `process.env.NODE_ENV = "development"` を立てる): vite plugin が提供する
+//     virtual entry を `/@id/__x00__virtual:hibana/client-entry` で直接読みに行く
+//   - prod (= NODE_ENV === "production"): `vite build --mode client` で生成された
+//     `/static/client.js` を Hono `serveStatic` で配信する前提
+//
+// 旧 (Phase A まで): user が `hibana({ clientScript: import.meta.env.PROD ? ... : ... })` で
+// 自分で分岐していた。Phase B-2 で内部固定にし、user 語彙から完全に消した。
+const clientScriptPath = (): string => {
+  const isProd = typeof process !== "undefined" && process.env.NODE_ENV === "production";
+  return isProd ? "/static/client.js" : "/@id/__x00__virtual:hibana/client-entry";
 };
 
 /**
@@ -50,19 +54,16 @@ export type HibanaOptions = {
  * 流れ:
  *   1. c.setRenderer で c.render を Hibana 仕様 (= 関数参照 + props) に置き換え
  *   2. @vidro/core の renderToString が JSX 木を server renderer で評価して HTML body に焼く
- *   3. shell HTML (+ optional client script tag) で wrap して c.html で返す
+ *   3. shell HTML (= title + 内部固定の script tag) で wrap して c.html で返す
  *
- * 現状の制約 (Phase 1 Step 2 進行中):
- *   - shell HTML は <title> と clientScript だけ option で受ける。layout / per-route <head>
- *     制御は未実装 (= Step 4)
+ * 現状の制約 (Phase 1 Step 3-b Phase B-2 完了時点):
+ *   - shell HTML の per-route <head> 制御は未実装 (= Step 4 で扱う、title だけ middleware level)
  *   - navigation (= HTML swap) なし (= Step 5)
- *   - Vite plugin なし (= Step 3 で .island.tsx 自動発見を導入)
+ *   - prod runtime entry (= Node 起動 + serveStatic) は未実装 (= Step 6)
  */
 export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
   const title = options.title ?? "Hibana";
-  const scriptTag = options.clientScript
-    ? `<script type="module" src="${options.clientScript}"></script>`
-    : "";
+  const scriptTag = `<script type="module" src="${clientScriptPath()}"></script>`;
 
   return async (c, next) => {
     // setRenderer の引数型は augment 済の ContextRenderer に従う。

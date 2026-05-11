@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-11 (Phase 1 Step 2 + Step 3-a + Step 3-b Phase A + Phase B-1 完了)
+> **Last updated**: 2026-05-11 (Phase 1 Step 1-3 完了、Step 4-6 未着手)
 
 ---
 
@@ -66,7 +66,7 @@ Hibana 内部の層は単一パッケージ内のフォルダで `core / rendere
 
 ---
 
-## Phase 1: 縦串 MVP — **進行中** (Step 1〜2 + Step 3-a + Step 3-b Phase A + Phase B-1 完了、Phase B-2 / 4〜6 未着手)
+## Phase 1: 縦串 MVP — **進行中** (Step 1〜3 完了、Step 4〜6 未着手)
 
 最小組み合わせ (= Hono + `@vidro/core` + Vite + client) で「server から HTML 返す
 → island hydrate → navigation」までを一直線に通す段階。差し替えは考えない。
@@ -142,12 +142,13 @@ scope を 2 つに分割:
 - [x] apps/hibana-demo の Counter.island.tsx を `export default function Counter(...)` 1 文に simplify
 - [x] dogfood smoke: SSR marker emit + browser `Count: 0 → 1` reactive update 確認
 
-##### Phase B-2: client.ts 撲滅 + clientScript option 撲滅 (2-3 日) — 次
+##### Phase B-2: client.ts 撲滅 + clientScript option 撲滅 — **完了**
 
-- [ ] client bundle entry を plugin が virtual で生成 (= user の `client.ts` 自体を不要に)
-- [ ] `hibana()` middleware の `clientScript` option 撲滅 (= shell HTML の `<script>` tag は plugin が dev/prod 分岐 inject)
-- [ ] `defineIsland` の export を internal 化 (= user-facing は不要)
-- [ ] **合流判断**: `@vidro/plugin` (= Vidro 専用) と独立 OR 共通 helper を core に切り出す
+- [x] client bundle entry を plugin が virtual で生成 (= `virtual:hibana/client-entry`、user の `client.ts` 自体を撲滅)
+- [x] `hibana()` middleware の `clientScript` option 撲滅 (= shell HTML の `<script>` tag を内部固定、`process.env.NODE_ENV` で dev/prod auto-detect)
+- [x] `defineIsland` の export を internal 化 (= `@vidro/hibana/internal` に移動、user-facing `@vidro/hibana` から削除)
+- [x] dogfood smoke: dev で reactive update + `vite build` で `dist/static/client.js` + `dist/server.js` 生成
+- [ ] **合流判断**: `@vidro/plugin` (= Vidro 専用) と独立 OR 共通 helper を core に切り出す — 持ち越し (= Phase 2 で扱う)
 
 ### Step 4: `c.render(Component, props)` API 確定 (1-2 日)
 

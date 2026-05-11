@@ -43,6 +43,14 @@ const VIRTUAL_ID = "virtual:hibana/islands";
 // vite の慣習: virtual module の resolved id は `\0` prefix を付けて他 plugin の処理対象外にする。
 const RESOLVED_VIRTUAL_ID = "\0" + VIRTUAL_ID;
 
+// browser bundle の entry を提供する virtual module (Phase B-2)。旧来は user の
+// apps/<app>/src/client.ts に手書きしていた 3 行を、ここで生成して plugin が提供する。
+// shell HTML の <script> tag は `hibana()` middleware が dev/prod 分岐で URL を決める:
+//   dev:  /@id/__x00__virtual:hibana/client-entry  (= vite dev server が直接 transform/serve)
+//   prod: /static/client.js                        (= `vite build --mode client` の出力先)
+const CLIENT_ENTRY_ID = "virtual:hibana/client-entry";
+const RESOLVED_CLIENT_ENTRY_ID = "\0" + CLIENT_ENTRY_ID;
+
 export type HibanaViteOptions = {
   /**
    * `.island.tsx` の glob pattern。vite の root からの絶対パス (= `/` 始まり) で書く。
@@ -75,20 +83,20 @@ export function hibanaVite(options: HibanaViteOptions = {}): Plugin {
 
     resolveId(id: string) {
       if (id === VIRTUAL_ID) return RESOLVED_VIRTUAL_ID;
+      if (id === CLIENT_ENTRY_ID) return RESOLVED_CLIENT_ENTRY_ID;
       return null;
     },
 
     load(id: string) {
-      if (id !== RESOLVED_VIRTUAL_ID) return null;
-
-      // 返すコード内の `import.meta.glob` は vite が build-time / dev-time に静的展開する。
-      // `eager: true` で実 import を実行して default export を取れる形にする。
-      // 各 path から `<Name>.island.tsx` の `<Name>` 部分を抽出し、islandMap の key に使う。
-      //
-      // filename match に失敗した場合 (= 通常起きないが) はフルパスを fallback key にする。
-      // 重複 (= 同名 island.tsx が複数 folder にある) は Object.fromEntries の後勝ち動作で
-      // 上書きされる: Phase A では検出だけで warn しない、Phase B で build error 化検討。
-      return `
+      if (id === RESOLVED_VIRTUAL_ID) {
+        // 返すコード内の `import.meta.glob` は vite が build-time / dev-time に静的展開する。
+        // `eager: true` で実 import を実行して default export を取れる形にする。
+        // 各 path から `<Name>.island.tsx` の `<Name>` 部分を抽出し、islandMap の key に使う。
+        //
+        // filename match に失敗した場合 (= 通常起きないが) はフルパスを fallback key にする。
+        // 重複 (= 同名 island.tsx が複数 folder にある) は Object.fromEntries の後勝ち動作で
+        // 上書きされる: Phase A では検出だけで warn しない、Phase B で build error 化検討。
+        return `
 const modules = import.meta.glob(${JSON.stringify(glob)}, { eager: true });
 export const islandMap = Object.fromEntries(
   Object.entries(modules).map(([path, mod]) => {
@@ -97,6 +105,20 @@ export const islandMap = Object.fromEntries(
   })
 );
 `;
+      }
+
+      if (id === RESOLVED_CLIENT_ENTRY_ID) {
+        // browser bundle の entry。旧 apps/<app>/src/client.ts の手書き 3 行をここで提供。
+        // user は client.ts を書かなくて済む。@hono/vite-dev-server 環境でも `mode === "client"`
+        // 環境でも同じ内容で動く (= setupIslandHydration が冪等)。
+        return `
+import { setupIslandHydration } from "@vidro/hibana/client";
+import { islandMap } from "virtual:hibana/islands";
+setupIslandHydration(islandMap);
+`;
+      }
+
+      return null;
     },
 
     transform(code: string, id: string) {
@@ -165,12 +187,13 @@ export const islandMap = Object.fromEntries(
 
       if (!transformed) return null;
 
-      // `import { defineIsland as __hibana_defineIsland } from "@vidro/hibana"` を unshift。
-      // 既存に同 binding がある可能性は低いが、衝突回避のため `__hibana_defineIsland` という
-      // unlikely な local 名で alias 化する。
+      // `import { defineIsland as __hibana_defineIsland } from "@vidro/hibana/internal"` を unshift。
+      // Phase B-2 で `defineIsland` を user-facing `@vidro/hibana` から `@vidro/hibana/internal` に
+      // 移動した (= user 語彙から消すため)。transform 時の参照先はこの internal entry。
+      // 衝突回避のため `__hibana_defineIsland` という unlikely な local 名で alias 化する。
       const importDecl = t.importDeclaration(
         [t.importSpecifier(t.identifier("__hibana_defineIsland"), t.identifier("defineIsland"))],
-        t.stringLiteral("@vidro/hibana"),
+        t.stringLiteral("@vidro/hibana/internal"),
       );
       ast.program.body.unshift(importDecl);
 

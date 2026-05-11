@@ -11,15 +11,10 @@ import { postsRoutes } from "./domains/posts/routes.ts";
 const app = new Hono();
 
 // shell HTML 内に client bundle の <script type="module" src="..."></script> を inject。
-// dev では vite が `/src/client.ts` を on-demand transform して返す。prod では別途 vite build
-// (= `vite build --mode client`) で生成された /static/client.js を serve する想定。
-app.use(
-  "*",
-  hibana({
-    title: "Hibana Demo",
-    clientScript: import.meta.env.PROD ? "/static/client.js" : "/src/client.ts",
-  }),
-);
+// Phase 1 Step 3-b Phase B-2 で URL 分岐は内部 auto-detect 化 (= user は書かなくて済む):
+//   dev (NODE_ENV !== "production"): vite plugin 提供の virtual entry を直接読みに行く
+//   prod (NODE_ENV === "production"): /static/client.js を serveStatic で配信 (= Step 6 で整備)
+app.use("*", hibana({ title: "Hibana Demo" }));
 
 app.get("/", (c) => c.text("Hibana demo — try /posts"));
 app.route("/posts", postsRoutes);
