@@ -37,5 +37,10 @@
     "@vidro/router": "workspace:*",
     "vite": "catalog:",
     "vite-plus": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "@vidro/router": {
+      "optional": true
+    }
   }
 }
