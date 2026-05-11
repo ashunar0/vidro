@@ -158,9 +158,6 @@ importers:
 
   apps/hibana-demo:
     dependencies:
-      '@hono/node-server':
-        specifier: ^1.13.0
-        version: 1.19.14(hono@4.12.18)
       '@vidro/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -171,18 +168,24 @@ importers:
         specifier: ^4.6.0
         version: 4.12.18
     devDependencies:
+      '@hono/vite-dev-server':
+        specifier: ^0.20.0
+        version: 0.20.1(hono@4.12.18)(miniflare@4.20260426.0)(wrangler@4.86.0(@cloudflare/workers-types@4.20260507.1))
       '@types/node':
         specifier: 'catalog:'
         version: 25.6.0
-      esbuild:
-        specifier: ^0.27.0
-        version: 0.27.3
-      tsx:
-        specifier: ^4.19.0
-        version: 4.21.0
+      '@vidro/plugin':
+        specifier: workspace:*
+        version: link:../../packages/plugin
       typescript:
         specifier: ^6.0.2
         version: 6.0.3
+      vite:
+        specifier: npm:@voidzero-dev/vite-plus-core@latest
+        version: '@voidzero-dev/vite-plus-core@0.1.20(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(typescript@6.0.3)(yaml@2.8.3)'
+      vite-plus:
+        specifier: 0.1.20
+        version: 0.1.20(@types/node@25.6.0)(@voidzero-dev/vite-plus-core@0.1.20(@types/node@25.6.0)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0)(typescript@6.0.3)(yaml@2.8.3))(esbuild@0.27.3)(jiti@2.6.1)(jsdom@29.1.0)(tsx@4.21.0)(typescript@6.0.3)(yaml@2.8.3)
 
   apps/router:
     dependencies:
@@ -1247,6 +1250,19 @@ packages:
     peerDependencies:
       hono: ^4
 
+  '@hono/vite-dev-server@0.20.1':
+    resolution: {integrity: sha512-wXikV0C5tPqwH6udA68VTsmnFKWGhIeBuhuxgdGDQIbVNbv5gD0vqKLhx4nG1o4dhksaWPiiSqZV58sTKUzNxA==}
+    engines: {node: '>=18.14.1'}
+    peerDependencies:
+      hono: '*'
+      miniflare: '*'
+      wrangler: '*'
+    peerDependenciesMeta:
+      miniflare:
+        optional: true
+      wrangler:
+        optional: true
+
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
     engines: {node: '>=18'}
@@ -2211,6 +2227,9 @@ packages:
       solid-js:
         optional: true
 
+  balanced-match@1.0.2:
+    resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
+
   baseline-browser-mapping@2.10.27:
     resolution: {integrity: sha512-zEs/ufmZoUd7WftKpKyXaT6RFxpQ5Qm9xytKRHvJfxFV9DFJkZph9RvJ1LcOUi0Z1ZVijMte65JbILeV+8QQEA==}
     engines: {node: '>=6.0.0'}
@@ -2224,6 +2243,9 @@ packages:
 
   boolbase@1.0.0:
     resolution: {integrity: sha512-JZOSA7Mo9sNGB8+UjSgzdLtokWAky1zbztM3WRLCbZ70/3cTANmQmOdR7y2g+J0e2WXywy1yS468tY+IruqEww==}
+
+  brace-expansion@2.1.0:
+    resolution: {integrity: sha512-TN1kCZAgdgweJhWWpgKYrQaMNHcDULHkWwQIspdtjV4Y5aurRdZpjAqn6yX3FPqTA9ngHCc4hJxMAMgGfve85w==}
 
   browserslist@4.28.2:
     resolution: {integrity: sha512-48xSriZYYg+8qXna9kwqjIVzuQxi+KYWp2+5nCYnYKPTr0LvD89Jqk2Or5ogxz0NUMfIjhh2lIUX/LyX9B4oIg==}
@@ -2622,6 +2644,10 @@ packages:
     resolution: {integrity: sha512-KM+v76d04qT+NsPfVKVQEgnnuLNE3uzCCl2QKMTJ5OXor5JbBm1vpkQwQ+l7o5ELCrZ74RnyKhJKLiJyUA39Tw==}
     engines: {node: '>=18.0.0'}
     hasBin: true
+
+  minimatch@9.0.9:
+    resolution: {integrity: sha512-OBwBN9AL4dqmETlpS2zasx+vTeWclWzkblfZk7KTA5j3jeOONz/tRCnZomUyvNg83wL5Zv9Ss6HMJXAgL8R2Yg==}
+    engines: {node: '>=16 || 14 >=14.17'}
 
   mrmime@2.0.1:
     resolution: {integrity: sha512-Y3wQdFg2Va6etvQ5I82yUhGdsKrcYox6p7FfL1LbK2J4V01F9TGlepTIhnK24t7koZibmg82KGglhA1XK5IsLQ==}
@@ -3537,6 +3563,15 @@ snapshots:
     dependencies:
       hono: 4.12.18
 
+  '@hono/vite-dev-server@0.20.1(hono@4.12.18)(miniflare@4.20260426.0)(wrangler@4.86.0(@cloudflare/workers-types@4.20260507.1))':
+    dependencies:
+      '@hono/node-server': 1.19.14(hono@4.12.18)
+      hono: 4.12.18
+      minimatch: 9.0.9
+    optionalDependencies:
+      miniflare: 4.20260426.0
+      wrangler: 4.86.0(@cloudflare/workers-types@4.20260507.1)
+
   '@img/colour@1.1.0': {}
 
   '@img/sharp-darwin-arm64@0.34.5':
@@ -4228,6 +4263,8 @@ snapshots:
     optionalDependencies:
       solid-js: 1.9.12
 
+  balanced-match@1.0.2: {}
+
   baseline-browser-mapping@2.10.27: {}
 
   bidi-js@1.0.3:
@@ -4237,6 +4274,10 @@ snapshots:
   blake3-wasm@2.1.5: {}
 
   boolbase@1.0.0: {}
+
+  brace-expansion@2.1.0:
+    dependencies:
+      balanced-match: 1.0.2
 
   browserslist@4.28.2:
     dependencies:
@@ -4582,6 +4623,10 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
+
+  minimatch@9.0.9:
+    dependencies:
+      brace-expansion: 2.1.0
 
   mrmime@2.0.1: {}
 

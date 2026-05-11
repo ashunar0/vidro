@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-11
+> **Last updated**: 2026-05-11 (Phase 1 Step 2 完了 + Step 3-a 完了)
 
 ---
 
@@ -66,7 +66,7 @@ Hibana 内部の層は単一パッケージ内のフォルダで `core / rendere
 
 ---
 
-## Phase 1: 縦串 MVP — **進行中** (Step 1 完了、Step 2 〜 6 未着手)
+## Phase 1: 縦串 MVP — **進行中** (Step 1〜2 完了 + Step 3-a 完了、Step 3-b〜6 未着手)
 
 最小組み合わせ (= Hono + `@vidro/core` + Vite + client) で「server から HTML 返す
 → island hydrate → navigation」までを一直線に通す段階。差し替えは考えない。
@@ -82,19 +82,36 @@ Hibana 内部の層は単一パッケージ内のフォルダで `core / rendere
 - [x] `apps/hibana-demo/` で domain folder pattern を体現 (= `src/domains/posts/{pages, schema.ts, service.ts, routes.ts}`)
 - [x] `@hono/node-server` + `tsx` で起動、`curl localhost:3000/posts` で HTML 取得 smoke pass
 
-### Step 2: 1 component を hydrate する (1-2 日) — 次
+### Step 2: 1 component を hydrate する (1-2 日) — **完了**
 
-- [ ] `.island.tsx` suffix で書ける component を 1 個追加 (例: `Counter.island.tsx`)
-- [ ] client bundle 生成 (= 一旦 esbuild 単体で OK、Vite plugin 化は Step 3)
-- [ ] shell HTML に `<script>` tag inject、island boundary marker を埋め込む
-- [ ] `@vidro/core` の `hydrate()` で client mount
-- [ ] **合流判断**: Vidro 既存の `__VidroIsland` 機構を Hibana から再利用する (= 重複実装回避、shared kernel 立場)。再利用が困難な箇所が出たら ADR 起票
+- [x] `.island.tsx` suffix で書ける component を 1 個追加 (例: `Counter.island.tsx`)
+- [x] client bundle 生成 (= Step 3-a で vite build に統合)
+- [x] shell HTML に `<script>` tag inject、island boundary marker を埋め込む
+- [x] `@vidro/core` の `hydrate()` で client mount (= `hydrateRange` 経由)
+- [x] **合流判断**: Vidro 既存の `__VidroIsland` 機構を Hibana から再利用 (= shared kernel 立場、重複実装回避)
 
-### Step 3: Vite plugin で `.island.tsx` 自動発見 (2-3 日)
+### Step 3: Vite plugin 整備 (= cursor-based hydration の構造的前提)
+
+memory `project_jsx_transform_mandatory_for_hydrate` の発見により、本来 Step 3 で optional automation
+扱いだった Vite plugin は **hydrate を動かす core 機構**。Step 2 と構造的に分離不可なため、
+Step 3 を 2 つに分割した:
+
+- **Step 3-a**: `@vidro/plugin` の `jsxTransform()` を vite 経由で adopt する (= JSX transform 必須)
+- **Step 3-b**: `@vidro/hibana/vite` 独自 plugin で `.island.tsx` を glob 自動発見 + virtual module 生成
+
+#### Step 3-a: vite + jsxTransform adopt (1 日) — **完了**
+
+- [x] apps/hibana-demo に vite + `@hono/vite-dev-server` install (= tsx watch + esbuild bundle 廃止)
+- [x] vite.config.ts で `@vidro/plugin` の `jsxTransform()` を server/client 両方に適用
+- [x] mode 分岐 (`mode === "client"` で client bundle、それ以外で server bundle)
+- [x] `Counter.island.tsx` の手書き thunk (`{() => count.value}`) を除去、`{count.value}` 直書きで reactive 動作
+- [x] browser smoke: `Count: 0 → 1 → 2` click で update 確認
+
+#### Step 3-b: .island.tsx 自動発見 + virtual module (2-3 日) — 次
 
 - [ ] 最小 Vite plugin を `packages/hibana/src/vite.ts` に追加 (= `@vidro/hibana/vite` で export)
 - [ ] `glob("**/*.island.tsx")` で発見、AST 解析不要 (= 設計書原則)
-- [ ] client bundle entry 自動生成、island id 振り
+- [ ] virtual module で client bundle entry の islandMap 自動生成 (= 手書き `import Counter from "..."` 撲滅)
 - [ ] HMR の単位 = file = bundle unit で揃える
 - [ ] **合流判断**: `@vidro/plugin` (= Vidro 専用) と独立 OR 共通 helper を core に切り出す
 

@@ -4,21 +4,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:client": "esbuild src/client.ts --bundle --outfile=dist/client/client.js --jsx=automatic --jsx-import-source=@vidro/core --format=esm --target=es2022 --platform=browser --external:node:*",
-    "dev": "pnpm build:client && tsx watch src/app.ts",
-    "start": "pnpm build:client && tsx src/app.ts",
+    "dev": "vite",
+    "build": "vite build --mode client && vite build",
+    "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.0",
     "@vidro/core": "workspace:*",
     "@vidro/hibana": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {
+    "@hono/vite-dev-server": "^0.20.0",
     "@types/node": "catalog:",
-    "esbuild": "^0.27.0",
-    "tsx": "^4.19.0",
-    "typescript": "^6.0.2"
+    "@vidro/plugin": "workspace:*",
+    "typescript": "^6.0.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

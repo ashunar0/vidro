@@ -12,7 +12,7 @@
     "strict": true,
     "jsx": "react-jsx",
     "jsxImportSource": "@vidro/core",
-    "types": ["node"]
+    "types": ["node", "vite/client"]
   },
   "include": ["src"]
 }
