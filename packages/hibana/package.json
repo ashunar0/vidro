@@ -1,0 +1,35 @@
+{
+  "name": "@vidro/hibana",
+  "version": "0.0.0",
+  "description": "Backend-first FW on top of Hono, sibling of Vidro (Phase 1 Step 1 minimum)",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "dev": "vp pack --watch",
+    "test": "vp test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@vidro/core": "workspace:*",
+    "hono": "^4.6.0",
+    "typescript": "^6.0.2",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@vidro/core": "workspace:*",
+    "hono": "^4.0.0"
+  }
+}
