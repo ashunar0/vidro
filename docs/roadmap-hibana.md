@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-11 (Phase 1 Step 2 + Step 3-a + Step 3-b Phase A 完了)
+> **Last updated**: 2026-05-11 (Phase 1 Step 2 + Step 3-a + Step 3-b Phase A + Phase B-1 完了)
 
 ---
 
@@ -66,7 +66,7 @@ Hibana 内部の層は単一パッケージ内のフォルダで `core / rendere
 
 ---
 
-## Phase 1: 縦串 MVP — **進行中** (Step 1〜2 + Step 3-a + Step 3-b Phase A 完了、Step 3-b Phase B / 4〜6 未着手)
+## Phase 1: 縦串 MVP — **進行中** (Step 1〜2 + Step 3-a + Step 3-b Phase A + Phase B-1 完了、Phase B-2 / 4〜6 未着手)
 
 最小組み合わせ (= Hono + `@vidro/core` + Vite + client) で「server から HTML 返す
 → island hydrate → navigation」までを一直線に通す段階。差し替えは考えない。
@@ -124,12 +124,29 @@ scope を 2 つに分割:
 - [x] apps/hibana-demo の `src/client.ts` を `setupIslandHydration(islandMap)` 2 行に縮退
 - [x] dogfood smoke: browser で `Count: 0 → 1` reactive update 確認、手書き import 撲滅後も regression なし
 
-##### Phase B: defineIsland 撲滅 + client.ts 自動生成 (2-3 日) — 次
+##### Phase B: defineIsland 撲滅 + client.ts 自動生成
 
-- [ ] `defineIsland` を internal 化、`.island.tsx` の default export を plugin が自動 wrap (= `__VidroIsland` で囲む transform pass を vite plugin に組み込む)
-- [ ] island name を filename から自動付与 (= `Counter.island.tsx` → `"Counter"`)
+scope を 2 つに分割:
+
+- **Phase B-1**: defineIsland 撲滅 + name 自動付与 (= `.island.tsx` default export を plugin が auto-wrap)
+- **Phase B-2**: client.ts 撲滅 + clientScript option 撲滅 (= shell HTML inject を plugin に移管)
+
+##### Phase B-1: defineIsland 撲滅 + name 自動付与 — **完了**
+
+- [x] `hibanaVite()` plugin に `transform` hook 追加 (= `enforce: "pre"`、jsxTransform より先に走る)
+- [x] `.island.tsx` の default export を AST で `defineIsland(<original>, "<filename>")` に置換
+- [x] island name を filename から自動付与 (= `Counter.island.tsx` → `"Counter"`)
+- [x] 既に `defineIsland(...)` 手書きされてる case は skip (= 二重 wrap 防止 + 互換維持)
+- [x] FunctionDeclaration / ClassDeclaration / Expression の 3 形態に対応
+- [x] babel parser/traverse/generate を `packages/hibana` の dependencies に追加
+- [x] apps/hibana-demo の Counter.island.tsx を `export default function Counter(...)` 1 文に simplify
+- [x] dogfood smoke: SSR marker emit + browser `Count: 0 → 1` reactive update 確認
+
+##### Phase B-2: client.ts 撲滅 + clientScript option 撲滅 (2-3 日) — 次
+
 - [ ] client bundle entry を plugin が virtual で生成 (= user の `client.ts` 自体を不要に)
 - [ ] `hibana()` middleware の `clientScript` option 撲滅 (= shell HTML の `<script>` tag は plugin が dev/prod 分岐 inject)
+- [ ] `defineIsland` の export を internal 化 (= user-facing は不要)
 - [ ] **合流判断**: `@vidro/plugin` (= Vidro 専用) と独立 OR 共通 helper を core に切り出す
 
 ### Step 4: `c.render(Component, props)` API 確定 (1-2 日)

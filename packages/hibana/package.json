@@ -29,6 +29,14 @@
     "test": "vp test",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@babel/generator": "catalog:",
+    "@babel/parser": "catalog:",
+    "@babel/traverse": "catalog:",
+    "@babel/types": "catalog:",
+    "@types/babel__generator": "catalog:",
+    "@types/babel__traverse": "catalog:"
+  },
   "devDependencies": {
     "@types/node": "^25.5.0",
     "@vidro/core": "workspace:*",
