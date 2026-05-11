@@ -4,12 +4,22 @@
 
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { hibana } from "@vidro/hibana";
 import { postsRoutes } from "./domains/posts/routes.ts";
 
 const app = new Hono();
 
-app.use("*", hibana());
+// /static/* で client bundle を配信。esbuild が dist/client/client.js に build した内容を
+// serve する (= apps/hibana-demo/package.json の build:client script 参照)。
+app.use(
+  "/static/*",
+  serveStatic({ root: "./dist/client", rewriteRequestPath: (p) => p.replace(/^\/static\//, "/") }),
+);
+
+// shell HTML 内に <script type="module" src="/static/client.js"></script> を inject。
+// client.js は browser で setupIslandHydration を呼んで marker queue を drain する。
+app.use("*", hibana({ title: "Hibana Demo", clientScript: "/static/client.js" }));
 
 app.get("/", (c) => c.text("Hibana demo — try /posts"));
 app.route("/posts", postsRoutes);

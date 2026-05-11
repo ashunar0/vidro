@@ -1,12 +1,15 @@
 // @vidro/hibana — Vidro の sibling、Hono の上に薄く乗る backend 主導 FW。
-// Phase 1 Step 1 の最小実装: c.render(Component, props) を提供するだけの middleware。
-// island / navigation / Vite plugin はまだ無い (= 後続 Step で追加)。
+// Phase 1 Step 2 進行中: c.render(Component, props) middleware + defineIsland primitive。
+// client-side hydration runtime / Vite plugin / navigation はまだ無い (= 後続 Step で追加)。
 //
 // 設計書: ~/brain/docs/backend-first FW 設計骨格.md
+// roadmap: docs/roadmap-hibana.md
 
 import type { MiddlewareHandler } from "hono";
 import { h } from "@vidro/core";
 import { renderToString } from "@vidro/core/server";
+
+export { defineIsland } from "./island";
 
 // Hibana の component 型 (server-side、関数参照ベース)。
 // 関数参照で受け取るのは Inertia のような文字列識別子と違い、TS の型推論 / リファクタ追従 /
@@ -27,21 +30,40 @@ declare module "hono" {
   }
 }
 
+export type HibanaOptions = {
+  /**
+   * Client-side bundle の URL path。設定すると shell HTML の <head> 内に
+   * <script type="module" src="..."></script> を inject する。
+   * 例: `"/static/client.js"` (= app 側で Hono `serveStatic` 等で配信する前提)。
+   *
+   * Step 2 で導入。Step 3 の Vite plugin が走るようになったら bundle URL も
+   * plugin 側で決まる予定なので、本 option は移行期の手書き設定として扱う。
+   */
+  clientScript?: string;
+  /** shell HTML の <title> default。route ごとの上書きは未実装 (= Step 4 で扱う)。 */
+  title?: string;
+};
+
 /**
  * Hibana の最小 middleware。c.render(Component, props) を提供する。
  *
  * 流れ:
  *   1. c.setRenderer で c.render を Hibana 仕様 (= 関数参照 + props) に置き換え
  *   2. @vidro/core の renderToString が JSX 木を server renderer で評価して HTML body に焼く
- *   3. shell HTML で wrap して c.html で返す
+ *   3. shell HTML (+ optional client script tag) で wrap して c.html で返す
  *
- * 現状の制約 (Phase 1 Step 1 minimum):
- *   - shell HTML (<!DOCTYPE html>...) は固定。layout / per-page <head> 制御は未実装
- *   - island hydrate なし (= .island.tsx は Phase 1 Step 2)
- *   - navigation (= HTML swap) なし (= Phase 1 Step 5)
- *   - Vite plugin なし (= Phase 1 Step 3 で .island.tsx 自動発見を導入)
+ * 現状の制約 (Phase 1 Step 2 進行中):
+ *   - shell HTML は <title> と clientScript だけ option で受ける。layout / per-route <head>
+ *     制御は未実装 (= Step 4)
+ *   - navigation (= HTML swap) なし (= Step 5)
+ *   - Vite plugin なし (= Step 3 で .island.tsx 自動発見を導入)
  */
-export const hibana = (): MiddlewareHandler => {
+export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
+  const title = options.title ?? "Hibana";
+  const scriptTag = options.clientScript
+    ? `<script type="module" src="${options.clientScript}"></script>`
+    : "";
+
   return async (c, next) => {
     // setRenderer の引数型は augment 済の ContextRenderer に従う。
     // Component<unknown> は ComponentFn と structurally 互換 (= return covariance + props
@@ -55,7 +77,8 @@ export const hibana = (): MiddlewareHandler => {
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Hibana Demo</title>
+    <title>${title}</title>
+    ${scriptTag}
   </head>
   <body>${body}</body>
 </html>`;
