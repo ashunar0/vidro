@@ -1,0 +1,166 @@
+# Hibana Roadmap
+
+Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP → 内部リファクタ →
+発信までの段階で進めるための計画書。設計書 (= 哲学 / 主要決定) は別ファイル、
+本書は実行計画と進捗状態を扱う。
+
+> **Status**: Living document (実装の進捗とともに更新する)
+> **Last updated**: 2026-05-11
+
+---
+
+## 立ち位置
+
+Vidro と Hibana の対比は短く下記。詳しくは設計書を参照する。
+
+|                  | Vidro                                    | Hibana                               |
+| ---------------- | ---------------------------------------- | ------------------------------------ |
+| 主導             | frontend-first                           | backend-first                        |
+| route の決まり方 | filesystem 駆動 (= `app/posts/page.tsx`) | `app.get(path, handler)` 直書き      |
+| UI の組織軸      | route と一体 (= filesystem)              | domain folder (= 強制せず推奨)       |
+| 立場             | 趣味 / R&D の遊び場                      | 本命の bet (= ただし両方 playground) |
+
+両者は `@vidro/core` を **共有 sibling** として持つ。`@vidro/core` の breaking change
+は両方の dogfood smoke で確認する hygiene を持つ (= 詳細は memory
+`project_hibana_vidro_interaction`)。
+
+---
+
+## パッケージ分割案
+
+```
+@vidro/core              ← reactive + JSX runtime (Vidro と共有、sibling 関係)
+@vidro/hibana            ← hibana() middleware + c.render API + Vite plugin (= 縦串 MVP の本体)
+─────────────────────
+(将来の opt-in pack 候補、まだ無い)
+@vidro/hibana-form       ← form helper、@vidro/form の Hibana 版相当
+@vidro/hibana-zod        ← validator middleware、@vidro/zod の Hibana 版相当
+```
+
+Hibana 内部の層は単一パッケージ内のフォルダで `core / renderer / hono / vite / client`
+に分ける。core は外側を import しない一方通行ルールを守る (= 設計書「内部の層構造と
+依存方向」参照)。package 分割は必要になってから or 一生分けないままでも可。
+
+---
+
+## 設計書から引き継ぐ Open Questions
+
+着手段階で確定するので、roadmap 上は **どの Step で決めるか** だけ書く。
+
+| Open Question                                                                                         | 確定 Step     |
+| ----------------------------------------------------------------------------------------------------- | ------------- |
+| `c.render` の名前確定 (= HonoX 衝突、候補 `c.page` / `c.view`)                                        | Step 4        |
+| ハードリロード時 vs navigation 時の server response の正確な contract                                 | Step 5        |
+| island の props serialize 制約 (Date / Map / class instance 等のルール)                               | Step 4        |
+| ADR numbering: Vidro の `docs/decisions/` 連番継続 or 分離 (`docs/decisions/hibana/0001-` で再 start) | 初 ADR 起票時 |
+
+---
+
+## Phase 0: 前提確認 — **完了** (2026-05-11)
+
+設計書時点で残ってた 3 つの前提を全て read で解消した段階。
+
+- [x] `@vidro/core` の public API 確認: `signal` / `mount` / `h` (client) + `@vidro/core/server` の `renderToString` / `renderToStringAsync` / `renderToReadableStream`
+- [x] リポジトリの置き場所: Vidro と同 monorepo の `packages/hibana/` 配下
+- [x] 仮名: **Hibana** (火花、Hono = 炎から生まれる小さな spark) で確定、未公開のうちは変更可
+
+---
+
+## Phase 1: 縦串 MVP — **進行中** (Step 1 完了、Step 2 〜 6 未着手)
+
+最小組み合わせ (= Hono + `@vidro/core` + Vite + client) で「server から HTML 返す
+→ island hydrate → navigation」までを一直線に通す段階。差し替えは考えない。
+ただし **core への逆流禁止** は守る (= 設計書 §内部の層構造)。
+
+### Step 1: server から HTML 1 ページ返す (半日) — **完了** (commit 2076baf)
+
+- [x] `packages/hibana/` scaffold (= `package.json` / `tsconfig.json` / `src/index.ts`)
+- [x] `hibana()` middleware を Hono `MiddlewareHandler` で実装
+- [x] Hono の `ContextRenderer` interface augmentation で `c.render(Component, props)` 型を提供
+- [x] `c.setRenderer` で内部実装を差し替え、`@vidro/core/server.renderToString` で SSR
+- [x] shell HTML (`<!DOCTYPE html>...`) で wrap、`c.html()` で Response
+- [x] `apps/hibana-demo/` で domain folder pattern を体現 (= `src/domains/posts/{pages, schema.ts, service.ts, routes.ts}`)
+- [x] `@hono/node-server` + `tsx` で起動、`curl localhost:3000/posts` で HTML 取得 smoke pass
+
+### Step 2: 1 component を hydrate する (1-2 日) — 次
+
+- [ ] `.island.tsx` suffix で書ける component を 1 個追加 (例: `Counter.island.tsx`)
+- [ ] client bundle 生成 (= 一旦 esbuild 単体で OK、Vite plugin 化は Step 3)
+- [ ] shell HTML に `<script>` tag inject、island boundary marker を埋め込む
+- [ ] `@vidro/core` の `hydrate()` で client mount
+- [ ] **合流判断**: Vidro 既存の `__VidroIsland` 機構を Hibana から再利用する (= 重複実装回避、shared kernel 立場)。再利用が困難な箇所が出たら ADR 起票
+
+### Step 3: Vite plugin で `.island.tsx` 自動発見 (2-3 日)
+
+- [ ] 最小 Vite plugin を `packages/hibana/src/vite.ts` に追加 (= `@vidro/hibana/vite` で export)
+- [ ] `glob("**/*.island.tsx")` で発見、AST 解析不要 (= 設計書原則)
+- [ ] client bundle entry 自動生成、island id 振り
+- [ ] HMR の単位 = file = bundle unit で揃える
+- [ ] **合流判断**: `@vidro/plugin` (= Vidro 専用) と独立 OR 共通 helper を core に切り出す
+
+### Step 4: `c.render(Component, props)` API 確定 (1-2 日)
+
+- [ ] 命名衝突解決: `c.render` のまま行く / `c.page` / `c.view` 等への改名を決める
+- [ ] shell HTML の per-route customization (= `<head>` 内の title / meta / link)
+- [ ] layout component pattern (= 親 layout が子 page を slot で受ける形が Hibana 流に合うか検討)
+- [ ] `defineIsland<T>()` helper を optional 追加検討 (= props serialize 可能性の type check)
+- [ ] **合流判断**: JSX runtime contract ADR (= Vidro 側 B') と整合、`h()` を "shared kernel" の public IR として宣言
+
+### Step 5: navigation (HTML swap) (2-3 日)
+
+- [ ] client runtime: `<a>` click を intercept、`fetch` で次ページ HTML 取得
+- [ ] 受け取った HTML から body 抽出 → swap
+- [ ] 新 island marker を発見 → hydrate、古い island は teardown
+- [ ] ハードリロード時 vs navigation 時の server response の正確な contract 確定 (= 全 HTML 返す / 部分 HTML 返す / island-only JSON 返す等の選択)
+- [ ] **合流判断**: `@vidro/router` の cache 戦略 (= memory `project_cache_as_fw_concern`) と整合検討
+
+### Step 6: 小さいサンプルアプリ (1 週)
+
+- [ ] 2-3 routes、複数 domain、island 2-3 個、navigation 経由遷移込みの demo
+- [ ] 設計書 3 哲学を実装で体現するサイズ (例: tiny blog or memo app)
+- [ ] README + 起動手順、Phase 3 発信時の素材として使える形
+
+---
+
+## Phase 2: 内部リファクタ・抽象の検証
+
+縦串 MVP が動いた後、`core / renderer / hono / vite / client` の境界が健全か検証する
+段階。違和感あれば core を直す (= 破壊的変更 OK、まだ初期)。
+
+- [ ] core ⟷ renderer ⟷ hono ⟷ vite ⟷ client の依存 graph を可視化
+- [ ] `import/no-restricted-paths` で一方通行ルールを ESLint 強制
+- [ ] core が外側を知らないか機械的に検証 (= `@vidro/core` 内に `hono` / `vite` の文字列が出てきたら fail)
+- [ ] 違和感あれば core を直す
+- [ ] **合流判断**: Vidro 側 内部アーキ A (= `@vidro/core` 内部 hub-and-spoke 整理) と motivation 共有、ADR 起票時期を揃える
+
+---
+
+## Phase 3: 発信
+
+研究プロトタイプ立ち位置で謙虚に。世界初 NG、過大評価 NG。
+
+- [ ] 動くサンプル (= Phase 1 Step 6 のアプリ) を GitHub + ライブデモで公開
+- [ ] 発信記事 1 本目: 「Hono の上に薄く乗る backend-first FW を作ってる話」想定
+- [ ] Pitch: 「Hono ecosystem の旗艦 backend-first FW」(= Hono コミュニティ向け)
+- [ ] Vidro 側の発信戦略 (= memory `feedback_publishing_strategy` の RSC シリーズ等) と独立 channel として走らせる
+
+---
+
+## Vidro 計画との合流ポイント
+
+memory `project_hibana_vidro_interaction.md` で詳述。4 つの合流 hygiene を 1 行で再掲:
+
+1. **`@vidro/core` の breaking change**: 両 dogfood で smoke 取る習慣
+2. **island 機構の共有**: Step 2 で `__VidroIsland` 再利用判断、独立実装は回避
+3. **JSX runtime contract ADR の射程**: Vidro 側 B' を書く時 "shared kernel" 立場で
+4. **ALS scope primitive 共有**: Hibana で env scope 入れたくなったら `createScope` (= ADR 0065) を使う
+
+---
+
+## 関連
+
+- 設計書 (canonical philosophy): `~/brain/docs/backend-first FW 設計骨格.md`
+- 経緯デイリー: `[[2026-05-11]]` (brain)
+- Vidro 側 roadmap: [`docs/roadmap.md`](./roadmap.md)
+- Vidro 設計書: `~/brain/docs/エデン 設計書.md`
+- ADR: `docs/decisions/` (= Hibana ADR の置き場は初 ADR 起票時に決定)
