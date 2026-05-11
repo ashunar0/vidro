@@ -13,7 +13,7 @@ function Counter({ initial }: { initial: number }) {
   return (
     <button
       onClick={() => {
-        count.value = count.value + 1;
+        count.value++;
       }}
     >
       Count: {count.value}

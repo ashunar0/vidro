@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-11 (Phase 1 Step 2 完了 + Step 3-a 完了)
+> **Last updated**: 2026-05-11 (Phase 1 Step 2 + Step 3-a + Step 3-b Phase A 完了)
 
 ---
 
@@ -66,7 +66,7 @@ Hibana 内部の層は単一パッケージ内のフォルダで `core / rendere
 
 ---
 
-## Phase 1: 縦串 MVP — **進行中** (Step 1〜2 完了 + Step 3-a 完了、Step 3-b〜6 未着手)
+## Phase 1: 縦串 MVP — **進行中** (Step 1〜2 + Step 3-a + Step 3-b Phase A 完了、Step 3-b Phase B / 4〜6 未着手)
 
 最小組み合わせ (= Hono + `@vidro/core` + Vite + client) で「server から HTML 返す
 → island hydrate → navigation」までを一直線に通す段階。差し替えは考えない。
@@ -107,12 +107,29 @@ Step 3 を 2 つに分割した:
 - [x] `Counter.island.tsx` の手書き thunk (`{() => count.value}`) を除去、`{count.value}` 直書きで reactive 動作
 - [x] browser smoke: `Count: 0 → 1 → 2` click で update 確認
 
-#### Step 3-b: .island.tsx 自動発見 + virtual module (2-3 日) — 次
+#### Step 3-b: .island.tsx 自動発見 + virtual module
 
-- [ ] 最小 Vite plugin を `packages/hibana/src/vite.ts` に追加 (= `@vidro/hibana/vite` で export)
-- [ ] `glob("**/*.island.tsx")` で発見、AST 解析不要 (= 設計書原則)
-- [ ] virtual module で client bundle entry の islandMap 自動生成 (= 手書き `import Counter from "..."` 撲滅)
-- [ ] HMR の単位 = file = bundle unit で揃える
+scope を 2 つに分割:
+
+- **Phase A**: 手書き import 撲滅 (= 機構の発見側を整備)
+- **Phase B**: defineIsland も internal 化 (= user 語彙を `.island.tsx` 書くだけに絞る)
+
+##### Phase A: 手書き import 撲滅 — **完了**
+
+- [x] 最小 Vite plugin を `packages/hibana/src/vite.ts` に追加 (= `@vidro/hibana/vite` で export)
+- [x] `import.meta.glob("/src/**/*.island.tsx", { eager: true })` で発見、AST 解析不要 (= 設計書原則)
+- [x] virtual module `virtual:hibana/islands` で `islandMap` (= name → component default export) を提供
+- [x] HMR の単位 = file = bundle unit で揃える (= vite の glob 機構が自動検知)
+- [x] `@vidro/hibana/vite-client` triple-slash directive で virtual module の TS 型を提供
+- [x] apps/hibana-demo の `src/client.ts` を `setupIslandHydration(islandMap)` 2 行に縮退
+- [x] dogfood smoke: browser で `Count: 0 → 1` reactive update 確認、手書き import 撲滅後も regression なし
+
+##### Phase B: defineIsland 撲滅 + client.ts 自動生成 (2-3 日) — 次
+
+- [ ] `defineIsland` を internal 化、`.island.tsx` の default export を plugin が自動 wrap (= `__VidroIsland` で囲む transform pass を vite plugin に組み込む)
+- [ ] island name を filename から自動付与 (= `Counter.island.tsx` → `"Counter"`)
+- [ ] client bundle entry を plugin が virtual で生成 (= user の `client.ts` 自体を不要に)
+- [ ] `hibana()` middleware の `clientScript` option 撲滅 (= shell HTML の `<script>` tag は plugin が dev/prod 分岐 inject)
 - [ ] **合流判断**: `@vidro/plugin` (= Vidro 専用) と独立 OR 共通 helper を core に切り出す
 
 ### Step 4: `c.render(Component, props)` API 確定 (1-2 日)

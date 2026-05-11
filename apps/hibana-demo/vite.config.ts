@@ -12,13 +12,14 @@
 import { defineConfig } from "vite";
 import devServer from "@hono/vite-dev-server";
 import { jsxTransform } from "@vidro/plugin";
+import { hibanaVite } from "@vidro/hibana/vite";
 
 export default defineConfig(({ mode }) => {
   if (mode === "client") {
     // client mode: browser bundle を生成 (= src/client.ts を entry に静的に bundle)。
     // prod 配信時に serveStatic 経由で /static/client.js として返す前提。
     return {
-      plugins: [jsxTransform()],
+      plugins: [hibanaVite(), jsxTransform()],
       build: {
         rollupOptions: {
           input: "./src/client.ts",
@@ -39,6 +40,7 @@ export default defineConfig(({ mode }) => {
   // prod では /static/client.js を指す)。
   return {
     plugins: [
+      hibanaVite(),
       jsxTransform(),
       devServer({
         entry: "./src/app.ts",

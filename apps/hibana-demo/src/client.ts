@@ -1,14 +1,16 @@
-// apps/hibana-demo の browser bundle entry。
-// esbuild で bundle され、Hono の serveStatic 経由で /static/client.js として配信される。
+// apps/hibana-demo の browser bundle entry。vite で bundle され、shell HTML の
+// <script type="module"> から読まれる (= dev では /src/client.ts、prod では /static/client.js)。
 //
-// 役割: 各 .island.tsx の component を import して、@vidro/hibana/client の
-// setupIslandHydration に islandMap として渡す。これで server が emit した marker queue が
-// drain されて、各 island が hydrate される。
+// Phase 1 Step 3-b 以降:
+//   - `.island.tsx` の手書き import は撲滅 (= 旧: `import Counter from "./domains/posts/components/Counter.island.tsx"`)
+//   - 代わりに `@vidro/hibana/vite` plugin が virtual module `virtual:hibana/islands` 経由で
+//     islandMap (= name → component default export) を提供する
+//   - user は新しい island を `**/*.island.tsx` に追加するだけで自動発見される
 //
-// Step 3 で Vite plugin を導入したら、本 file の手書き import 列は plugin が生成する
-// virtual module に置き換わる予定。
+// 型解決: src/vite-env.d.ts の `/// <reference types="@vidro/hibana/vite-client" />` で virtual
+// module 宣言が読まれる。
 
 import { setupIslandHydration } from "@vidro/hibana/client";
-import Counter from "./domains/posts/components/Counter.island.tsx";
+import { islandMap } from "virtual:hibana/islands";
 
-setupIslandHydration({ Counter });
+setupIslandHydration(islandMap);

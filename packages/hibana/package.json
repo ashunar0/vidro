@@ -1,7 +1,7 @@
 {
   "name": "@vidro/hibana",
   "version": "0.0.0",
-  "description": "Backend-first FW on top of Hono, sibling of Vidro (Phase 1 Step 1 minimum)",
+  "description": "Backend-first FW on top of Hono, sibling of Vidro (Phase 1 Step 3-b: vite plugin で .island.tsx 自動発見)",
   "license": "MIT",
   "files": [
     "dist"
@@ -16,11 +16,16 @@
       "types": "./dist/client.d.mts",
       "default": "./dist/client.mjs"
     },
+    "./vite": {
+      "types": "./dist/vite.d.mts",
+      "default": "./dist/vite.mjs"
+    },
+    "./vite-client": "./vite-client.d.ts",
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "vp pack src/index.ts src/client.ts --dts",
-    "dev": "vp pack src/index.ts src/client.ts --dts --watch",
+    "build": "vp pack src/index.ts src/client.ts src/vite.ts --dts",
+    "dev": "vp pack src/index.ts src/client.ts src/vite.ts --dts --watch",
     "test": "vp test",
     "typecheck": "tsc --noEmit"
   },
@@ -29,11 +34,18 @@
     "@vidro/core": "workspace:*",
     "hono": "^4.6.0",
     "typescript": "^6.0.2",
+    "vite": "catalog:",
     "vite-plus": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
     "@vidro/core": "workspace:*",
-    "hono": "^4.0.0"
+    "hono": "^4.0.0",
+    "vite": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
   }
 }
