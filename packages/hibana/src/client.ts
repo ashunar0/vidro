@@ -1,8 +1,11 @@
-// @vidro/hibana/client — client-side island hydration runtime。
+// @vidro/hibana/client — client-side runtime (island hydration + navigation)。
 //
-// browser に load される bundle 用 entry。server (= __VidroIsland) が emit した island
-// registry queue (= `window.__vidroIslandHydrate`) を drain & hook して、各 island を
-// marker range 内で hydrate する。
+// browser に load される bundle 用 entry。提供する setup 関数:
+//   - setupIslandHydration(islandMap): island registry queue を drain & hook
+//   - setupNavigation(): <Link> click intercept + HTML swap navigation (= ADR 0080)
+//
+// server (= __VidroIsland) が emit した island registry queue (= `window.__vidroIslandHydrate`)
+// を drain & hook して、各 island を marker range 内で hydrate する。
 //
 // 流れ:
 //   1. app の client.ts (= browser bundle entry) が setupIslandHydration({Counter}) を呼ぶ
@@ -16,6 +19,9 @@
 // 抽出する候補 (= memory project_hibana_vidro_interaction の合流ポイント #2)。
 
 import { h, hydrateRange } from "@vidro/core";
+
+// ADR 0080: Step 5 (HTML swap navigation) の client runtime を re-export
+export { setupNavigation } from "./client-navigation.js";
 
 type IslandEntry = { key: string; name: string; seq: number };
 

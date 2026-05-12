@@ -131,13 +131,17 @@ export const islandMap = Object.fromEntries(
       }
 
       if (id === RESOLVED_CLIENT_ENTRY_ID) {
-        // browser bundle の entry。旧 apps/<app>/src/client.ts の手書き 3 行をここで提供。
+        // browser bundle の entry。旧 apps/<app>/src/client.ts の手書きをここで提供。
         // user は client.ts を書かなくて済む。@hono/vite-dev-server 環境でも `mode === "client"`
-        // 環境でも同じ内容で動く (= setupIslandHydration が冪等)。
+        // 環境でも同じ内容で動く (= setupIslandHydration / setupNavigation が冪等)。
+        //
+        // ADR 0080 (Step 5、Phase 2): setupNavigation を併設して <Link> の click intercept +
+        // 最深 Frame swap を提供する。`<Link>` を書いてない app では発火しないので無害。
         return `
-import { setupIslandHydration } from "@vidro/hibana/client";
+import { setupIslandHydration, setupNavigation } from "@vidro/hibana/client";
 import { islandMap } from "virtual:hibana/islands";
 setupIslandHydration(islandMap);
+setupNavigation();
 `;
       }
 
