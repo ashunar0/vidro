@@ -122,83 +122,227 @@ setupIslandHydration(islandMap);
     },
 
     transform(code: string, id: string) {
-      // `.island.tsx` だけ対象 (= query string `?xxx` が付くケースも吸収)
-      const islandMatch = id.match(/([^/]+)\.island\.tsx(?:\?.*)?$/);
-      if (!islandMatch) return null;
       if (id.includes("node_modules")) return null;
 
-      const islandName = islandMatch[1]!;
+      // `.island.tsx` の auto-wrap (Phase B-1)
+      const islandMatch = id.match(/([^/]+)\.island\.tsx(?:\?.*)?$/);
+      if (islandMatch) {
+        return transformIsland(code, islandMatch[1]!);
+      }
 
-      const ast = parse(code, {
-        sourceType: "module",
-        plugins: ["typescript", "jsx"],
-      });
+      // 他の `.tsx` (= page module 想定) で `export const metadata` があれば
+      // default export に `.metadata` プロパティを attach する (ADR 0079)。
+      // 軽量な事前 string 判定で AST parse 自体を skip する case を増やす。
+      if (id.match(/\.tsx(?:\?.*)?$/) && code.includes("export const metadata")) {
+        return transformMetadata(code, id);
+      }
 
-      // default export を探し、Expression として取り出して `defineIsland(expr, name)` で wrap する。
-      // FunctionDeclaration (`export default function X() {}`) は FunctionExpression に変換、
-      // それ以外の Expression は素通し。既に `defineIsland(...)` 呼び出しなら skip (= 互換)。
-      let transformed = false;
-
-      traverse(ast, {
-        ExportDefaultDeclaration(path: NodePath<t.ExportDefaultDeclaration>) {
-          const decl = path.node.declaration;
-
-          let originalExpr: t.Expression;
-          if (t.isFunctionDeclaration(decl)) {
-            // `export default function Counter() {}` → FunctionExpression 化
-            originalExpr = t.functionExpression(
-              decl.id,
-              decl.params,
-              decl.body,
-              decl.generator,
-              decl.async,
-            );
-          } else if (t.isClassDeclaration(decl)) {
-            // class component は Hibana では非推奨だが、念のため class expression 化
-            originalExpr = t.classExpression(decl.id, decl.superClass, decl.body, decl.decorators);
-          } else if (t.isExpression(decl)) {
-            originalExpr = decl;
-          } else {
-            // TSDeclareFunction / etc は実 export ではないので無視
-            return;
-          }
-
-          // 既に `defineIsland(...)` 呼び出し済かを判定して二重 wrap 防止。
-          // identifier 名で判定するので、`import { defineIsland as di } from ...` の alias
-          // 経由は判別できない (= 稀な edge case、user は素直に書く前提)。
-          if (
-            t.isCallExpression(originalExpr) &&
-            t.isIdentifier(originalExpr.callee) &&
-            originalExpr.callee.name === "defineIsland"
-          ) {
-            return;
-          }
-
-          // `__hibana_defineIsland(<expr>, "<name>")` に置換
-          const wrapped = t.callExpression(t.identifier("__hibana_defineIsland"), [
-            originalExpr,
-            t.stringLiteral(islandName),
-          ]);
-          path.node.declaration = wrapped;
-          transformed = true;
-          path.stop();
-        },
-      });
-
-      if (!transformed) return null;
-
-      // `import { defineIsland as __hibana_defineIsland } from "@vidro/hibana/internal"` を unshift。
-      // Phase B-2 で `defineIsland` を user-facing `@vidro/hibana` から `@vidro/hibana/internal` に
-      // 移動した (= user 語彙から消すため)。transform 時の参照先はこの internal entry。
-      // 衝突回避のため `__hibana_defineIsland` という unlikely な local 名で alias 化する。
-      const importDecl = t.importDeclaration(
-        [t.importSpecifier(t.identifier("__hibana_defineIsland"), t.identifier("defineIsland"))],
-        t.stringLiteral("@vidro/hibana/internal"),
-      );
-      ast.program.body.unshift(importDecl);
-
-      const result = generate(ast, { retainLines: true, sourceMaps: true }, code);
-      return { code: result.code, map: result.map };
+      return null;
     },
   };
+}
+
+// `.island.tsx` の default export を `__hibana_defineIsland(<expr>, "<name>")` に置換する transform。
+// FunctionDeclaration → FunctionExpression 化、ClassDeclaration → ClassExpression 化、
+// 既に `defineIsland(...)` で wrap されてる case は skip (= 互換維持)。
+function transformIsland(code: string, islandName: string) {
+  const ast = parse(code, {
+    sourceType: "module",
+    plugins: ["typescript", "jsx"],
+  });
+
+  let transformed = false;
+
+  traverse(ast, {
+    ExportDefaultDeclaration(path: NodePath<t.ExportDefaultDeclaration>) {
+      const decl = path.node.declaration;
+
+      let originalExpr: t.Expression;
+      if (t.isFunctionDeclaration(decl)) {
+        originalExpr = t.functionExpression(
+          decl.id,
+          decl.params,
+          decl.body,
+          decl.generator,
+          decl.async,
+        );
+      } else if (t.isClassDeclaration(decl)) {
+        originalExpr = t.classExpression(decl.id, decl.superClass, decl.body, decl.decorators);
+      } else if (t.isExpression(decl)) {
+        originalExpr = decl;
+      } else {
+        return;
+      }
+
+      // 既に `defineIsland(...)` 呼び出し済かを判定して二重 wrap 防止。
+      // identifier 名で判定するので、alias 経由は判別できない (= 稀な edge case)。
+      if (
+        t.isCallExpression(originalExpr) &&
+        t.isIdentifier(originalExpr.callee) &&
+        originalExpr.callee.name === "defineIsland"
+      ) {
+        return;
+      }
+
+      const wrapped = t.callExpression(t.identifier("__hibana_defineIsland"), [
+        originalExpr,
+        t.stringLiteral(islandName),
+      ]);
+      path.node.declaration = wrapped;
+      transformed = true;
+      path.stop();
+    },
+  });
+
+  if (!transformed) return null;
+
+  const importDecl = t.importDeclaration(
+    [t.importSpecifier(t.identifier("__hibana_defineIsland"), t.identifier("defineIsland"))],
+    t.stringLiteral("@vidro/hibana/internal"),
+  );
+  ast.program.body.unshift(importDecl);
+
+  const result = generate(ast, { retainLines: true, sourceMaps: true }, code);
+  return { code: result.code, map: result.map };
+}
+
+/**
+ * ADR 0079: page module の `export const metadata` を default export に attach する transform。
+ *
+ * 入力例:
+ *   export const metadata: Metadata = { title: "Posts" };
+ *   export default function PostListPage(props) { ... }
+ *
+ * 出力例:
+ *   export const metadata: Metadata = { title: "Posts" };
+ *   const __hibana_default = function PostListPage(props) { ... };
+ *   __hibana_default.metadata = metadata;
+ *   export default __hibana_default;
+ *
+ * 機構:
+ *   - `hibana()` middleware の renderer が `(Component as { metadata }).metadata` を読むため、
+ *     default export function に `.metadata` プロパティを attach する必要がある
+ *   - FunctionDeclaration / ClassDeclaration / Expression (= Identifier / Arrow / Call 等) を
+ *     `const __hibana_default = <expr>` に正規化、その後 `__hibana_default.metadata = metadata;`
+ *     を挿入、`export default __hibana_default;` に書き換える
+ *
+ * 適用条件:
+ *   - module に `export const metadata` が存在する (= caller 側で string 判定で事前 skip)
+ *   - default export が存在する (= 無ければ warn 後 skip、silent failure 防止)
+ *   - default export が既に `.metadata` を持っている (= 二重 attach skip、ユーザが手で書いた場合)
+ *
+ * warn 条件 (= code-review 第 19 周目で追加):
+ *   - `export const metadata` あるが default export 無い (= named export only)
+ *   - `export const metadata` あるが default export が re-export 形式 (= `export { default } from "..."`)
+ *
+ * いずれも runtime で `.metadata` 取得経路が機能しないため、user に明示する。
+ */
+function transformMetadata(code: string, id: string) {
+  const ast = parse(code, {
+    sourceType: "module",
+    plugins: ["typescript", "jsx"],
+  });
+
+  // `export const metadata = ...` の存在を AST level で再確認 (= string 判定の偽陽性除去、
+  // 例: コメント中の `// export const metadata` 等)。
+  let hasMetadataExport = false;
+  for (const node of ast.program.body) {
+    if (
+      t.isExportNamedDeclaration(node) &&
+      node.declaration &&
+      t.isVariableDeclaration(node.declaration)
+    ) {
+      for (const decl of node.declaration.declarations) {
+        if (t.isIdentifier(decl.id) && decl.id.name === "metadata") {
+          hasMetadataExport = true;
+          break;
+        }
+      }
+    }
+    if (hasMetadataExport) break;
+  }
+  if (!hasMetadataExport) return null;
+
+  // default export を探し、正規化して `__hibana_default` 経由に書き換える。
+  let defaultExportPath: NodePath<t.ExportDefaultDeclaration> | null = null;
+  let hasReExportDefault = false;
+  traverse(ast, {
+    ExportDefaultDeclaration(path: NodePath<t.ExportDefaultDeclaration>) {
+      defaultExportPath = path;
+      path.stop();
+    },
+    // `export { default } from "..."` (= re-export) は ExportNamedDeclaration として現れる。
+    // metadata は attach できないので warn のため検出だけする。
+    ExportNamedDeclaration(path: NodePath<t.ExportNamedDeclaration>) {
+      if (path.node.source) {
+        for (const specifier of path.node.specifiers) {
+          if (
+            t.isExportSpecifier(specifier) &&
+            t.isIdentifier(specifier.exported) &&
+            specifier.exported.name === "default"
+          ) {
+            hasReExportDefault = true;
+          }
+        }
+      }
+    },
+  });
+
+  if (!defaultExportPath) {
+    // metadata はあるが attach 対象が無い = silent failure を防ぐため warn。
+    const reason = hasReExportDefault
+      ? 'default export が re-export 形式 (`export { default } from "..."`) のため attach できない'
+      : "default export が無い (= named export のみ)";
+    console.warn(
+      `[hibana:vite] ${id} に \`export const metadata\` があるが ${reason}。\n` +
+        `  解決策: page module を \`export default function ...\` 形式にする (= ADR 0079)。`,
+    );
+    return null;
+  }
+  // narrow を維持するため as cast (= ESLint 的に冗長だが TS 推論限界の回避)。
+  const exportPath = defaultExportPath as NodePath<t.ExportDefaultDeclaration>;
+  const decl = exportPath.node.declaration;
+
+  let originalExpr: t.Expression;
+  if (t.isFunctionDeclaration(decl)) {
+    originalExpr = t.functionExpression(
+      decl.id,
+      decl.params,
+      decl.body,
+      decl.generator,
+      decl.async,
+    );
+  } else if (t.isClassDeclaration(decl)) {
+    originalExpr = t.classExpression(decl.id, decl.superClass, decl.body, decl.decorators);
+  } else if (t.isExpression(decl)) {
+    originalExpr = decl;
+  } else {
+    return null;
+  }
+
+  // 既に `__hibana_default` 経由に書き換え済なら skip (= 二重適用防止、HMR re-transform 対策)。
+  if (t.isIdentifier(originalExpr) && originalExpr.name === "__hibana_default") {
+    return null;
+  }
+
+  // 構築物:
+  //   const __hibana_default = <originalExpr>;
+  //   __hibana_default.metadata = metadata;
+  //   export default __hibana_default;
+  const constDecl = t.variableDeclaration("const", [
+    t.variableDeclarator(t.identifier("__hibana_default"), originalExpr),
+  ]);
+  const attachStmt = t.expressionStatement(
+    t.assignmentExpression(
+      "=",
+      t.memberExpression(t.identifier("__hibana_default"), t.identifier("metadata")),
+      t.identifier("metadata"),
+    ),
+  );
+  const newExport = t.exportDefaultDeclaration(t.identifier("__hibana_default"));
+
+  exportPath.replaceWithMultiple([constDecl, attachStmt, newExport]);
+
+  const result = generate(ast, { retainLines: true, sourceMaps: true }, code);
+  return { code: result.code, map: result.map };
 }

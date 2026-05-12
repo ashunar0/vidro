@@ -21,3 +21,7 @@ const posts: Post[] = [
 export const getPosts = () => {
   return posts;
 };
+
+export const getPost = (id: string): Post | undefined => {
+  return posts.find((p) => p.id === id);
+};

@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-11 (Phase 1 Step 1-3 完了、Step 4-6 未着手)
+> **Last updated**: 2026-05-12 (Phase 1 Step 4 (1)(2) 完了 = ADR 0079 着地、残 (3)(4))
 
 ---
 
@@ -47,12 +47,12 @@ Hibana 内部の層は単一パッケージ内のフォルダで `core / rendere
 
 着手段階で確定するので、roadmap 上は **どの Step で決めるか** だけ書く。
 
-| Open Question                                                                                         | 確定 Step     |
-| ----------------------------------------------------------------------------------------------------- | ------------- |
-| `c.render` の名前確定 (= HonoX 衝突、候補 `c.page` / `c.view`)                                        | Step 4        |
-| ハードリロード時 vs navigation 時の server response の正確な contract                                 | Step 5        |
-| island の props serialize 制約 (Date / Map / class instance 等のルール)                               | Step 4        |
-| ADR numbering: Vidro の `docs/decisions/` 連番継続 or 分離 (`docs/decisions/hibana/0001-` で再 start) | 初 ADR 起票時 |
+| Open Question                                                                         | 確定 Step  |
+| ------------------------------------------------------------------------------------- | ---------- |
+| ~~`c.render` の名前確定 (= HonoX 衝突、候補 `c.page` / `c.view`)~~ → **据え置き決定** | Step 4 ✓   |
+| ハードリロード時 vs navigation 時の server response の正確な contract                 | Step 5     |
+| island の props serialize 制約 (Date / Map / class instance 等のルール)               | Step 4 (4) |
+| ~~ADR numbering~~ → **Vidro 連番継続** (= ADR 0079 起票時に決定)                      | (= 完了)   |
 
 ---
 
@@ -152,8 +152,8 @@ scope を 2 つに分割:
 
 ### Step 4: `c.render(Component, props)` API 確定 (1-2 日)
 
-- [ ] 命名衝突解決: `c.render` のまま行く / `c.page` / `c.view` 等への改名を決める
-- [ ] shell HTML の per-route customization (= `<head>` 内の title / meta / link)
+- [x] 命名衝突解決: `c.render` のまま行く (= HonoX / Hono+Inertia 整合、第 19 周目決定)
+- [x] shell HTML の per-route customization (= `<head>` 内の title / meta / link) = ADR 0079 着地
 - [ ] layout component pattern (= 親 layout が子 page を slot で受ける形が Hibana 流に合うか検討)
 - [ ] `defineIsland<T>()` helper を optional 追加検討 (= props serialize 可能性の type check)
 - [ ] **合流判断**: JSX runtime contract ADR (= Vidro 側 B') と整合、`h()` を "shared kernel" の public IR として宣言
