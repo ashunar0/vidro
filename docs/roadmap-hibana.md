@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-12 (Step 4 (3) 着地、Step 5 設計確定 = ADR 0080 Draft 起票)
+> **Last updated**: 2026-05-12 (Step 5 全完走、ADR 0080 Accepted 昇格)
 
 ---
 
@@ -66,7 +66,7 @@ Hibana 内部の層は単一パッケージ内のフォルダで `core / rendere
 
 ---
 
-## Phase 1: 縦串 MVP — **進行中** (Step 1〜3 完了、Step 4〜6 未着手)
+## Phase 1: 縦串 MVP — **進行中** (Step 1〜3 + Step 5 完了、Step 4 残 / Step 6 未着手)
 
 最小組み合わせ (= Hono + `@vidro/core` + Vite + client) で「server から HTML 返す
 → island hydrate → navigation」までを一直線に通す段階。差し替えは考えない。
@@ -158,7 +158,7 @@ scope を 2 つに分割:
 - [ ] `defineIsland<T>()` helper を optional 追加検討 (= props serialize 可能性の type check)
 - [ ] **合流判断**: JSX runtime contract ADR (= Vidro 側 B') と整合、`h()` を "shared kernel" の public IR として宣言
 
-### Step 5: navigation (HTML swap) (2-3 日) — **設計確定** (= 第 22 周目、ADR 0080 Draft 起票)
+### Step 5: navigation (HTML swap) (2-3 日) — **完了** (= 第 22-23 周目、ADR 0080 Accepted)
 
 設計判断: ADR 0080 (`docs/decisions/0080-hibana-html-swap-navigation.md`) + memory `project_hibana_step5_design`
 
@@ -170,19 +170,19 @@ scope を 2 つに分割:
 | wire                           | partial HTML                                                                     |
 | boundary marker                | `<Frame>{children}</Frame>` (Frame ≒ Flame、Hibana = 火花 + Hono = 炎で命名統一) |
 | 共通祖先計算                   | Approach B (server header `X-Hibana-Layouts`)                                    |
-| ADR 0081 (= layout 機構本採用) | 中立、Step 5 完走後に判断                                                        |
+| ADR 0081 (= layout 機構本採用) | 中立 (= 両 app dogfood で実証)、Step 5 完走後に判断                              |
 | 将来最適化余地                 | filesystem-based 採用時に Approach C (URL から layout 計算)                      |
 
-Phase 分割 (= tasks #1-#8 に対応):
+Phase 分割 (= tasks #1-#8 に対応、全完走):
 
-- [x] **Phase 0** 設計 doc + roadmap update + ADR 0080 起票 (Draft)
-- [ ] **Phase 1** `<Link>` + `<Frame>` JSX component 実装 (= packages/hibana/src/{link,frame}.tsx)
-- [ ] **Phase 2** client intercept + 最深 Frame swap (= 同 layout 内 navigation 対応)
-- [ ] **Phase 3** server header `X-Hibana-Layouts` 付与 + partial HTML response
-- [ ] **Phase 4** client 共通祖先計算 + layout 切り替え対応
-- [ ] **Phase 5** dev warning (Frame 書き忘れ検出) + scroll restoration + popstate
-- [ ] **Phase 6** dogfood (apps/hibana-demo + apps/hibana-demo-fs 両方 + Playwright smoke)
-- [ ] **Phase 7** ADR 0080 を Accepted 昇格 + memory update
+- [x] **Phase 0** 設計 doc + roadmap update + ADR 0080 起票 (Draft) — `5518596`
+- [x] **Phase 1** `<Link>` + `<Frame>` JSX component 実装 (= packages/hibana/src/{link,frame}.ts) — `72d1f88`
+- [x] **Phase 2** client intercept + 最深 Frame swap (= 同 layout 内 navigation 対応) — `dc79f5c`
+- [x] **Phase 3** server header `X-Hibana-Layouts` 付与 + partial HTML response — `0469b5e` + `e1b6ee8` (encodeURIComponent fix)
+- [x] **Phase 4** client 共通祖先計算 + layout 切り替え対応 — `7bcf5e1`
+- [x] **Phase 5** dev warning (Frame 書き忘れ検出) + scroll restoration + popstate — `d5b7d6d`
+- [x] **Phase 6** dogfood (apps/hibana-demo + apps/hibana-demo-fs 両方 + Playwright smoke) — `8f351fd`
+- [x] **Phase 7** code-reviewer Critical 2 件 fix (= AbortController + null fallback) + ADR 0080 Accepted 昇格 + memory update — `47b9d1d` + Phase 7 commit
 - [ ] **合流判断**: `@vidro/router` の cache 戦略 (= memory `project_cache_as_fw_concern`) と整合検討
 
 却下案 (= ADR 0080 詳細参照):

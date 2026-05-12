@@ -2,14 +2,28 @@
 
 ## Status
 
-**Draft** — 2026-05-12 (= 第 22 周目、73rd session で 4 軸設計確定 + Phase 0 起票時点)
+**Accepted** — 2026-05-12 (= 第 23 周目で Phase 7 着地、両 app dogfood pass + code-reviewer agent Critical 2 件 fix 経由)
 
 経緯:
 
 - 2026-05-12 (= 第 21 周目完走): Hibana Phase 1 Step 4 (3) layout 機構 = handler-based 版 (cc047f0) + filesystem-based 版 (3aad670) 両方着地、apps/hibana-demo / hibana-demo-fs で並走 dogfood pass、ADR (旧 0080) layout 機構の本採用判断は **保留** に
 - 2026-05-12 (= 第 22 周目、73rd session): ADR 0080 を Step 5 (HTML swap navigation) 用に転用 (= ADR は起票順、慣習どおり)。layout 機構の本採用判断は **ADR 0081** にずらす予定。Step 5 設計確定 (= 4 軸決定) + Phase 0 起票
+- 2026-05-12 (= 第 23 周目): Phase 1-6 全完走 (= 両 app Playwright dogfood pass、partial wire + 共通祖先計算 + popstate + scroll restoration + dev warning)。code-reviewer agent review で Critical 2 件 (= C-1 並行 navigation race / C-2 X-Hibana-Common-Ancestor null fallback) を fix 後、Phase 7 で Accepted 昇格
 
-着地時 commit: TBD (= Phase 1-7 完走後、Accepted 昇格時に追記)
+着地時 commit:
+
+| commit    | Phase              | 内容                                                                       |
+| --------- | ------------------ | -------------------------------------------------------------------------- |
+| `5518596` | Phase 0            | ADR 0080 Draft 起票 + roadmap update                                       |
+| `72d1f88` | Phase 1            | `<Link>` + `<Frame>` JSX component (= packages/hibana/src/{link,frame}.ts) |
+| `dc79f5c` | Phase 2            | client intercept + 最深 Frame swap (= 同 layout 内 navigation)             |
+| `0469b5e` | Phase 3            | server header (X-Hibana-Layouts/Title) + partial HTML response             |
+| `e1b6ee8` | Phase 3 fix        | X-Hibana-Title/Layouts encodeURIComponent (= ByteString 制約) + dogfood 1  |
+| `7bcf5e1` | Phase 4            | 共通祖先計算 + layout 切り替え対応 (= persistent nested layout)            |
+| `d5b7d6d` | Phase 5            | popstate + scroll restoration (sessionStorage) + dev warning               |
+| `8f351fd` | Phase 6            | filesystem-based 版 dogfood (= apps/hibana-demo-fs) で中立性実証           |
+| `47b9d1d` | Phase 7 review fix | C-1 並行 navigation race (AbortController) + C-2 null fallback (= 0)       |
+| `TBD`     | Phase 7 Accepted   | ADR Status: Draft → Accepted + roadmap 全 ✓ + memory update                |
 
 依存: ADR 0079 (per-route head) = navigation 後の `<head>` 更新で merge ルール再利用
 関連: [[project_hibana_step5_design]], [[project_hibana_overview]], [[project_html_first_wire]], [[project_legibility_test]], [[feedback_dx_first_design]], [[project_design_north_star]], [[project_hibana_layout_direction_pending]]
@@ -280,18 +294,18 @@ Content-Type: text/html
 5. **dev warning** (Vite plugin transform):
    - layout component (= `_renderer.tsx` or `hibanaLayout(L)` 経由 component) が `<Frame>` を含まない場合、console.warn + dev overlay
 
-### Phase 分割 (= 実装計画、tasks #1-#8 と対応)
+### Phase 分割 (= 実装計画、tasks #1-#8 と対応、全完走)
 
-| Phase   | 内容                                                                        |
-| ------- | --------------------------------------------------------------------------- |
-| Phase 0 | 設計 doc + roadmap update + ADR 0080 起票 (Draft) — **今ここ**              |
-| Phase 1 | Link + Frame JSX component 実装 (`<a data-hibana-link>` + `<hibana-frame>`) |
-| Phase 2 | client intercept + 最深 Frame swap (= 同 layout 内 navigation 対応)         |
-| Phase 3 | server header + partial HTML response                                       |
-| Phase 4 | client 共通祖先計算 + layout 切り替え対応                                   |
-| Phase 5 | dev warning + scroll restoration + popstate                                 |
-| Phase 6 | dogfood (apps/hibana-demo + apps/hibana-demo-fs 両方 + Playwright smoke)    |
-| Phase 7 | ADR 0080 Accepted 昇格 + memory update                                      |
+| Phase   | 内容                                                                        | 状態 |
+| ------- | --------------------------------------------------------------------------- | ---- |
+| Phase 0 | 設計 doc + roadmap update + ADR 0080 起票 (Draft)                           | ✓    |
+| Phase 1 | Link + Frame JSX component 実装 (`<a data-hibana-link>` + `<hibana-frame>`) | ✓    |
+| Phase 2 | client intercept + 最深 Frame swap (= 同 layout 内 navigation 対応)         | ✓    |
+| Phase 3 | server header + partial HTML response                                       | ✓    |
+| Phase 4 | client 共通祖先計算 + layout 切り替え対応                                   | ✓    |
+| Phase 5 | dev warning + scroll restoration + popstate                                 | ✓    |
+| Phase 6 | dogfood (apps/hibana-demo + apps/hibana-demo-fs 両方 + Playwright smoke)    | ✓    |
+| Phase 7 | code-reviewer Critical 2 件 fix + ADR Accepted 昇格 + memory update         | ✓    |
 
 ## Consequences
 
@@ -313,6 +327,8 @@ Content-Type: text/html
 - **layout 識別の信頼性** = `data-layout="..."` は server から source-of-truth として渡されるべき、client から推測しない (= filesystem-based / handler-based で source が違うので server 経由が安全)
 - **prefetch 未対応 (v1)** = `<Link>` の hover prefetch / viewport prefetch は v1 では skip、dogfood で困ったら v2 で追加
 - **transition 効果未対応 (v1)** = View Transitions API 統合は v1 では skip、`<Frame>` の prop に余地は残す
+- **layout 名 minify 縮退リスク** (= Phase 7 review I-1) = `data-layout` は `LayoutComponent.name` から付与しているため、prod minify で関数名が縮退すると **異なる layout が同名で誤 match** する可能性がある。現状 prod build 未検証、minify ON にする時に再評価 (= 候補対応 = `Object.defineProperty(L, "name", ...)` で固定 / `<Frame>` に `name` prop 明示 / build plugin で自動付与)
+- **dev warning が partial mode で発火しない** (= Phase 7 review I-2) = Vite plugin の dev warning は full HTML response (= 初回 / リロード経路) の `<hibana-frame` 出現数で判定しており、`<Link>` 経由 partial response の path には適用されない。`<Link>` 経由で初めて踏む layout の Frame 書き忘れは silent (= partial swap が効かず full reload fallback で動作はする)。dogfood で見落としが起きたら partial 経路にも警告を追加
 
 ### 拡張余地 (= 将来 ADR or dogfood trigger)
 
