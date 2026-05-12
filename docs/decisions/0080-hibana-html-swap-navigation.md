@@ -23,7 +23,7 @@
 | `d5b7d6d` | Phase 5            | popstate + scroll restoration (sessionStorage) + dev warning               |
 | `8f351fd` | Phase 6            | filesystem-based 版 dogfood (= apps/hibana-demo-fs) で中立性実証           |
 | `47b9d1d` | Phase 7 review fix | C-1 並行 navigation race (AbortController) + C-2 null fallback (= 0)       |
-| `TBD`     | Phase 7 Accepted   | ADR Status: Draft → Accepted + roadmap 全 ✓ + memory update                |
+| `b64af9b` | Phase 7 Accepted   | ADR Status: Draft → Accepted + roadmap 全 ✓ + memory update                |
 
 依存: ADR 0079 (per-route head) = navigation 後の `<head>` 更新で merge ルール再利用
 関連: [[project_hibana_step5_design]], [[project_hibana_overview]], [[project_html_first_wire]], [[project_legibility_test]], [[feedback_dx_first_design]], [[project_design_north_star]], [[project_hibana_layout_direction_pending]]
