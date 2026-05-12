@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-12 (Phase 1 Step 4 (1)(2) 完了 = ADR 0079 着地、残 (3)(4))
+> **Last updated**: 2026-05-12 (Step 4 (3) 着地、Step 5 設計確定 = ADR 0080 Draft 起票)
 
 ---
 
@@ -158,13 +158,43 @@ scope を 2 つに分割:
 - [ ] `defineIsland<T>()` helper を optional 追加検討 (= props serialize 可能性の type check)
 - [ ] **合流判断**: JSX runtime contract ADR (= Vidro 側 B') と整合、`h()` を "shared kernel" の public IR として宣言
 
-### Step 5: navigation (HTML swap) (2-3 日)
+### Step 5: navigation (HTML swap) (2-3 日) — **設計確定** (= 第 22 周目、ADR 0080 Draft 起票)
 
-- [ ] client runtime: `<a>` click を intercept、`fetch` で次ページ HTML 取得
-- [ ] 受け取った HTML から body 抽出 → swap
-- [ ] 新 island marker を発見 → hydrate、古い island は teardown
-- [ ] ハードリロード時 vs navigation 時の server response の正確な contract 確定 (= 全 HTML 返す / 部分 HTML 返す / island-only JSON 返す等の選択)
+設計判断: ADR 0080 (`docs/decisions/0080-hibana-html-swap-navigation.md`) + memory `project_hibana_step5_design`
+
+4 軸確定:
+
+| 軸                             | 確定                                                                             |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| intercept                      | `<Link>` component (明示 opt-in、書き忘れは素の `<a>` で MPA fallback)           |
+| wire                           | partial HTML                                                                     |
+| boundary marker                | `<Frame>{children}</Frame>` (Frame ≒ Flame、Hibana = 火花 + Hono = 炎で命名統一) |
+| 共通祖先計算                   | Approach B (server header `X-Hibana-Layouts`)                                    |
+| ADR 0081 (= layout 機構本採用) | 中立、Step 5 完走後に判断                                                        |
+| 将来最適化余地                 | filesystem-based 採用時に Approach C (URL から layout 計算)                      |
+
+Phase 分割 (= tasks #1-#8 に対応):
+
+- [x] **Phase 0** 設計 doc + roadmap update + ADR 0080 起票 (Draft)
+- [ ] **Phase 1** `<Link>` + `<Frame>` JSX component 実装 (= packages/hibana/src/{link,frame}.tsx)
+- [ ] **Phase 2** client intercept + 最深 Frame swap (= 同 layout 内 navigation 対応)
+- [ ] **Phase 3** server header `X-Hibana-Layouts` 付与 + partial HTML response
+- [ ] **Phase 4** client 共通祖先計算 + layout 切り替え対応
+- [ ] **Phase 5** dev warning (Frame 書き忘れ検出) + scroll restoration + popstate
+- [ ] **Phase 6** dogfood (apps/hibana-demo + apps/hibana-demo-fs 両方 + Playwright smoke)
+- [ ] **Phase 7** ADR 0080 を Accepted 昇格 + memory update
 - [ ] **合流判断**: `@vidro/router` の cache 戦略 (= memory `project_cache_as_fw_concern`) と整合検討
+
+却下案 (= ADR 0080 詳細参照):
+
+| 案                                                    | 却下理由                                                                                                                      |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| 全 `<a>` 自動 boost                                   | "書いた分だけ" 哲学と逆、Hibana 他機構 (island/layout/metadata) と粒度ズレ                                                    |
+| full HTML wire                                        | `<Link>` の存在意義 (= 最適化) が薄まる、共通 layout を毎回 fetch する無駄                                                    |
+| JSON tree wire                                        | virtual DOM 無いので構造的に不可                                                                                              |
+| `<Outlet />` self-closing                             | `LayoutComponent` から children prop 削除する breaking change、書き忘れで page 完全表示されない (= graceful degradation 違反) |
+| MVP: 最深 Frame だけ swap + layout 変更時 full reload | 「逃げ手」、user 哲学「FW 価値最大化」と逆                                                                                    |
+| Approach C (URL 計算) 即採用                          | filesystem-based 採用を前提化、ADR 0081 (= 旧 0080、layout 機構) を縛る                                                       |
 
 ### Step 6: 小さいサンプルアプリ (1 週)
 
