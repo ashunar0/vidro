@@ -395,6 +395,23 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
       // 初回 SSR で client が読む marker を server が source-of-truth として埋め込むため。
       // 順序: layouts = [親, ..., 子] と body 内 Frame 出現順 (= document order) が一致する前提。
       const body = injectLayoutNames(rawBody, layoutNames);
+
+      // Phase 5: dev warning。`hibanaLayout(L)` で layout を push してるのに L の中に
+      // <Frame> が無いと partial navigation が壊れる (= 書き忘れ症状)。
+      // server が SSR 後の HTML を inspect して、Frame 出現数 < layout stack 数なら警告。
+      // NODE_ENV === "development" 時のみで prod では実行しない (= overhead 回避)。
+      if (typeof process !== "undefined" && process.env.NODE_ENV === "development") {
+        const frameCount = (rawBody.match(/<hibana-frame /g) ?? []).length;
+        if (frameCount < layouts.length) {
+          console.warn(
+            `[hibana] layout stack 数 (${layouts.length}) > 出現した <Frame> 数 ` +
+              `(${frameCount})。layout component の中に <Frame>{children}</Frame> を ` +
+              `書き忘れてる可能性があります。ADR 0080 §軸 3 参照。\n` +
+              `  layout names: ${layoutNames.join(" > ")}`,
+          );
+        }
+      }
+
       const html = `<!DOCTYPE html>
 <html>
   <head>

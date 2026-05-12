@@ -1,21 +1,24 @@
 // @vidro/hibana/client-navigation — Step 5 (HTML swap navigation) の client runtime。
 //
-// ADR 0080 Phase 2-3: <Link> の click intercept + partial wire fetch + 最深 Frame swap。
-// 同 layout 内 navigation の実装 (= 共通祖先計算は Phase 4 で拡張)。
+// ADR 0080 Phase 2-5 実装:
+//   - <Link> click intercept + partial wire fetch (Phase 2)
+//   - server header + partial response (Phase 3)
+//   - 現 Frame stack を request header で送って共通祖先計算 (Phase 4)
+//   - popstate (back/forward) 対応 + scroll restoration (Phase 5)
 //
-// 制約 (= 後続 Phase で解消):
-//   - layout 切り替え (= /posts → /about) は最深 Frame swap で済ます or full reload fallback
-//     (= layout stack 比較は Phase 4 で対応)
+// 制約 (= 後続で解消):
 //   - islands re-hydrate なし (= Counter state リセット、後で server inline script 統合時に対応)
-//   - dev warning / scroll restoration / popstate は Phase 5 で
+//   - prefetch / View Transitions API は v2 持ち越し
 //
 // Wire 仕様 (= ADR 0080 §Wire spec):
 //   request:  GET <url>  Accept: text/html;hibana-partial
+//                        X-Hibana-Current-Layouts: AppLayout,PostsLayout
 //   response: HTTP/1.1 200 OK
-//             X-Hibana-Layouts: AppLayout,PostsLayout
-//             X-Hibana-Title:   <new title>
-//             Content-Type:     text/html
-//             <raw page body for innermost Frame, no wrapper>
+//             X-Hibana-Layouts:          AppLayout,AboutLayout
+//             X-Hibana-Title:            <new title>
+//             X-Hibana-Common-Ancestor:  <commonLen>
+//             Content-Type:              text/html
+//             <共通祖先以下の layouts + page を nested で render した HTML>
 //
 // 設計判断: ADR 0080 §機構 #3 (client navigation runtime)。
 // 関連 memory: [[project_hibana_step5_design]]
@@ -23,19 +26,18 @@
 const LINK_SELECTOR = "a[data-hibana-link]";
 const FRAME_SELECTOR = "hibana-frame[data-hibana-frame]";
 
+// scroll 位置を URL ごとに sessionStorage で persist する key。
+// session 終わったら消えるので localStorage より自然 (= 業界 default、ブラウザの scrollRestoration の代替)。
+const SCROLL_KEY = (url: string): string => `hibana:scroll:${url}`;
+
 /**
  * Step 5 navigation runtime の setup。app の client bundle entry (= virtual:hibana/client-entry)
  * から 1 回呼ぶ。冪等: 2 度目以降の setup は no-op。
  *
- * 流れ:
- *   1. document に click event listener 追加 (capture: false、bubble phase)
- *   2. event.target を closest("a[data-hibana-link]") で検索、なければ skip
- *      (= 素の `<a>` は browser default の MPA 遷移、graceful degradation)
- *   3. 修飾キー / 中クリック / 外部リンク / download attr 等は browser default に委ねる
- *   4. preventDefault + fetch(url) で次 page の HTML 取得
- *   5. DOMParser で parse + 最深 `<hibana-frame data-hibana-frame>` の中身を抽出
- *   6. 現 DOM の最深 frame の innerHTML を新 content で差し替え
- *   7. history.pushState で URL 更新 + document.title 更新 (= ADR 0079 metadata)
+ * Phase 5 で追加:
+ *   - history.scrollRestoration = "manual" (= browser default の scroll 復元と競合しないように、
+ *     sessionStorage 経由で自前管理する)
+ *   - popstate listener (= 戻る / 進む で navigateTo を再実行、scroll 位置復元)
  *
  * 失敗時 (= Frame 不在 / fetch エラー / 5xx) は full reload に fallback
  * (= graceful degradation、user 哲学整合)。
@@ -47,7 +49,14 @@ export function setupNavigation(): void {
   if (w.__hibanaNavigationSetup) return;
   w.__hibanaNavigationSetup = true;
 
+  // browser default の scroll 復元と競合しないよう、manual に切り替え。
+  // popstate 時に sessionStorage から自前復元する想定 (= Phase 5)。
+  if ("scrollRestoration" in window.history) {
+    window.history.scrollRestoration = "manual";
+  }
+
   document.addEventListener("click", handleClick);
+  window.addEventListener("popstate", handlePopState);
 }
 
 async function handleClick(event: MouseEvent): Promise<void> {
@@ -66,8 +75,38 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (link.origin !== window.location.origin) return;
 
   event.preventDefault();
+  await navigateTo(link.href, { pushState: true, restoreScroll: false });
+}
 
-  const url = link.href;
+/**
+ * popstate (= back / forward) 時のハンドラ。
+ * browser が既に history を進めて URL を更新済なので、pushState は呼ばない。
+ * scroll 位置は sessionStorage から復元する (= browser default が `manual` のため必須)。
+ */
+async function handlePopState(): Promise<void> {
+  await navigateTo(window.location.href, { pushState: false, restoreScroll: true });
+}
+
+/**
+ * URL に対応する partial response を fetch、共通祖先以下を swap する共通ルーチン。
+ * click navigation と popstate (back/forward) 両方が呼ぶ。
+ *
+ * options.pushState:
+ *   true  = 通常 navigation (= click): history.pushState で URL を進める + 現 URL の scroll 保存
+ *   false = popstate: browser が既に history を動かしてるので pushState 不要、scroll 保存も不要
+ *
+ * options.restoreScroll:
+ *   true  = popstate: sessionStorage から scroll 位置復元
+ *   false = click: top に scroll (= 新 page に来た時は先頭から見る、業界 default)
+ */
+async function navigateTo(
+  url: string,
+  options: { pushState: boolean; restoreScroll: boolean },
+): Promise<void> {
+  // click 時、現 URL の scroll 位置を保存。後で popstate で戻ってきた時に復元するため。
+  if (options.pushState) {
+    sessionStorage.setItem(SCROLL_KEY(window.location.href), String(window.scrollY));
+  }
 
   // ADR 0080 Phase 4: 現 DOM の Frame stack を読んで request header で server に渡す。
   // server が共通祖先計算 + 共通以下 render を返してくれる契約。
@@ -99,7 +138,15 @@ async function handleClick(event: MouseEvent): Promise<void> {
       return;
     }
 
-    window.history.pushState(null, "", url);
+    if (options.pushState) window.history.pushState(null, "", url);
+
+    // scroll 復元 / リセット (Phase 5)
+    if (options.restoreScroll) {
+      const saved = sessionStorage.getItem(SCROLL_KEY(url));
+      window.scrollTo(0, saved !== null ? Number(saved) : 0);
+    } else {
+      window.scrollTo(0, 0);
+    }
   } catch (err) {
     console.error("[hibana] navigation failed, falling back to full reload:", err);
     window.location.href = url;
