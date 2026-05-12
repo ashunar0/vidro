@@ -2,12 +2,14 @@
 
 ## Status
 
-**Proposed** — 2026-05-12 (= 第 19 周目 開始時点、dogfood 着地後 Accepted に昇格)
+**Accepted** — 2026-05-12 (= 第 19 周目、dogfood 完走で着地確定)
 
 経緯:
 
 - 2026-05-11 (= 第 18 周目完走): Hibana Phase 1 Step 1-3 全完走、`.island.tsx` + `app.ts` + `vite.config.ts` だけが user 語彙の状態
-- 2026-05-12 (= 第 19 周目): Step 4 着手、(1) c.render 命名は据え置き決定 (= HonoX / Hono+Inertia と整合)、残る (2) per-route head の API shape を本 ADR で確定
+- 2026-05-12 (= 第 19 周目): Step 4 着手、(1) c.render 命名は据え置き決定 (= HonoX / Hono+Inertia と整合)、残る (2) per-route head の API shape を本 ADR で確定 + 実装 + dogfood + code-reviewer agent review (Critical 0 / Important 2、warn 化反映) + browser smoke (dynamic + static 両 case 確認、Counter island reactive 正常) + commit 51f4ea1 で着地
+
+着地時 commit: `51f4ea1 feat(hibana): ADR 0079 — per-route head via export const metadata + dogfood 第 19 周目`
 
 依存: なし (= Hibana 初 ADR、Vidro ADR 連番を継続)
 関連: `project_hibana_overview`, `project_hibana_vidro_interaction`, `feedback_dx_first_design`, `feedback_ai_first_api_design`, `project_api_design_philosophy_object_one_spread`
