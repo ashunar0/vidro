@@ -4,8 +4,13 @@
 // Step 5 (ADR 0080) dogfood (両 app): <Frame>{children}</Frame> + <Link> で
 // partial navigation を発火、persistent layout を試す。ADR 0080 が「ADR 0081 = layout 機構の
 // 本採用判断」に中立であることを実証する Phase 6 dogfood。
+//
+// 持続 island dogfood: header 右端の Counter は AppLayout 内 (= <Frame> の外) なので
+// 全 navigation で DOM が触られず、click で増やした count が `/posts` ⟷ `/about` を
+// 跨いで維持される。AboutPage 内の Counter (= <Frame> の中) と対比して観察。
 
 import { Link, Frame } from "@vidro/hibana";
+import Counter from "../domains/posts/components/Counter.island";
 
 export function AppLayout({ children }: { children: Node }) {
   return (
@@ -14,6 +19,10 @@ export function AppLayout({ children }: { children: Node }) {
         <strong>Hibana Demo (fs)</strong>
         <Link href="/posts">Posts</Link>
         <Link href="/about">About</Link>
+        <span style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+          <small>Persistent:</small>
+          <Counter initial={0} />
+        </span>
       </header>
       <div data-testid="app-layout-content">
         <Frame>{children}</Frame>
