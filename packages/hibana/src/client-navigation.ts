@@ -118,7 +118,9 @@ async function swapPartial(response: Response): Promise<boolean> {
   if (currentFrames.length === 0) return false;
 
   const html = await response.text();
-  const title = response.headers.get("X-Hibana-Title");
+  // header value は server 側で encodeURIComponent 済 (= ByteString 制約回避)、
+  // client 側で decodeURIComponent して復元する契約。
+  const rawTitle = response.headers.get("X-Hibana-Title");
 
   // partial body は最深 Frame の中身として直接代入できる (= server が wrapper 抜きで送る契約)
   // 注: islands の re-hydrate は別 Phase で server inline script 統合時に扱う、
@@ -127,7 +129,7 @@ async function swapPartial(response: Response): Promise<boolean> {
   currentInnerFrame.innerHTML = html;
 
   // <title> 更新 (= ADR 0079 metadata 反映)
-  if (title !== null) document.title = title;
+  if (rawTitle !== null) document.title = decodeURIComponent(rawTitle);
 
   return true;
 }

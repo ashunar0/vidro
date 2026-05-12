@@ -304,10 +304,14 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
         // prod minify で .name が消えると識別不能になる懸念は ADR 0080 §拡張余地として後回し。
         const layoutNames = layouts.map((L) => L.name || "Anonymous");
 
+        // HTTP header value は ByteString (= ISO-8859-1) しか許さないため、非 ASCII を含む
+        // 可能性のある title / layout name は encodeURIComponent で encode して送る。
+        // client 側 (= client-navigation.ts) は decodeURIComponent で復元する契約。
+        // 日本語 title (= 例: post.title) や non-Latin layout 名でも安全。
         return c.body(body, 200, {
           "Content-Type": "text/html; charset=utf-8",
-          "X-Hibana-Layouts": layoutNames.join(","),
-          "X-Hibana-Title": title,
+          "X-Hibana-Layouts": encodeURIComponent(layoutNames.join(",")),
+          "X-Hibana-Title": encodeURIComponent(title),
         });
       }
 
