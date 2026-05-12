@@ -31,3 +31,6 @@ dist-server
 *.njsproj
 *.sln
 *.sw?
+
+# image
+*.png

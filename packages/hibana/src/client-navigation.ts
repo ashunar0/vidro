@@ -30,6 +30,11 @@ const FRAME_SELECTOR = "hibana-frame[data-hibana-frame]";
 // session 終わったら消えるので localStorage より自然 (= 業界 default、ブラウザの scrollRestoration の代替)。
 const SCROLL_KEY = (url: string): string => `hibana:scroll:${url}`;
 
+// 並行 navigation race 対策 (= ADR 0080 review C-1): 進行中の fetch を AbortController で
+// 追跡し、新 Link click が来たら前の fetch を abort する。これがないと古い response の swap が
+// 新 navigation の DOM を上書きする可能性がある (= 前 fetch が response.text() await 中の race)。
+let currentController: AbortController | null = null;
+
 /**
  * Step 5 navigation runtime の setup。app の client bundle entry (= virtual:hibana/client-entry)
  * から 1 回呼ぶ。冪等: 2 度目以降の setup は no-op。
@@ -108,6 +113,12 @@ async function navigateTo(
     sessionStorage.setItem(SCROLL_KEY(window.location.href), String(window.scrollY));
   }
 
+  // 前の navigation が in-flight なら abort (= ADR 0080 review C-1)。
+  // 古い response の swap が新 DOM を上書きしないよう、後発が前を abort する方針。
+  currentController?.abort();
+  const controller = new AbortController();
+  currentController = controller;
+
   // ADR 0080 Phase 4: 現 DOM の Frame stack を読んで request header で server に渡す。
   // server が共通祖先計算 + 共通以下 render を返してくれる契約。
   // data-layout が無い古い SSR では空配列、commonLen = 0 で full layout 経路。
@@ -123,6 +134,7 @@ async function navigateTo(
         "X-Hibana-Current-Layouts": encodeURIComponent(currentLayouts.join(",")),
       },
       credentials: "same-origin",
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -148,6 +160,8 @@ async function navigateTo(
       window.scrollTo(0, 0);
     }
   } catch (err) {
+    // 後発 navigate に abort された場合は silent skip (= 後発が新 DOM を反映する、競合 OK)
+    if (err instanceof DOMException && err.name === "AbortError") return;
     console.error("[hibana] navigation failed, falling back to full reload:", err);
     window.location.href = url;
   }
@@ -180,7 +194,10 @@ async function swapPartial(response: Response, currentFrames: Element[]): Promis
   // client 側で decodeURIComponent して復元する契約。
   const rawTitle = response.headers.get("X-Hibana-Title");
   const commonAncestorRaw = response.headers.get("X-Hibana-Common-Ancestor");
-  const commonLen = commonAncestorRaw === null ? currentFrames.length : Number(commonAncestorRaw);
+  // header 不在は ADR 0080 partial wire に準拠していない server (= 旧版 / 別実装) を意味する。
+  // 安全側 = 0 (= 共通祖先なし) で false 返して full reload fallback に倒す (= ADR 0080 review C-2)。
+  // ここを currentFrames.length にすると意図せず最深 frame だけ swap してしまい誤動作する。
+  const commonLen = commonAncestorRaw === null ? 0 : Number(commonAncestorRaw);
 
   // commonLen = 0 → 共通祖先なし、full reload で完全に切り替えるしかない
   if (!Number.isFinite(commonLen) || commonLen < 1 || commonLen > currentFrames.length) {
