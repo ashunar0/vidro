@@ -6,9 +6,9 @@
 
 import type { MetadataFn } from "@vidro/hibana";
 import { createRoute } from "@vidro/hibana/fs";
-import type { Post } from "../../../src/domains/posts/schema.ts";
-import { getPosts } from "../../../src/domains/posts/service.ts";
-import { PostListPage } from "../../../src/pages/PostListPage.tsx";
+import type { Post } from "../../domains/posts/schema.ts";
+import { getPosts } from "../../domains/posts/service.ts";
+import { PostListPage } from "../../pages/PostListPage.tsx";
 
 export const metadata: MetadataFn<{ posts: Post[] }> = ({ posts }) => ({
   title: `Posts (${posts.length})`,

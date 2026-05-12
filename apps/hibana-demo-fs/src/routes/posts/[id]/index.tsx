@@ -3,8 +3,8 @@
 
 import type { Metadata } from "@vidro/hibana";
 import { createRoute } from "@vidro/hibana/fs";
-import { getPost } from "../../../../src/domains/posts/service.ts";
-import { PostDetailPage } from "../../../../src/pages/PostDetailPage.tsx";
+import { getPost } from "../../../domains/posts/service.ts";
+import { PostDetailPage } from "../../../pages/PostDetailPage.tsx";
 
 export const metadata: Metadata = {
   title: "Post Detail — Hibana Demo FS",

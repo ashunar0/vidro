@@ -69,8 +69,13 @@ export type HibanaViteOptions = {
   islandGlob?: string;
   /**
    * filesystem-based routing の root directory (= `@vidro/hibana/fs` 利用時のみ)。
-   * default: `/app/routes` (= HonoX 整合)。virtual:hibana/fs-routes が
+   * default: `/src/routes` (= Vite/Node 慣習 + Vidro 側 apps 整合)。virtual:hibana/fs-routes が
    * `${fsRoutesRoot}/**\/*.tsx` を glob 発見する。
+   *
+   * 第 21 周目で `/app/routes` (= HonoX 流) から `/src/routes` に変更:
+   *   - Hibana は HonoX との差別化が identity の核なので /app/ 規約を借りる必要なし
+   *   - Vidro 側 apps (= apps/vidro-tutorial 等) と命名揃え
+   *   - `app.ts` (= Hono instance entry) と `app/` directory の命名衝突回避
    *
    * handler-based 版 (= 既存 apps/hibana-demo) では virtual:hibana/fs-routes を
    * import しないので無視される (= 配置されてれば glob 走るが entry 0 で問題なし)。
@@ -90,7 +95,7 @@ export type HibanaViteOptions = {
  */
 export function hibanaVite(options: HibanaViteOptions = {}): Plugin {
   const glob = options.islandGlob ?? "/src/**/*.island.tsx";
-  const fsRoutesRoot = options.fsRoutesRoot ?? "/app/routes";
+  const fsRoutesRoot = options.fsRoutesRoot ?? "/src/routes";
 
   return {
     name: "vidro-hibana-islands",
@@ -139,13 +144,13 @@ setupIslandHydration(islandMap);
       if (id === RESOLVED_FS_ROUTES_ID) {
         // filesystem-based routing の fsRoutes 配列を生成する virtual module。
         //
-        // 規約 (HonoX 流):
-        //   /app/routes/_renderer.tsx           → root layout
-        //   /app/routes/<seg>/_renderer.tsx     → /<seg>/* に scoped layout
-        //   /app/routes/index.tsx                → GET /
-        //   /app/routes/<seg>/index.tsx          → GET /<seg>
-        //   /app/routes/<seg>/[id]/index.tsx     → GET /<seg>/:id
-        //   /app/routes/<seg>/[id].tsx           → GET /<seg>/:id (= 単体ファイル形式も対応)
+        // 規約 (HonoX 流の命名 pattern を /src/routes 配下に展開):
+        //   /src/routes/_renderer.tsx           → root layout
+        //   /src/routes/<seg>/_renderer.tsx     → /<seg>/* に scoped layout
+        //   /src/routes/index.tsx                → GET /
+        //   /src/routes/<seg>/index.tsx          → GET /<seg>
+        //   /src/routes/<seg>/[id]/index.tsx     → GET /<seg>/:id
+        //   /src/routes/<seg>/[id].tsx           → GET /<seg>/:id (= 単体ファイル形式も対応)
         //
         // 各 route の layouts は、parent dir 階層の _renderer.tsx を順に集めて [親, 子] 配列に。
         // Hono の middleware execution order に乗らない (= filesystem-based は middleware ではない)
