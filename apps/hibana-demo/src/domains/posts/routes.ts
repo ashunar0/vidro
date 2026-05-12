@@ -10,15 +10,18 @@ import PostListPage from "./pages/PostListPage.tsx";
 import PostDetailPage from "./pages/PostDetailPage.tsx";
 import { getPost, getPosts } from "./service.ts";
 
-export const postsRoutes = new Hono();
-
-postsRoutes.get("/", (c) => {
-  const posts = getPosts();
-  return c.render(PostListPage, { posts });
-});
-
-postsRoutes.get("/:id", (c) => {
-  const post = getPost(c.req.param("id"));
-  if (!post) return c.notFound();
-  return c.render(PostDetailPage, { post });
-});
+// chain 形式で書く理由 (= Hono の TS 型 inference 要件):
+//   - `c.req.param("id")` の path param 型を narrow するため
+//   - 将来 hc<typeof postsRoutes> で RPC client 型接続するため
+//   - middleware を `.use(...)` で chain に組み込むと c.var の型流入が handler に届くため
+// 文として分けると Hono の builder pattern が型を引き継げず inference が切れる。
+export const postsRoutes = new Hono()
+  .get("/", (c) => {
+    const posts = getPosts();
+    return c.render(PostListPage, { posts });
+  })
+  .get("/:id", (c) => {
+    const post = getPost(c.req.param("id"));
+    if (!post) return c.notFound();
+    return c.render(PostDetailPage, { post });
+  });
