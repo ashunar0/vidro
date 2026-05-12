@@ -1,17 +1,25 @@
 // @vidro/hibana — Vidro の sibling、Hono の上に薄く乗る backend 主導 FW。
-// Phase 1 Step 4 (ADR 0079) 着手時点の API:
+// Phase 1 Step 5 (ADR 0080) 着手時点の API:
 //   - `hibana()` middleware: Hono の `c.render(Component, props)` を SSR HTML として返す
 //   - per-route head は page module の `export const metadata` で扱う (= ADR 0079)
 //   - `.island.tsx` の auto-wrap / 自動発見 / virtual client entry は `@vidro/hibana/vite` plugin が担当
 //   - `defineIsland` は internal helper として `@vidro/hibana/internal` に移動 (= user 語彙から消えた)
+//   - `Link` / `Frame` component を export (= ADR 0080、HTML swap navigation の opt-in API)
 //
 // 設計書: ~/brain/docs/backend-first FW 設計骨格.md
 // roadmap: docs/roadmap-hibana.md
 // ADR: docs/decisions/0079-hibana-per-route-head-via-export-metadata.md
+// ADR: docs/decisions/0080-hibana-html-swap-navigation.md
 
 import type { MiddlewareHandler } from "hono";
 import { h } from "@vidro/core";
 import { renderToString } from "@vidro/core/server";
+
+// ADR 0080: Step 5 (HTML swap navigation) の user-facing components
+export { Link } from "./link.js";
+export type { LinkProps } from "./link.js";
+export { Frame } from "./frame.js";
+export type { FrameProps } from "./frame.js";
 
 // Hibana の component 型 (server-side、関数参照ベース)。
 // 関数参照で受け取るのは Inertia のような文字列識別子と違い、TS の型推論 / リファクタ追従 /
