@@ -26,11 +26,65 @@ type Component<P = Record<string, unknown>> = (props: P) => Node | Promise<Node>
 // 2-arg shape を提供する。HonoX も同名 c.render を生やすが意味が違う (HonoX は JSX content、
 // Hibana は関数参照 + props)。HonoX との併用は想定しない (= Hibana 単独で完結)。
 // 第 19 周目 (= ADR 0079 起票時) に c.render は据え置き決定 (= API surface を太らせない)。
+//
+// ContextVariableMap には Hibana 内部状態 (= layout stack) を hibana 名前空間で 1 個積む。
+// stack に直接アクセスする想定はない (= hibanaLayout middleware と renderer 経由でのみ操作)、
+// user が `c.var.hibanaLayouts` を直接読む API 設計ではない点に注意。
 declare module "hono" {
   interface ContextRenderer {
     <P>(component: Component<P>, props?: P): Response | Promise<Response>;
   }
+  interface ContextVariableMap {
+    /**
+     * hibanaLayout middleware が push する layout component の stack。
+     * Hono の middleware execution order (= 親 router の `.use("*")` → 子 router の
+     * `.use("*")` の順) で push されるので、renderer 側で reduceRight すれば
+     * 親 layout が外側、子 layout が内側、page が最内、という自然な nested wrap になる。
+     */
+    hibanaLayouts?: LayoutComponent[];
+  }
 }
+
+// ── handler-based layout (Step 4 (3)) ────────────────────────────────────────
+
+/**
+ * layout component の型。children を受け取って JSX を返す関数 component。
+ * Hibana の Component<P> と shape は近いが、`children: Node` を P の固定 field として
+ * 持つ点で別エイリアスにしてある (= signature を doc 化するため)。
+ *
+ * page 用の Component<P> は props 経由で children を受けない想定 (= page は終端)、
+ * Layout だけが children を受ける、という責務の差を型で見せる。
+ */
+export type LayoutComponent = (props: { children: Node }) => Node | Promise<Node>;
+
+/**
+ * Hono の `.use(...)` に渡す layout 適用 middleware。
+ *
+ * 例:
+ *   const app = new Hono()
+ *     .use("*", hibanaLayout(AppLayout))         // 全体
+ *     .route("/posts", postsRoutes);
+ *
+ *   const postsRoutes = new Hono()
+ *     .use("*", hibanaLayout(PostsLayout))       // /posts/* にだけ被せる
+ *     .get("/", (c) => c.render(PostListPage, {...}));
+ *
+ * Hono の middleware execution order に乗ることで nested layout は自動で動く:
+ *   /posts/ リクエスト時 → AppLayout が push → PostsLayout が push →
+ *   handler の c.render() 時に stack = [AppLayout, PostsLayout]、
+ *   renderer 側で reduceRight して `<AppLayout><PostsLayout><Page/></PostsLayout></AppLayout>` に組まれる
+ *
+ * 機構的には c.var.hibanaLayouts に immutable な配列を持たせて、`[...prev, Layout]` で
+ * push するだけの薄い middleware。stack を直接持たず spread コピーする理由は、HMR や
+ * 並列 request で前回の stack が漏れ込む事故を防ぐため (= 各 request の context は独立)。
+ */
+export const hibanaLayout = (Layout: LayoutComponent): MiddlewareHandler => {
+  return async (c, next) => {
+    const current = c.get("hibanaLayouts") ?? [];
+    c.set("hibanaLayouts", [...current, Layout]);
+    await next();
+  };
+};
 
 // ── per-route head (ADR 0079) ────────────────────────────────────────────────
 
@@ -169,11 +223,13 @@ const buildHeadHtml = (
  * 流れ:
  *   1. c.setRenderer で c.render を Hibana 仕様 (= 関数参照 + props) に置き換え
  *   2. Component の `.metadata` を読んで shell HTML の <head> を組み立てる (= ADR 0079)
- *   3. @vidro/core の renderToString が JSX 木を server renderer で評価して HTML body に焼く
- *   4. 完成した shell HTML で wrap して c.html で返す
+ *   3. c.var.hibanaLayouts (= hibanaLayout middleware が積んだ stack) を reduceRight で
+ *      wrap し、`<L1><L2><...><Page/></...></L2></L1>` の nested 木を組み立てる
+ *   4. @vidro/core の renderToString が JSX 木を server renderer で評価して HTML body に焼く
+ *   5. 完成した shell HTML で wrap して c.html で返す
  *
- * 現状の制約 (Phase 1 Step 4 (1)+(2) 着手時点):
- *   - parent layout の metadata merge は未実装 (= Step 4 (3) layout pattern で扱う)
+ * 現状の制約 (Phase 1 Step 4 (3) 着手時点):
+ *   - parent layout の metadata merge は未実装 (= dogfood で困ったら検討、現状 page metadata のみ)
  *   - client-side document.title 更新は未実装 (= Step 5 navigation で扱う)
  *   - navigation (= HTML swap) なし (= Step 5)
  *   - prod runtime entry (= Node 起動 + serveStatic) は未実装 (= Step 6)
@@ -191,7 +247,28 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
       props?: Record<string, unknown>,
     ) => {
       const headHtml = buildHeadHtml(component, props, defaultTitle, scriptTag);
-      const body = renderToString(() => h(component, props ?? null));
+      // layout stack を取り出して reduceRight で nested wrap。stack が空なら page 直叩き。
+      // reduceRight にする理由: stack は [親, 子] 順で push されるので、最後 (子) から
+      // 反転して `h(子Layout, {children: h(page)})` を作り、次に `h(親Layout, {children: ...})` で
+      // 包む。結果として親が外側、子が内側、page が最内 = JSX 木として正しい nested 構造になる。
+      //
+      // 重要: h() の呼び出しは **必ず renderToString の callback 内** で実行する。
+      // renderToString が ALS で server renderer scope を立ち上げて初めて、h() が server 側
+      // (= 文字列出力) に振れる。callback 外で h() を呼ぶと client renderer (= document API)
+      // 経由で評価されて `document is not defined` で落ちる。
+      const layouts = c.get("hibanaLayouts") ?? [];
+      const body = renderToString(() => {
+        const pageNode = h(component, props ?? null);
+        // LayoutComponent (= `{children: Node}` 受け) は parameter contravariance で h() の
+        // ComponentFn (= `Record<string, unknown>` 受け) に直接代入不可。`as unknown as
+        // ComponentFn` の 2 段階 cast で意図を明示 (= `as never` は型穴を黙らせるだけで、
+        // shape 変更を検知できない code-review 指摘を反映)。
+        return layouts.reduceRight<Node>(
+          (children, Layout) =>
+            h(Layout as unknown as (p: Record<string, unknown>) => Node, { children }),
+          pageNode,
+        );
+      });
       const html = `<!DOCTYPE html>
 <html>
   <head>
