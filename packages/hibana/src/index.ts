@@ -42,6 +42,14 @@ declare module "hono" {
      * 親 layout が外側、子 layout が内側、page が最内、という自然な nested wrap になる。
      */
     hibanaLayouts?: LayoutComponent[];
+    /**
+     * filesystem-based 版 (= @vidro/hibana/fs) の createFsApp が、route file 側
+     * `export const metadata` を c.set で積む経路 (= ADR 0080 候補の解 a)。
+     * hibana() middleware の renderer が c.var.hibanaRouteMetadata を読んで、無ければ
+     * Component.metadata (= ADR 0079 既存経路) にフォールバック。
+     * declare は @vidro/hibana 単独 import でも augment が効くよう core 側に置く。
+     */
+    hibanaRouteMetadata?: Metadata | MetadataFn<unknown>;
   }
 }
 
@@ -160,9 +168,16 @@ const escapeHtml = (s: string): string =>
 
 // ADR 0079: metadata を抽出して shell HTML の <head> 部分文字列に焼く。
 //
-// Component の `.metadata` プロパティは Vite plugin の transform が default export に
-// attach する (= page module の `export const metadata` を読んで attach、@vidro/hibana/vite 参照)。
-// function 形式なら props 渡して eval、object 形式ならそのまま使う。両方無ければ undefined。
+// 取得経路は 2 つあり、優先順位は route metadata > component metadata:
+//   1. route metadata (= c.var.hibanaRouteMetadata、filesystem-based 版 @vidro/hibana/fs 用)
+//      route file 側の `export const metadata` を Vite plugin が import し、createFsApp の
+//      handler wrapper が c.set で積んだもの。第 21 周目で追加 (解 a)。
+//   2. component metadata (= Component の .metadata プロパティ、handler-based 版用)
+//      page module の `export const metadata` を Vite plugin の transformMetadata が
+//      default export に attach したもの (= ADR 0079 既存経路)。
+// 両方なければ undefined で default fallback (= options.title など)。
+//
+// function 形式なら props 渡して eval、object 形式ならそのまま使う。
 //
 // Merge ルール (v1、ADR 0079 §Merge ルール):
 //   - title / description / charset / viewport = page metadata が設定してれば override (= 後勝ち)
@@ -172,8 +187,10 @@ const buildHeadHtml = (
   props: Record<string, unknown> | undefined,
   defaultTitle: string,
   scriptTag: string,
+  routeMetadata?: Metadata | MetadataFn<unknown>,
 ): string => {
-  const rawMetadata = (component as { metadata?: Metadata | MetadataFn<unknown> }).metadata;
+  const componentMetadata = (component as { metadata?: Metadata | MetadataFn<unknown> }).metadata;
+  const rawMetadata = routeMetadata ?? componentMetadata;
   const metadata: Metadata | undefined =
     typeof rawMetadata === "function"
       ? (rawMetadata as MetadataFn<unknown>)(props as unknown)
@@ -246,7 +263,8 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
       component: Component<Record<string, unknown>>,
       props?: Record<string, unknown>,
     ) => {
-      const headHtml = buildHeadHtml(component, props, defaultTitle, scriptTag);
+      const routeMetadata = c.get("hibanaRouteMetadata");
+      const headHtml = buildHeadHtml(component, props, defaultTitle, scriptTag, routeMetadata);
       // layout stack を取り出して reduceRight で nested wrap。stack が空なら page 直叩き。
       // reduceRight にする理由: stack は [親, 子] 順で push されるので、最後 (子) から
       // 反転して `h(子Layout, {children: h(page)})` を作り、次に `h(親Layout, {children: ...})` で

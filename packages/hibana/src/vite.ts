@@ -51,6 +51,13 @@ const RESOLVED_VIRTUAL_ID = "\0" + VIRTUAL_ID;
 const CLIENT_ENTRY_ID = "virtual:hibana/client-entry";
 const RESOLVED_CLIENT_ENTRY_ID = "\0" + CLIENT_ENTRY_ID;
 
+// filesystem-based routing (= @vidro/hibana/fs と並走比較版、第 21 周目で追加)。
+// `/app/routes/**/*.tsx` を glob 発見して fsRoutes 配列を提供する virtual module。
+// user は `import { fsRoutes } from "virtual:hibana/fs-routes"` で受け取り、
+// `createFsApp(fsRoutes, options)` で Hono app を組み立てる。
+const FS_ROUTES_ID = "virtual:hibana/fs-routes";
+const RESOLVED_FS_ROUTES_ID = "\0" + FS_ROUTES_ID;
+
 export type HibanaViteOptions = {
   /**
    * `.island.tsx` の glob pattern。vite の root からの絶対パス (= `/` 始まり) で書く。
@@ -60,6 +67,15 @@ export type HibanaViteOptions = {
    * `src/domains/posts/components/Counter.island.tsx`) も `**` で再帰的に拾える。
    */
   islandGlob?: string;
+  /**
+   * filesystem-based routing の root directory (= `@vidro/hibana/fs` 利用時のみ)。
+   * default: `/app/routes` (= HonoX 整合)。virtual:hibana/fs-routes が
+   * `${fsRoutesRoot}/**\/*.tsx` を glob 発見する。
+   *
+   * handler-based 版 (= 既存 apps/hibana-demo) では virtual:hibana/fs-routes を
+   * import しないので無視される (= 配置されてれば glob 走るが entry 0 で問題なし)。
+   */
+  fsRoutesRoot?: string;
 };
 
 /**
@@ -74,6 +90,7 @@ export type HibanaViteOptions = {
  */
 export function hibanaVite(options: HibanaViteOptions = {}): Plugin {
   const glob = options.islandGlob ?? "/src/**/*.island.tsx";
+  const fsRoutesRoot = options.fsRoutesRoot ?? "/app/routes";
 
   return {
     name: "vidro-hibana-islands",
@@ -84,6 +101,7 @@ export function hibanaVite(options: HibanaViteOptions = {}): Plugin {
     resolveId(id: string) {
       if (id === VIRTUAL_ID) return RESOLVED_VIRTUAL_ID;
       if (id === CLIENT_ENTRY_ID) return RESOLVED_CLIENT_ENTRY_ID;
+      if (id === FS_ROUTES_ID) return RESOLVED_FS_ROUTES_ID;
       return null;
     },
 
@@ -115,6 +133,89 @@ export const islandMap = Object.fromEntries(
 import { setupIslandHydration } from "@vidro/hibana/client";
 import { islandMap } from "virtual:hibana/islands";
 setupIslandHydration(islandMap);
+`;
+      }
+
+      if (id === RESOLVED_FS_ROUTES_ID) {
+        // filesystem-based routing の fsRoutes 配列を生成する virtual module。
+        //
+        // 規約 (HonoX 流):
+        //   /app/routes/_renderer.tsx           → root layout
+        //   /app/routes/<seg>/_renderer.tsx     → /<seg>/* に scoped layout
+        //   /app/routes/index.tsx                → GET /
+        //   /app/routes/<seg>/index.tsx          → GET /<seg>
+        //   /app/routes/<seg>/[id]/index.tsx     → GET /<seg>/:id
+        //   /app/routes/<seg>/[id].tsx           → GET /<seg>/:id (= 単体ファイル形式も対応)
+        //
+        // 各 route の layouts は、parent dir 階層の _renderer.tsx を順に集めて [親, 子] 配列に。
+        // Hono の middleware execution order に乗らない (= filesystem-based は middleware ではない)
+        // ため、createFsApp の handler wrapper が毎 request で stack 初期化的に set する。
+        //
+        // route file の `export const metadata` も module export として import される
+        // (= `mod.metadata` 参照)、ADR 0079 経路の Component.metadata と並走可能。
+        //
+        // import.meta.glob を eager にして全 module を build 時 / dev start 時に統合 import、
+        // module の path から URL pattern を計算、ranking 不要 (= Hono 側の matcher に委ねる)。
+        //
+        // path prefix 比較は fsRoutesRoot (= vite root 起点 absolute) で統一する
+        // (= code-review [1] 反映、`String.prototype.replace` の最初一致依存を slice + startsWith
+        // に置き換え)。[2] の glob path 形式への configResolved 経由の完全 absolute 化は、
+        // 実装時に確認したところ vite の `import.meta.glob` は glob pattern と同じ vite root
+        // 起点 absolute (= "/app/routes/posts/index.tsx" 形式) で result path を返す安定仕様で、
+        // 完全 absolute 化は不要 (= overengineering と判断、startsWith 比較自体が形式変更耐性に
+        // 寄与する)。
+        return `
+const modules = import.meta.glob(${JSON.stringify(fsRoutesRoot + "/**/*.tsx")}, { eager: true });
+const ROOT = ${JSON.stringify(fsRoutesRoot)};
+
+// 第 1 パス: _renderer.tsx を直 path → layout default export の map に
+const layoutsByDir = {};
+for (const [path, mod] of Object.entries(modules)) {
+  const m = path.match(/^(.+)\\/_renderer\\.tsx$/);
+  if (m) layoutsByDir[m[1]] = mod.default;
+}
+
+// 第 2 パス: route file を発見、Hono path + layouts + metadata + handler を組み立てる
+const routes = [];
+for (const [path, mod] of Object.entries(modules)) {
+  if (path.endsWith("/_renderer.tsx")) continue;
+  if (!path.endsWith(".tsx")) continue;
+  if (!mod.default) continue;  // default export 無い file は route ではない (= warn 候補、v1 では skip)
+  if (!path.startsWith(ROOT)) continue;  // 想定外 path を防御的に skip
+
+  // URL path: ROOT prefix を slice で外し、/index.tsx と .tsx を落とし、[id] → :id
+  // 例: ROOT/posts/[id]/index.tsx → /posts/:id
+  //     ROOT/posts/index.tsx       → /posts
+  //     ROOT/index.tsx             → /
+  let urlPath = path.slice(ROOT.length);
+  urlPath = urlPath.replace(/\\/index\\.tsx$/, "");
+  urlPath = urlPath.replace(/\\.tsx$/, "");
+  urlPath = urlPath.replace(/\\[([^\\]]+)\\]/g, ":$1");
+  if (urlPath === "") urlPath = "/";
+
+  // 親 dirs を順に辿って _renderer.tsx があれば layouts に追加 (= 親が先、子が後)
+  const dirPath = path.replace(/\\/[^/]+\\.tsx$/, "");
+  const appliedLayouts = [];
+  if (dirPath.startsWith(ROOT)) {
+    let cur = ROOT;
+    if (layoutsByDir[cur]) appliedLayouts.push(layoutsByDir[cur]);
+    const restSegments = dirPath.slice(ROOT.length).split("/").filter(Boolean);
+    for (const seg of restSegments) {
+      cur += "/" + seg;
+      if (layoutsByDir[cur]) appliedLayouts.push(layoutsByDir[cur]);
+    }
+  }
+
+  routes.push({
+    method: "GET",
+    path: urlPath,
+    handler: mod.default,
+    metadata: mod.metadata,
+    layouts: appliedLayouts,
+  });
+}
+
+export const fsRoutes = routes;
 `;
       }
 

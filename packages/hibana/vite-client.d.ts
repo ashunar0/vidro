@@ -17,3 +17,11 @@ declare module "virtual:hibana/islands" {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export const islandMap: Record<string, (props: any) => Node>;
 }
+
+declare module "virtual:hibana/fs-routes" {
+  // filesystem-based routing 用の route 配列。Vite plugin (= @vidro/hibana/vite) が
+  // /app/routes/**/*.tsx を glob 発見して entry を組み立てる。`createFsApp(fsRoutes, options)`
+  // に渡して Hono app を build する用途。詳細は @vidro/hibana/fs の FsRouteEntry を参照。
+  import type { FsRouteEntry } from "@vidro/hibana/fs";
+  export const fsRoutes: FsRouteEntry[];
+}
