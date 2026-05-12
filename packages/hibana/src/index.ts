@@ -272,7 +272,46 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
       props?: Record<string, unknown>,
     ) => {
       const routeMetadata = c.get("hibanaRouteMetadata");
-      const headHtml = buildHeadHtml(component, props, defaultTitle, scriptTag, routeMetadata);
+      const layouts = c.get("hibanaLayouts") ?? [];
+
+      // ADR 0080 Phase 3: partial mode 判定。client-navigation.ts が <Link> click intercept で
+      // `Accept: text/html;hibana-partial` を送ってきた時だけ partial response を返す。
+      // 通常の browser navigation (= MPA、Accept: text/html) は既存 full HTML を返す経路。
+      // 兼用 endpoint なので JS 切れた状態 / 書き忘れ素 <a> も graceful degradation で動く。
+      const accept = c.req.header("Accept") ?? "";
+      const isPartial = accept.includes("hibana-partial");
+
+      if (isPartial) {
+        // partial mode: layout chain skip、page だけ render。
+        // raw body は <hibana-frame> 等の wrapper 無し、純粋な page content のみ。
+        // client は受け取った body を現 DOM の最深 <hibana-frame> の innerHTML に直接代入する。
+        const body = renderToString(() => h(component, props ?? null));
+
+        // ADR 0079 metadata から title だけ抽出して header で送る。
+        // <meta> / <link> 更新は v1 では skip (= dogfood で困ったら Phase 5 で対応)。
+        const componentMetadata = (component as { metadata?: Metadata | MetadataFn<unknown> })
+          .metadata;
+        const rawMetadata = routeMetadata ?? componentMetadata;
+        const metadata: Metadata | undefined =
+          typeof rawMetadata === "function"
+            ? (rawMetadata as MetadataFn<unknown>)(props as unknown)
+            : rawMetadata;
+        const title = metadata?.title ?? defaultTitle;
+
+        // layout stack の name list を header で送る (= Phase 4 で client 側が共通祖先計算に使う)。
+        // function .name は declaration name (例: `function PostsLayout` → "PostsLayout")、
+        // anonymous の場合は "Anonymous" を fallback として置く。
+        // prod minify で .name が消えると識別不能になる懸念は ADR 0080 §拡張余地として後回し。
+        const layoutNames = layouts.map((L) => L.name || "Anonymous");
+
+        return c.body(body, 200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "X-Hibana-Layouts": layoutNames.join(","),
+          "X-Hibana-Title": title,
+        });
+      }
+
+      // 通常経路 (= full HTML response、MPA / 直 fetch / JS 切れ環境用)。
       // layout stack を取り出して reduceRight で nested wrap。stack が空なら page 直叩き。
       // reduceRight にする理由: stack は [親, 子] 順で push されるので、最後 (子) から
       // 反転して `h(子Layout, {children: h(page)})` を作り、次に `h(親Layout, {children: ...})` で
@@ -282,7 +321,7 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
       // renderToString が ALS で server renderer scope を立ち上げて初めて、h() が server 側
       // (= 文字列出力) に振れる。callback 外で h() を呼ぶと client renderer (= document API)
       // 経由で評価されて `document is not defined` で落ちる。
-      const layouts = c.get("hibanaLayouts") ?? [];
+      const headHtml = buildHeadHtml(component, props, defaultTitle, scriptTag, routeMetadata);
       const body = renderToString(() => {
         const pageNode = h(component, props ?? null);
         // LayoutComponent (= `{children: Node}` 受け) は parameter contravariance で h() の
