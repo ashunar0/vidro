@@ -174,6 +174,30 @@ const escapeHtml = (s: string): string =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+// ADR 0080 Phase 4: 2 つの layout name 配列の共通 prefix の長さを返す。
+// `[AppLayout, PostsLayout]` と `[AppLayout, AboutLayout]` → 1 (= AppLayout だけ共通)。
+// 同 stack なら length そのもの、完全に異なれば 0。
+const commonPrefixLength = (a: string[], b: string[]): number => {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+};
+
+// ADR 0080 Phase 4: renderToString が吐く `<hibana-frame data-hibana-frame="">` の marker に
+// 出現順 (= document order = nested の外→内) で layoutNames を `data-layout="..."` として
+// inject する。client は data-layout を読んで現 DOM の Frame stack を識別、共通祖先計算する。
+//
+// 規約: layout 1 個に Frame 1 個。layout 数を超える Frame は marker のまま (= page 内に
+// Frame 書いた等のエッジケースは v1 では sloppy に許容、dogfood で困ったら ADR 拡張余地)。
+const injectLayoutNames = (html: string, layoutNames: string[]): string => {
+  let i = 0;
+  return html.replaceAll('<hibana-frame data-hibana-frame="">', (match) => {
+    const name = layoutNames[i++];
+    if (!name) return match;
+    return `<hibana-frame data-hibana-frame="" data-layout="${escapeHtml(name)}">`;
+  });
+};
+
 // ADR 0079: metadata を抽出して shell HTML の <head> 部分文字列に焼く。
 //
 // 取得経路は 2 つあり、優先順位は route metadata > component metadata:
@@ -273,6 +297,7 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
     ) => {
       const routeMetadata = c.get("hibanaRouteMetadata");
       const layouts = c.get("hibanaLayouts") ?? [];
+      const layoutNames = layouts.map((L) => L.name || "Anonymous");
 
       // ADR 0080 Phase 3: partial mode 判定。client-navigation.ts が <Link> click intercept で
       // `Accept: text/html;hibana-partial` を送ってきた時だけ partial response を返す。
@@ -282,10 +307,39 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
       const isPartial = accept.includes("hibana-partial");
 
       if (isPartial) {
-        // partial mode: layout chain skip、page だけ render。
-        // raw body は <hibana-frame> 等の wrapper 無し、純粋な page content のみ。
-        // client は受け取った body を現 DOM の最深 <hibana-frame> の innerHTML に直接代入する。
-        const body = renderToString(() => h(component, props ?? null));
+        // ADR 0080 Phase 4: 共通祖先計算 + 共通以下 render。
+        // client が `X-Hibana-Current-Layouts` で「現 DOM の layout stack」を送ってくれるので、
+        // それと server 側の新 stack を比較して **共通 prefix** を見つけ、共通祖先以下の
+        // layout 群 + page を nested で render する。client は同じ計算をして swap target
+        // (= 共通祖先 Frame) の innerHTML を partial body で置き換える。
+        //
+        // 例: 現 [AppLayout, PostsLayout] → 新 [AppLayout, AboutLayout] なら
+        //     commonLen = 1、render = <AboutLayout><AboutPage /></AboutLayout>、
+        //     client は currentFrames[0] (= Frame(AppLayout)) の innerHTML を置換。
+        //
+        // X-Hibana-Current-Layouts が無い (= 初回 / 旧 client / Frame 配置されてない) ケースは
+        // commonLen = 0 にして全 layout を render する (= 機能的には full layout、ただし
+        // partial response として送る、client が full reload fallback してくれる前提)。
+        const currentRaw = c.req.header("X-Hibana-Current-Layouts") ?? "";
+        const currentLayouts = currentRaw
+          ? decodeURIComponent(currentRaw).split(",").filter(Boolean)
+          : [];
+        const commonLen = commonPrefixLength(currentLayouts, layoutNames);
+        const layoutsBelow = layouts.slice(commonLen);
+        const namesBelow = layoutNames.slice(commonLen);
+
+        const rawBody = renderToString(() => {
+          const pageNode = h(component, props ?? null);
+          return layoutsBelow.reduceRight<Node>(
+            (children, Layout) =>
+              h(Layout as unknown as (p: Record<string, unknown>) => Node, { children }),
+            pageNode,
+          );
+        });
+        // body 内の `<hibana-frame>` marker に data-layout を順次 inject。
+        // partial response では「共通祖先以下の layout」だけが render 結果に含まれるので、
+        // inject に使う name list は namesBelow (= 全 stack ではなく差分以下)。
+        const body = injectLayoutNames(rawBody, namesBelow);
 
         // ADR 0079 metadata から title だけ抽出して header で送る。
         // <meta> / <link> 更新は v1 では skip (= dogfood で困ったら Phase 5 で対応)。
@@ -298,20 +352,19 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
             : rawMetadata;
         const title = metadata?.title ?? defaultTitle;
 
-        // layout stack の name list を header で送る (= Phase 4 で client 側が共通祖先計算に使う)。
-        // function .name は declaration name (例: `function PostsLayout` → "PostsLayout")、
-        // anonymous の場合は "Anonymous" を fallback として置く。
-        // prod minify で .name が消えると識別不能になる懸念は ADR 0080 §拡張余地として後回し。
-        const layoutNames = layouts.map((L) => L.name || "Anonymous");
-
         // HTTP header value は ByteString (= ISO-8859-1) しか許さないため、非 ASCII を含む
         // 可能性のある title / layout name は encodeURIComponent で encode して送る。
         // client 側 (= client-navigation.ts) は decodeURIComponent で復元する契約。
         // 日本語 title (= 例: post.title) や non-Latin layout 名でも安全。
+        //
+        // X-Hibana-Common-Ancestor: client が swap target Frame を選ぶ index ヒント。
+        // commonLen = 0 → 共通祖先なし (= 完全 swap 必要、client は full reload にしてもよい)。
+        // commonLen = 1 → currentFrames[0] (= Frame(AppLayout)) を swap target。
         return c.body(body, 200, {
           "Content-Type": "text/html; charset=utf-8",
           "X-Hibana-Layouts": encodeURIComponent(layoutNames.join(",")),
           "X-Hibana-Title": encodeURIComponent(title),
+          "X-Hibana-Common-Ancestor": String(commonLen),
         });
       }
 
@@ -326,7 +379,7 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
       // (= 文字列出力) に振れる。callback 外で h() を呼ぶと client renderer (= document API)
       // 経由で評価されて `document is not defined` で落ちる。
       const headHtml = buildHeadHtml(component, props, defaultTitle, scriptTag, routeMetadata);
-      const body = renderToString(() => {
+      const rawBody = renderToString(() => {
         const pageNode = h(component, props ?? null);
         // LayoutComponent (= `{children: Node}` 受け) は parameter contravariance で h() の
         // ComponentFn (= `Record<string, unknown>` 受け) に直接代入不可。`as unknown as
@@ -338,6 +391,10 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
           pageNode,
         );
       });
+      // Phase 4: full HTML 経路でも `<hibana-frame>` に data-layout を inject。
+      // 初回 SSR で client が読む marker を server が source-of-truth として埋め込むため。
+      // 順序: layouts = [親, ..., 子] と body 内 Frame 出現順 (= document order) が一致する前提。
+      const body = injectLayoutNames(rawBody, layoutNames);
       const html = `<!DOCTYPE html>
 <html>
   <head>

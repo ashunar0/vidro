@@ -69,12 +69,20 @@ async function handleClick(event: MouseEvent): Promise<void> {
 
   const url = link.href;
 
+  // ADR 0080 Phase 4: 現 DOM の Frame stack を読んで request header で server に渡す。
+  // server が共通祖先計算 + 共通以下 render を返してくれる契約。
+  // data-layout が無い古い SSR では空配列、commonLen = 0 で full layout 経路。
+  const currentFrames = Array.from(document.querySelectorAll(FRAME_SELECTOR));
+  const currentLayouts = currentFrames
+    .map((f) => f.getAttribute("data-layout") ?? "")
+    .filter(Boolean);
+
   try {
-    // ADR 0080 Phase 3: partial wire を要求する。server side が Accept header を見て
-    // partial / full を切り替える。tolerant server (= 未対応 Hibana 実装) には Accept
-    // header を無視して full HTML を返すケースもあるので、Content-Type で判定して fallback。
     const response = await fetch(url, {
-      headers: { Accept: "text/html;hibana-partial" },
+      headers: {
+        Accept: "text/html;hibana-partial",
+        "X-Hibana-Current-Layouts": encodeURIComponent(currentLayouts.join(",")),
+      },
       credentials: "same-origin",
     });
 
@@ -84,7 +92,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
       return;
     }
 
-    const ok = await swapPartial(response);
+    const ok = await swapPartial(response, currentFrames);
     if (!ok) {
       // Frame marker 不在 (= layout に Frame 書き忘れ等) → full reload fallback
       window.location.href = url;
@@ -99,34 +107,45 @@ async function handleClick(event: MouseEvent): Promise<void> {
 }
 
 /**
- * partial response の body を現 DOM の最深 `<hibana-frame data-hibana-frame>` に
- * 直接代入する。
+ * partial response の body を共通祖先 Frame の innerHTML に直接代入する。
  *
- * partial wire 仕様 (= ADR 0080 §Wire spec):
- *   - body = 純粋な page content (= 最深 Frame の中身、wrapper 無し)
+ * ADR 0080 Phase 4 wire 仕様:
+ *   - body = 共通祖先以下の layout 群 + page を nested で render したもの (= server が計算)
+ *   - X-Hibana-Common-Ancestor header = commonLen (= 共通祖先 Frame の index + 1)
+ *   - X-Hibana-Layouts header = 完全な new layout name stack
  *   - X-Hibana-Title header = ADR 0079 metadata の title 値
- *   - X-Hibana-Layouts header = layout name list (= Phase 4 で共通祖先計算に使う)
  *
- * 「最深」= NodeList の最後の entry。document order で後ろに来る = 入れ子の内側、なので
- * 親 layout > 子 layout > page の nested 構造なら最も内側の Frame が最後の要素になる
- * (Phase 4 で共通祖先計算に拡張、X-Hibana-Layouts を比較して swap 範囲を決定)。
+ * swap target の選び方:
+ *   - commonLen = 0 → 共通祖先なし (= AppLayout すら違う、完全 swap 必要) → full reload fallback
+ *   - commonLen = 1 → currentFrames[0] (= Frame(AppLayout)) を swap target
+ *   - commonLen = n → currentFrames[n - 1] を swap target
  *
- * @returns 成功なら true、現 DOM に frame marker が無ければ false。
+ * 例: 現 [AppLayout, PostsLayout] → 新 [AppLayout, AboutLayout]
+ *     commonLen = 1、swap = currentFrames[0] の innerHTML に partial body (= AboutLayout 以下) を代入。
+ *
+ * @returns 成功なら true、swap target が無い / commonLen 不整合なら false (= 呼び元で full reload fallback)。
  */
-async function swapPartial(response: Response): Promise<boolean> {
-  const currentFrames = document.querySelectorAll(FRAME_SELECTOR);
+async function swapPartial(response: Response, currentFrames: Element[]): Promise<boolean> {
   if (currentFrames.length === 0) return false;
 
   const html = await response.text();
   // header value は server 側で encodeURIComponent 済 (= ByteString 制約回避)、
   // client 側で decodeURIComponent して復元する契約。
   const rawTitle = response.headers.get("X-Hibana-Title");
+  const commonAncestorRaw = response.headers.get("X-Hibana-Common-Ancestor");
+  const commonLen = commonAncestorRaw === null ? currentFrames.length : Number(commonAncestorRaw);
 
-  // partial body は最深 Frame の中身として直接代入できる (= server が wrapper 抜きで送る契約)
+  // commonLen = 0 → 共通祖先なし、full reload で完全に切り替えるしかない
+  if (!Number.isFinite(commonLen) || commonLen < 1 || commonLen > currentFrames.length) {
+    return false;
+  }
+
+  // 共通祖先 Frame (= 「最後に同じ」layout の Frame)、その innerHTML を partial body で
+  // まるごと置換することで、それ以下の layout DOM と page DOM を新 stack のものに切り替える。
   // 注: islands の re-hydrate は別 Phase で server inline script 統合時に扱う、
   //     現状は innerHTML で <script> tag は実行されない (= state リセットなしで内容だけ更新)
-  const currentInnerFrame = currentFrames[currentFrames.length - 1]!;
-  currentInnerFrame.innerHTML = html;
+  const swapTarget = currentFrames[commonLen - 1]!;
+  swapTarget.innerHTML = html;
 
   // <title> 更新 (= ADR 0079 metadata 反映)
   if (rawTitle !== null) document.title = decodeURIComponent(rawTitle);

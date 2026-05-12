@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { hibana, hibanaLayout } from "@vidro/hibana";
 import { AppLayout } from "./layouts/AppLayout.tsx";
 import { postsRoutes } from "./domains/posts/routes.ts";
+import { aboutRoutes } from "./domains/about/routes.ts";
 
 // chain 形式で書く (= Hono の型 inference 要件、routes.ts と同じ理由)。
 // 順番にも意味があり、Hono の middleware execution order (= 登録順) に従う:
@@ -21,7 +22,8 @@ import { postsRoutes } from "./domains/posts/routes.ts";
 const app = new Hono()
   .use("*", hibana({ title: "Hibana Demo" }))
   .use("*", hibanaLayout(AppLayout))
-  .get("/", (c) => c.text("Hibana demo — try /posts"))
-  .route("/posts", postsRoutes);
+  .get("/", (c) => c.text("Hibana demo — try /posts or /about"))
+  .route("/posts", postsRoutes)
+  .route("/about", aboutRoutes);
 
 export default app;
