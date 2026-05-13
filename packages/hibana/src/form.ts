@@ -32,6 +32,7 @@ export type FormProps = {
 
 export const Form = (props: FormProps): Node => {
   const { method, action, children, ...rest } = props;
+  warnInDev(method, action);
   return h(
     "form",
     {
@@ -45,4 +46,25 @@ export const Form = (props: FormProps): Node => {
     },
     children,
   );
+};
+
+// dev only の最小 runtime warn。FormProps の TS required で書き忘れは大半が compile error に
+// なるが、any cast / 動的 props 経路で type bypass された case を最後の砦としてここで拾う。
+// prod では process.env を経由しないので vite plugin の dead code elimination で消える想定。
+const warnInDev = (method: unknown, action: unknown): void => {
+  if (typeof process === "undefined" || process.env.NODE_ENV !== "development") return;
+  if (typeof action !== "string" || action.length === 0) {
+    console.warn(
+      "[hibana] <Form> action attribute is missing or empty. " +
+        "Submit target is ambiguous, fetch intercept will fail. ADR 0082 §API shape 参照。",
+    );
+  }
+  // GET は型 union で除外してあるが、type bypass された場合の保険として警告。
+  // GET なら <Link> を使う方が ADR 0080 と整合 (= form submit ではなく navigation 扱い)。
+  if (method === "GET") {
+    console.warn(
+      '[hibana] <Form method="GET"> は <Link> 推奨。GET form は browser default で URL に ' +
+        "query 化されるため、partial swap の wire 仕様 (= request body) と不整合。",
+    );
+  }
 };

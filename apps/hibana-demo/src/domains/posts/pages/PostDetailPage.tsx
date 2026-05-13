@@ -1,5 +1,5 @@
 import type { Post } from "../schema.ts";
-import type { Metadata } from "@vidro/hibana";
+import { Form, type Metadata } from "@vidro/hibana";
 
 // ADR 0079 dogfood: static metadata (= function ではなく object) のケース。
 // dynamic な MetadataFn<P> と違い、props に依存しない場合は object 形式が簡潔。
@@ -20,9 +20,10 @@ export default function PostDetailPage({ post }: { post: Post }) {
         <a href={`/posts/${post.id}/edit`}>Edit</a>
       </p>
       {/* delete は副作用 (= state mutation) なので a 単独でなく form POST で送る (= GET で削除はブラウザ prefetch / spider で誤発火する)。 */}
-      <form method="POST" action={`/posts/${post.id}/delete`}>
+      {/* ADR 0082: <Form> で submit intercept、成功 redirect (/posts) は partial swap + pushState で SPA 風遷移。 */}
+      <Form method="POST" action={`/posts/${post.id}/delete`}>
         <button type="submit">Delete</button>
-      </form>
+      </Form>
     </article>
   );
 }
