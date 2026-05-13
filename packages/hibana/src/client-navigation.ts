@@ -6,24 +6,30 @@
 //   - 現 Frame stack を request header で送って共通祖先計算 (Phase 4)
 //   - popstate (back/forward) 対応 + scroll restoration (Phase 5)
 //
+// ADR 0082 Phase 2-3 実装 (= Step 5 follow-up):
+//   - <Form> submit intercept + partial wire fetch
+//   - redirect follow + response.redirected 判定で URL 制御
+//     (= 成功 path は pushState、失敗 path は URL 据え置き = F2 解消)
+//
 // 制約 (= 後続で解消):
 //   - islands re-hydrate なし (= Counter state リセット、後で server inline script 統合時に対応)
 //   - prefetch / View Transitions API は v2 持ち越し
 //
-// Wire 仕様 (= ADR 0080 §Wire spec):
-//   request:  GET <url>  Accept: text/html;hibana-partial
-//                        X-Hibana-Current-Layouts: AppLayout,PostsLayout
-//   response: HTTP/1.1 200 OK
+// Wire 仕様 (= ADR 0080 §Wire spec、ADR 0082 で form 経路も同 wire を再利用):
+//   request:  GET / POST <url>  Accept: text/html;hibana-partial
+//                               X-Hibana-Current-Layouts: AppLayout,PostsLayout
+//   response: HTTP/1.1 200 OK (or 303 + follow で 200 着地)
 //             X-Hibana-Layouts:          AppLayout,AboutLayout
 //             X-Hibana-Title:            <new title>
 //             X-Hibana-Common-Ancestor:  <commonLen>
 //             Content-Type:              text/html
 //             <共通祖先以下の layouts + page を nested で render した HTML>
 //
-// 設計判断: ADR 0080 §機構 #3 (client navigation runtime)。
-// 関連 memory: [[project_hibana_step5_design]]
+// 設計判断: ADR 0080 §機構 #3 (client navigation runtime) + ADR 0082 §機構 #2-3 (form submit)。
+// 関連 memory: [[project_hibana_step5_design]], [[project_hibana_crud_dogfood_findings]]
 
 const LINK_SELECTOR = "a[data-hibana-link]";
+const FORM_SELECTOR = "form[data-hibana-form]";
 const FRAME_SELECTOR = "hibana-frame[data-hibana-frame]";
 
 // scroll 位置を URL ごとに sessionStorage で persist する key。
@@ -61,6 +67,7 @@ export function setupNavigation(): void {
   }
 
   document.addEventListener("click", handleClick);
+  document.addEventListener("submit", handleSubmit);
   window.addEventListener("popstate", handlePopState);
 }
 
@@ -90,6 +97,115 @@ async function handleClick(event: MouseEvent): Promise<void> {
  */
 async function handlePopState(): Promise<void> {
   await navigateTo(window.location.href, { pushState: false, restoreScroll: true });
+}
+
+/**
+ * ADR 0082: `<Form data-hibana-form>` submit を intercept、fetch + partial swap に変換する。
+ *
+ * 判定:
+ *   - target が `<form data-hibana-form>` でなければ browser default (= 素の form submit、MPA 動作)
+ *   - action が外部 origin なら browser default (= 外部送信は意図通り full submit)
+ *
+ * submitter (= submit を発火した button) の `formAction` / `formMethod` override は v1 では
+ * 無視する (= dogfood で必要になったら対応)。typical な `<button type="submit">` 1 個の
+ * single-action form は問題なく動く。
+ */
+async function handleSubmit(event: SubmitEvent): Promise<void> {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  if (!form.matches(FORM_SELECTOR)) return;
+
+  // form.action は browser が absolute URL に解決済 (= 相対 URL も current origin で解決される)。
+  // submitter (= e.g. <button formaction="...">) の override は v1 では無視。
+  const action = new URL(form.action, window.location.origin);
+  if (action.origin !== window.location.origin) return;
+
+  event.preventDefault();
+  await submitForm(form, action.href);
+}
+
+/**
+ * form の submit を fetch に変換、partial response を Frame swap、URL を制御する。
+ *
+ * ADR 0082 §機構 #2-3:
+ *   1. AbortController で並行 submit/navigate race 回避 (= ADR 0080 と共通 controller)
+ *   2. fetch(action, {method, body: FormData, headers: {Accept, X-Hibana-Current-Layouts}, redirect: "follow"})
+ *      - server が 303 redirect 返すと fetch が自動 follow し response.url = 最終 GET 先 URL になる
+ *      - same-origin の redirect follow では Accept header が引き継がれる (= fetch spec)、
+ *        最終的に server は partial response を返す
+ *   3. response.redirected で success/failure 分岐:
+ *      - true  = redirect follow 経由で着地 (= server c.redirect で成功扱い) → pushState + scroll top
+ *      - false = 同 URL に 200 で着地 (= validation 失敗で c.render(同 page, {errors})) → URL/scroll 据え置き
+ *
+ * 失敗時 (= 5xx / Frame 不在 / network failure) は `window.location.href = action` で full reload
+ * fallback (= ADR 0080 navigate と同 pattern)。POST 経路でも GET に倒れるが、user 再操作前提で
+ * 副作用を残さない方が安全。重複 submit を避けるため form.submit() 直叩きは選ばない。
+ */
+async function submitForm(form: HTMLFormElement, action: string): Promise<void> {
+  // navigate と同じ controller を再利用 (= submit 中の navigate / navigate 中の submit、
+  // どちらも後発が勝つ業界 default pattern)。
+  currentController?.abort();
+  const controller = new AbortController();
+  currentController = controller;
+
+  // SSR で form の native `method` 属性は POST に倒している (= ADR 0082 Trade-off)。
+  // 実 method は `data-hibana-method` attr に POST/PUT/DELETE/PATCH のいずれかが入る。
+  // 万一 attr が無い (= 素の <form data-hibana-form> 等の手書きケース) は POST に fallback。
+  const method = form.dataset.hibanaMethod ?? "POST";
+  const body = new FormData(form);
+
+  // 現 DOM の Frame stack を読んで request header で server に渡す (= ADR 0080 Phase 4 と同じ契約)。
+  const currentFrames = Array.from(document.querySelectorAll(FRAME_SELECTOR));
+  const currentLayouts = currentFrames
+    .map((f) => f.getAttribute("data-layout") ?? "")
+    .filter(Boolean);
+
+  try {
+    const response = await fetch(action, {
+      method,
+      body,
+      headers: {
+        Accept: "text/html;hibana-partial",
+        "X-Hibana-Current-Layouts": encodeURIComponent(currentLayouts.join(",")),
+      },
+      credentials: "same-origin",
+      // redirect: "follow" は fetch default だが意図を明示。
+      // 303 (= c.redirect の default、Hono の Response.redirect) を automatic follow し、
+      // 最終 GET 先で partial response を取得する。
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      // 4xx/5xx → full reload fallback (= action URL に GET で行く)。
+      // POST の form 中身は失われるが、URL / page state は復元される。重複 submit リスク回避のため
+      // form.submit() ではなく window.location 経由で GET に倒す。
+      window.location.href = action;
+      return;
+    }
+
+    const ok = await swapPartial(response, currentFrames);
+    if (!ok) {
+      // Frame 不在 / commonLen 不整合 → full reload fallback
+      window.location.href = action;
+      return;
+    }
+
+    if (response.redirected) {
+      // 成功 path (= server が c.redirect → fetch follow → response.url = 最終 GET 先):
+      //   - pushState で URL bar を最終 GET 先 (= /posts/4) に更新
+      //   - 新 page に来た時は先頭から見るのが業界 default、scroll top
+      window.history.pushState(null, "", response.url);
+      window.scrollTo(0, 0);
+    }
+    // 失敗 path (= 200 + 同 URL に validation errors 込み再 render):
+    //   - URL bar 据え置き (= F2 解消、reload で再 POST 警告なし)
+    //   - scroll 据え置き (= 同 form の error 表示なので current scroll を保持する方が UX 良い)
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return;
+    console.error("[hibana] form submit failed, falling back to full reload:", err);
+    window.location.href = action;
+  }
 }
 
 /**
