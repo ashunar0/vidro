@@ -15,7 +15,7 @@ export { untrack } from "./observer";
 export { batch } from "./batch";
 export { onCleanup } from "./owner";
 export { onMount } from "./mount-queue";
-export { h, Fragment, mount, _reactive, _$text, _$dynamicChild, _$marker } from "./jsx";
+export { h, Fragment, mount, _reactive, _$text, _$dynamicChild, _$marker, _$rawText } from "./jsx";
 export { __VidroIsland, __VidroServerOnlySection } from "./island";
 export { Show } from "./show";
 export { Switch, Match } from "./switch";

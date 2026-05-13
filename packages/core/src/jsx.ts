@@ -189,6 +189,47 @@ export function _$marker(): Node {
 }
 
 /**
+ * raw text elements (= `<textarea>` / `<title>` / `<script>` / `<style>`) 内の dynamic child 用 helper。
+ * 通常の `_$dynamicChild` は adjacent text/expr 隣接の cursor mismatch を防ぐため `_$marker()` を
+ * 周りに挟むが、raw text elements は HTML 仕様で children を plain text 扱いするので、コメントを
+ * 書いてもリテラル `<!---->` として visible に残ってしまう (= F7、第 25 周目 dogfood で発見)。
+ *
+ * 本 helper は marker を入れず Text Node 1 個 + effect で `setText` 更新する形に倒す。raw text
+ * elements 内で `<span>` 等の子要素を書く use case は HTML 仕様で禁止なので Node 返り / null 等
+ * の edge case は考慮しない (= toText で string flatten すれば足りる)。empty 初期値 (= `""`) でも
+ * `_emptyDynamicSlot` の comment ↔ text swap には倒さない (= raw text 内で comment placeholder を
+ * 出すと F7 が再発する)、常に Text Node 1 個固定。`_$dynamicChild` との設計非対称は意図的。
+ *
+ * **制約**: `<textarea>prefix {value}</textarea>` のような JSXText + JSXExpressionContainer の混在は
+ * 現状 transform で 2 Text Node に展開され、browser parse 後の Text Node merge と client の
+ * 2 Node expect が cursor mismatch する可能性がある。dogfood で出ていないため YAGNI、出たら transform
+ * 側で children 全体を 1 thunk に concat する形に改修する。
+ *
+ * Solid SSR と同様の対策 (= raw text elements で hydration marker を抜く)。
+ */
+export function _$rawText(thunk: () => unknown): Node {
+  const r = getRenderer();
+  let peeked = untrack(thunk);
+  if (typeof peeked === "function" && (peeked as Function).length === 0) {
+    peeked = (peeked as () => unknown)();
+  }
+  if (peeked instanceof Signal) peeked = peeked.value;
+  const text = r.createText(toText(peeked));
+
+  if (r.isServer) return text;
+
+  // effect 内では `getRenderer()` を毎回呼ぶ (= hydrate 完了後の active renderer に切り替わるため)。
+  // setText は cursor 消費しないので、_emptyDynamicSlot のような "cursor exhausted" 問題はない。
+  effect(() => {
+    let v = thunk();
+    if (typeof v === "function" && (v as Function).length === 0) v = (v as () => unknown)();
+    if (v instanceof Signal) v = v.value;
+    getRenderer().setText(text as unknown as Text, toText(v));
+  });
+  return text;
+}
+
+/**
  * JSX child position の `{expr}` (`<div>{count.value}</div>`) を transform が書き換えた
  * call 先 (ADR 0019)。peek + (Array / Node / primitive 判定) を h() より前に行い、
  * 必要なら effect で reactive 追従を仕掛けた上で Node を返す。

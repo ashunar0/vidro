@@ -223,6 +223,12 @@ export function jsxTransform(): Plugin {
               return;
             }
 
+            // raw text elements (= textarea / title) の child は marker 抜きの `_$rawText` 経路に切り替える (= F7)。
+            // 通常の `_$dynamicChild` は adjacent text/expr 境界で comment marker を emit するが、HTML 仕様で raw text
+            // element の中はコメント parse されず visible リテラルになるため、Solid SSR と同様に Text Node 1 個 + effect
+            // で setText する mechanism に倒す。
+            const useRawText = isRawTextElementParent(parent);
+
             // arity 0 の arrow / function は user が明示的に reactive thunk を書いた形
             // (`{() => err && <p/>}` 等)。`_$dynamicChild` に **直接** 渡して二重 thunk を
             // 避ける (= `() => () => ...` を防ぐ)。dogfood 第3周目で発見した cursor mismatch
@@ -231,17 +237,19 @@ export function jsxTransform(): Plugin {
             // post-order とズレる。`_$dynamicChild(arrow)` で wrap すると引数評価時点で
             // arrow 内側の JSX が evaluate されて post-order が保たれる。
             if (t.isArrowFunctionExpression(expr) || t.isFunctionExpression(expr)) {
-              path.node.expression = t.callExpression(t.identifier("_$dynamicChild"), [expr]);
-              needed.add("_$dynamicChild");
+              const helper = useRawText ? "_$rawText" : "_$dynamicChild";
+              path.node.expression = t.callExpression(t.identifier(helper), [expr]);
+              needed.add(helper);
               return;
             }
 
             // JSXElement / JSXFragment 直書きは素通し (`{<X/>}` は Element として直接展開)
             if (t.isJSXElement(expr) || t.isJSXFragment(expr)) return;
-            path.node.expression = t.callExpression(t.identifier("_$dynamicChild"), [
+            const helper = useRawText ? "_$rawText" : "_$dynamicChild";
+            path.node.expression = t.callExpression(t.identifier(helper), [
               t.arrowFunctionExpression([], expr),
             ]);
-            needed.add("_$dynamicChild");
+            needed.add(helper);
           }
         },
 
@@ -293,7 +301,26 @@ export function jsxTransform(): Plugin {
   };
 }
 
-type HelperName = "_reactive" | "_$text" | "_$dynamicChild" | "_$marker" | "__VidroIsland";
+type HelperName =
+  | "_reactive"
+  | "_$text"
+  | "_$dynamicChild"
+  | "_$marker"
+  | "_$rawText"
+  | "__VidroIsland";
+
+// HTML 仕様で children が plain text 扱いされる element (= "raw text elements" + "escapable raw text elements")。
+// この中で hydration marker `<!---->` を emit するとリテラル文字列として visible になる (= F7 痛み)。
+// child position の dynamic slot を `_$rawText(...)` に切り替え、`injectMarkers` も skip する。
+// script / style は dogfood で必要になるまで YAGNI、現状 textarea + title だけサポート。
+const RAW_TEXT_ELEMENT_TAGS = new Set(["textarea", "title"]);
+
+function isRawTextElementParent(parent: t.Node): boolean {
+  if (!t.isJSXElement(parent)) return false;
+  const name = parent.openingElement.name;
+  if (!t.isJSXIdentifier(name)) return false;
+  return RAW_TEXT_ELEMENT_TAGS.has(name.name);
+}
 
 // ADR 0055: intrinsic 親の children を scan して、adjacent text/expr 境界に
 // `_$marker()` (= empty Comment) を inject する。HTML parser の adjacent text merge
@@ -310,6 +337,9 @@ type HelperName = "_reactive" | "_$text" | "_$dynamicChild" | "_$marker" | "__Vi
 // 問題にならない (= 各 child が parent intrinsic に individually append される)。本 pass
 // は JSXElement intrinsic 親のみで動かす。
 function injectMarkers(parent: t.JSXElement, needed: Set<HelperName>): void {
+  // raw text elements (= textarea / title) 内では marker comment が visible リテラルとして残る (= F7)、
+  // adjacent merge も plain text 扱いで起きないため marker injection 自体不要。
+  if (isRawTextElementParent(parent)) return;
   const children = parent.children;
   if (children.length < 2) return;
 
