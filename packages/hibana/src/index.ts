@@ -393,6 +393,12 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
           "X-Hibana-Layouts": encodeURIComponent(layoutNames.join(",")),
           "X-Hibana-Title": encodeURIComponent(title),
           "X-Hibana-Common-Ancestor": String(commonLen),
+          // 同 URL に対して full response (= MPA、Accept: text/html) と partial response
+          // (= Accept: text/html;hibana-partial) を出し分けているため、`Vary: Accept` を
+          // 必ず付けて browser cache を分離する。これが無いと第 25 周目 dogfood F8 のように
+          // POST → redirect → browser back の経路で partial body が "full document として"
+          // 復元され、共通 layout (header/footer/<html><head>) が消えるバグになる。
+          Vary: "Accept",
         });
       }
 
@@ -434,6 +440,8 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
   </head>
   <body>${body}</body>
 </html>`;
+      // 同 URL の partial response と分離するため `Vary: Accept` を付ける (= F8 fix)。
+      c.header("Vary", "Accept");
       return c.html(html);
     }) as never);
     await next();
