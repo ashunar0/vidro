@@ -43,21 +43,44 @@ import {
 export const createRoute = (handler: Handler): Handler => handler;
 
 /**
+ * filesystem-based 版がサポートする HTTP method。
+ *
+ * 規約:
+ *   - `default export` = GET (= page render)
+ *   - `export const POST = ...` 等の named export = method 別 handler
+ *
+ * HTML form の method 属性が `GET` / `POST` 限定なので Hibana 流 (= "MPA に client 制御を持ち込む") では
+ * PUT/DELETE/PATCH を JS 経由 (= island fetch 等) で呼ぶしかないが、Hono Handler 層では同形で扱うので
+ * union に並べておく (= dogfood で必要になった機能から自然に届く)。
+ */
+export type FsHttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+
+/**
  * 1 つの route entry。Vite plugin の virtual:hibana/fs-routes が export する配列の要素。
  * user が直接触る型ではないが、createFsApp の引数として渡される。
  */
 export type FsRouteEntry = {
-  /** HTTP method。現状 GET のみ。POST 等は dogfood で必要になったら追加。 */
-  method: "GET";
+  /** HTTP method。GET = default export、POST 等 = named export 由来。 */
+  method: FsHttpMethod;
   /** Hono の path 形式 (= `/posts/:id` 等)。filename pattern からの変換結果。 */
   path: string;
-  /** route file の default export (= createRoute(...) を呼んで作った Hono Handler)。 */
+  /** route file の default export (= GET) or named export (= POST 等)、いずれも createRoute(...) で作った Hono Handler。 */
   handler: Handler;
-  /** route file 側の `export const metadata` (= ADR 0079 同名)。 */
+  /** route file 側の `export const metadata` (= ADR 0079 同名)。GET 経由でのみ意味を持つ (= page render 用)。 */
   metadata?: Metadata | MetadataFn<unknown>;
   /** この route に適用される layout (= 親 → 子 順)。Vite plugin が _renderer.tsx の階層から計算。 */
   layouts: LayoutComponent[];
 };
+
+// method → Hono app method 名 の dispatch table。
+// switch で書くよりも `Record` 1 個で `app[map[method]](...)` 一発呼び出しに統一できる。
+const METHOD_DISPATCH = {
+  GET: "get",
+  POST: "post",
+  PUT: "put",
+  DELETE: "delete",
+  PATCH: "patch",
+} as const satisfies Record<FsHttpMethod, "get" | "post" | "put" | "delete" | "patch">;
 
 // hibanaRouteMetadata の ContextVariableMap augment は index.ts (= core 側) に統合済。
 // 理由: `@vidro/hibana` 単独 import でも augment が効く必要がある (= renderer が読む経路)。
@@ -93,6 +116,9 @@ export const createFsApp = (routes: FsRouteEntry[], options: HibanaOptions = {})
     // 固定なので、c.set で一発 set (= O(N) コピー削減、code-review [3] 反映)。
     // filesystem-based 版は createFsApp で完結するので、handler-based 版の `.use("*", hibanaLayout(...))`
     // と同 c.var を共有する想定は無く、append でなく override で問題ない。
+    // layouts は全 method の setupMiddleware で set される (= GET / POST 区別なし)。
+    // POST 等 named handler が c.redirect / Response.json を返す想定なら layout は dead weight (= 害なし)、
+    // ただし誤って `c.render(Page, ...)` を呼んだ場合は layout に wrap された HTML が返る点に注意。
     const setupMiddleware: MiddlewareHandler = async (c, next) => {
       if (route.layouts.length > 0) {
         c.set("hibanaLayouts", route.layouts);
@@ -103,10 +129,8 @@ export const createFsApp = (routes: FsRouteEntry[], options: HibanaOptions = {})
       await next();
     };
 
-    if (route.method === "GET") {
-      app.get(route.path, setupMiddleware, route.handler);
-    }
-    // POST / PUT / DELETE 等は dogfood で必要になったら追加
+    const methodFn = METHOD_DISPATCH[route.method];
+    app[methodFn](route.path, setupMiddleware, route.handler);
   }
 
   return app;

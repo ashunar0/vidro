@@ -185,12 +185,16 @@ for (const [path, mod] of Object.entries(modules)) {
 }
 
 // 第 2 パス: route file を発見、Hono path + layouts + metadata + handler を組み立てる
+// 規約: default export = GET、named export POST/PUT/DELETE/PATCH = method 別 handler。
+// default 無し + named のみの file (= 例: routes/posts/[id]/delete.tsx で POST だけ) も OK。
+const METHODS = ["POST", "PUT", "DELETE", "PATCH"];
 const routes = [];
 for (const [path, mod] of Object.entries(modules)) {
   if (path.endsWith("/_renderer.tsx")) continue;
   if (!path.endsWith(".tsx")) continue;
-  if (!mod.default) continue;  // default export 無い file は route ではない (= warn 候補、v1 では skip)
   if (!path.startsWith(ROOT)) continue;  // 想定外 path を防御的に skip
+  const hasAnyHandler = mod.default || METHODS.some((m) => mod[m]);
+  if (!hasAnyHandler) continue;  // どの method export も無い file は route ではない
 
   // URL path: ROOT prefix を slice で外し、/index.tsx と .tsx を落とし、[id] → :id
   // 例: ROOT/posts/[id]/index.tsx → /posts/:id
@@ -215,14 +219,45 @@ for (const [path, mod] of Object.entries(modules)) {
     }
   }
 
-  routes.push({
-    method: "GET",
-    path: urlPath,
-    handler: mod.default,
-    metadata: mod.metadata,
-    layouts: appliedLayouts,
-  });
+  // GET (= default export)。metadata は GET にだけ attach (= page render 経路でしか意味を持たない)
+  if (mod.default) {
+    routes.push({
+      method: "GET",
+      path: urlPath,
+      handler: mod.default,
+      metadata: mod.metadata,
+      layouts: appliedLayouts,
+    });
+  }
+  // POST 等 named export。metadata は付けない (= redirect / json 返す想定で page render しない)
+  for (const method of METHODS) {
+    if (mod[method]) {
+      routes.push({
+        method,
+        path: urlPath,
+        handler: mod[method],
+        layouts: appliedLayouts,
+      });
+    }
+  }
 }
+
+// Hono の Router (= LinearRouter / SmartRouter の特定 fallback) によっては registration 順で route matching するため、
+// static segment が多い (= 具体的) path を先に register する。第 25 周目 dogfood で /posts/new が /posts/:id に
+// 吸われて 404 になる F4 を発見、sort を入れて修正。RegExpRouter / TrieRouter は内部で static-first を保証するが
+// SmartRouter が必ずそれを選ぶ保証は無いので defensive に sort する。
+// path を segment 単位で比較し、static は dynamic より先、同形なら長い path を先にする。
+routes.sort((a, b) => {
+  const aSegs = a.path.split('/');
+  const bSegs = b.path.split('/');
+  const len = Math.min(aSegs.length, bSegs.length);
+  for (let i = 0; i < len; i++) {
+    const aDyn = aSegs[i].startsWith(':');
+    const bDyn = bSegs[i].startsWith(':');
+    if (aDyn !== bDyn) return aDyn ? 1 : -1;
+  }
+  return bSegs.length - aSegs.length;
+});
 
 export const fsRoutes = routes;
 `;
