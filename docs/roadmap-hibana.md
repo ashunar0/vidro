@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-12 (Step 5 全完走、ADR 0080 Accepted 昇格)
+> **Last updated**: 2026-05-14 (Step 5 follow-up: ADR 0082 Draft 起票、`<Form>` で F2/F3 解消)
 
 ---
 
@@ -195,6 +195,47 @@ Phase 分割 (= tasks #1-#8 に対応、全完走):
 | `<Outlet />` self-closing                             | `LayoutComponent` から children prop 削除する breaking change、書き忘れで page 完全表示されない (= graceful degradation 違反) |
 | MVP: 最深 Frame だけ swap + layout 変更時 full reload | 「逃げ手」、user 哲学「FW 価値最大化」と逆                                                                                    |
 | Approach C (URL 計算) 即採用                          | filesystem-based 採用を前提化、ADR 0081 (= 旧 0080、layout 機構) を縛る                                                       |
+
+### Step 5 follow-up: form submit も HTML swap (1-2 日) — **進行中** (= 第 26 周目、ADR 0082 Draft)
+
+設計判断: ADR 0082 (`docs/decisions/0082-hibana-form-submit-navigation.md`) + memory [[project_hibana_crud_dogfood_findings]]
+
+第 25 周目 CRUD dogfood で発見した痛み:
+
+- **F2** = POST 失敗時に URL bar = action target、reload で再 POST 警告
+- **F3** = form submit が `<Link>` intercept 対象外、毎回 full reload + persistent island state リセット
+
+3 軸確定:
+
+| 軸                  | 確定                                                             |
+| ------------------- | ---------------------------------------------------------------- |
+| intercept           | `<Form>` component (= 明示 opt-in、ADR 0080 `<Link>` と sibling) |
+| form state location | server 再 render (= props snapshot、Pure server 流維持)          |
+| URL update policy   | 成功時のみ pushState、失敗時 URL 据え置き (= F2 解消)            |
+
+機構: ADR 0080 の partial wire / 共通祖先計算 / Frame swap / `Vary: Accept` を **そのまま再利用**、server 側変更ゼロ。`fetch` の `redirect: "follow"` で 303 自動 follow、`response.redirected` で success/failure 分岐。
+
+Phase 分割 (= tasks #1-#8 に対応):
+
+- [ ] **Phase 0** 設計 doc + roadmap update + ADR 0082 起票 (Draft)
+- [ ] **Phase 1** `<Form>` JSX component 実装 (= packages/hibana/src/form.ts + index.ts export)
+- [ ] **Phase 2** client submit intercept (= client-navigation.ts に submit listener + AbortController)
+- [ ] **Phase 3** redirect follow + partial swap + 成功時のみ pushState (= response.redirected 判定)
+- [ ] **Phase 4** dev warning (= action / method 書き忘れ + GET method 使用検出)
+- [ ] **Phase 5** dogfood (apps/hibana-demo + apps/hibana-demo-fs CRUD form を `<Form>` 化、Playwright)
+- [ ] **Phase 6** code-reviewer agent review + Critical fix
+- [ ] **Phase 7** ADR Accepted 昇格 + memory update
+
+却下案 (= ADR 0082 詳細参照):
+
+| 案                                           | 却下理由                                                                            |
+| -------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 全 `<form>` 自動 boost                       | "書いた分だけ" 哲学と逆、ADR 0080 で `<Link>` を選んだ整合性                        |
+| client-side reactive form state (useForm 流) | Hibana 中核哲学 2 (= server は reactivity 知らない) と不整合、Pure server 流崩壊    |
+| 失敗時にも pushState                         | F2 の根、解消したい挙動そのもの                                                     |
+| 失敗時に form action 別 URL に倒す           | server に routing 規約追加、handler 自由度を制約、案 B が変更ゼロで成立するので不要 |
+
+flash 機構 (= success message 表示) は本 ADR から外し、別 ADR (= 候補 0083) で扱う。F2/F3 解消は redirect follow + pushState 制御だけで成立する。
 
 ### Step 6: 小さいサンプルアプリ (1 週)
 
