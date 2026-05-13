@@ -167,6 +167,9 @@ importers:
       hono:
         specifier: ^4.6.0
         version: 4.12.18
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
     devDependencies:
       '@hono/vite-dev-server':
         specifier: ^0.20.0
@@ -198,6 +201,9 @@ importers:
       hono:
         specifier: ^4.6.0
         version: 4.12.18
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
     devDependencies:
       '@hono/vite-dev-server':
         specifier: ^0.20.0

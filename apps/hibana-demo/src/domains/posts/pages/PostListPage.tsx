@@ -1,5 +1,5 @@
 import type { Post } from "../schema.ts";
-import type { MetadataFn } from "@vidro/hibana";
+import { Link, type MetadataFn } from "@vidro/hibana";
 import Counter from "../components/Counter.island.tsx";
 
 // PostListPage は props.posts を「定数 snapshot」として受け取る。
@@ -25,11 +25,16 @@ export default function PostListPage({ posts }: { posts: Post[] }) {
   return (
     <div>
       <h1>Posts</h1>
+      <p>
+        <Link href="/posts/new">+ New Post</Link>
+      </p>
       <Counter initial={0} />
       <ul>
         {posts.map((post) => (
           <li key={post.id}>
-            <h2>{post.title}</h2>
+            <h2>
+              <Link href={`/posts/${post.id}`}>{post.title}</Link>
+            </h2>
             <p>{post.excerpt}</p>
           </li>
         ))}

@@ -6,9 +6,23 @@
 
 import type { MetadataFn } from "@vidro/hibana";
 import { createRoute } from "@vidro/hibana/fs";
+import type { z } from "zod";
 import type { Post } from "../../domains/posts/schema.ts";
-import { getPosts } from "../../domains/posts/service.ts";
+import { postInputSchema } from "../../domains/posts/schema.ts";
+import { createPost, getPosts } from "../../domains/posts/service.ts";
 import { PostListPage } from "../../pages/PostListPage.tsx";
+import PostNewPage from "../../pages/PostNewPage.tsx";
+
+// zod ZodError → form field name → message map に変換する素朴 helper。
+// filesystem-based 版でも handler-based 版と同 logic を inline で複製している (= dogfood で痛みになったら util / pack に retreat)。
+const fieldsFromZodError = (err: z.ZodError): Record<string, string> => {
+  const fields: Record<string, string> = {};
+  for (const issue of err.issues) {
+    const key = issue.path[0];
+    if (typeof key === "string" && !(key in fields)) fields[key] = issue.message;
+  }
+  return fields;
+};
 
 export const metadata: MetadataFn<{ posts: Post[] }> = ({ posts }) => ({
   title: `Posts (${posts.length})`,
@@ -17,7 +31,28 @@ export const metadata: MetadataFn<{ posts: Post[] }> = ({ posts }) => ({
   link: [{ rel: "canonical", href: "/posts" }],
 });
 
+// GET /posts = posts 一覧
 export default createRoute((c) => {
   const posts = getPosts();
   return c.render(PostListPage, { posts });
+});
+
+// POST /posts = create
+// filesystem-based 版は named export で method 別 handler を表現する (= packages/hibana fs.ts + vite.ts 改修済)。
+// 失敗時の同 page 再 render は c.render(PostNewPage, {...}) を使う = route と page が 1:1 でなく、handler の自由度で page を選べる。
+export const POST = createRoute(async (c) => {
+  const form = await c.req.formData();
+  const raw = {
+    title: form.get("title")?.toString() ?? "",
+    excerpt: form.get("excerpt")?.toString() ?? "",
+  };
+  const result = postInputSchema.safeParse(raw);
+  if (!result.success) {
+    return c.render(PostNewPage, {
+      values: raw,
+      errors: fieldsFromZodError(result.error),
+    });
+  }
+  const post = createPost(result.data);
+  return c.redirect(`/posts/${post.id}`);
 });

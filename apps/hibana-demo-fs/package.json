@@ -12,7 +12,8 @@
   "dependencies": {
     "@vidro/core": "workspace:*",
     "@vidro/hibana": "workspace:*",
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@hono/vite-dev-server": "^0.20.0",
