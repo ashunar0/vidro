@@ -115,9 +115,9 @@ async function handleSubmit(event: SubmitEvent): Promise<void> {
   if (!(form instanceof HTMLFormElement)) return;
   if (!form.matches(FORM_SELECTOR)) return;
 
-  // form.action は browser が absolute URL に解決済 (= 相対 URL も current origin で解決される)。
+  // form.action は HTMLFormElement の DOM property で browser が既に absolute URL に解決済。
   // submitter (= e.g. <button formaction="...">) の override は v1 では無視。
-  const action = new URL(form.action, window.location.origin);
+  const action = new URL(form.action);
   if (action.origin !== window.location.origin) return;
 
   event.preventDefault();
@@ -176,18 +176,20 @@ async function submitForm(form: HTMLFormElement, action: string): Promise<void> 
       signal: controller.signal,
     });
 
-    if (!response.ok) {
-      // 4xx/5xx → full reload fallback (= action URL に GET で行く)。
-      // POST の form 中身は失われるが、URL / page state は復元される。重複 submit リスク回避のため
-      // form.submit() ではなく window.location 経由で GET に倒す。
-      window.location.href = action;
+    if (response.status >= 500) {
+      // 5xx は server エラー → 現 URL を full reload で fallback (= ADR 0080 navigate と同じく
+      // 「正しい error page を見せる」)。4xx は validation 失敗 (= c.render(page, {errors, 422})
+      // 等の慣用) を含む経路なので fallback せず partial swap に倒す (= ADR 0082 review C-1)。
+      window.location.reload();
       return;
     }
 
     const ok = await swapPartial(response, currentFrames);
     if (!ok) {
-      // Frame 不在 / commonLen 不整合 → full reload fallback
-      window.location.href = action;
+      // Frame 不在 / commonLen 不整合 → 現 URL を full reload。
+      // POST 先 (= action URL) は GET handler を持たない可能性があるため、現在の URL を
+      // reload するのが安全 (= ADR 0082 review C-2、delete endpoint 等の POST only URL 対策)。
+      window.location.reload();
       return;
     }
 
@@ -204,7 +206,9 @@ async function submitForm(form: HTMLFormElement, action: string): Promise<void> 
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") return;
     console.error("[hibana] form submit failed, falling back to full reload:", err);
-    window.location.href = action;
+    // network failure 等。POST 先を GET で叩くと 404 リスクがあるため、現 URL を reload する
+    // (= ADR 0082 review C-2 と同方針)。user は同 form 画面の SSR 再 render で再操作できる。
+    window.location.reload();
   }
 }
 

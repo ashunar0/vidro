@@ -308,6 +308,12 @@ Vary: Accept
 - **`response.redirected` の信頼性** = `redirect: "follow"` で 303 follow した場合 fetch spec で `redirected: true` になる、ただし server が 200 で `Location` header だけ付けた case は redirect 扱いされない (= server logic として c.redirect を使う前提で動く)
 - **AbortController による並行 submit race** = ADR 0080 review C-1 と同じ pattern、submit 中に再 submit すると前を abort、最後の submit が勝つ (= 業界 default、Remix と同じ)
 - **non-POST method (= PUT/DELETE/PATCH)** = HTML form は POST/GET しか native 対応しない、JS あり経路では fetch で任意 method 可能、JS 切れだと \_method override 等の hack 必要。本 ADR は **POST/PUT/DELETE/PATCH を `<Form>` props で受け、JS あり経路でのみ fetch で送る**、JS 切れ時の non-POST は v1 で skip
+- **status code policy** (= ADR 0082 review C-1) = client runtime は `status >= 500` のみ full reload fallback、4xx (= 422 / 400 等の validation 失敗) は redirected=false の partial swap 経路に流す。server 側は validation 失敗を `c.render(page, {errors})` で **200 or 4xx どちらで返しても F2/F3 解消が機能する**。これは `c.json({error}, 422)` 等の `c.redirect` 以外の慣用に道を残すための判断
+- **fallback URL は現 URL の reload** (= ADR 0082 review C-2) = swapPartial 失敗 / 5xx / network failure 時は `window.location.reload()` で現 URL を full reload。`window.location.href = action` (= POST 先 URL を GET で叩く) は delete endpoint 等の POST only URL で 404 になりうるため不採用
+- **`response.redirected` の厳密な定義** = fetch spec §4.5 の HTTP-redirect fetch が 1 回以上 follow された場合に true。`c.redirect` は 303 を吐くため fetch follow 後に true、`c.render` は 200 directに着地で false。`response.redirected === false && response.ok` = 「redirect なしで成功 status」= validation 失敗 partial と判定する。server が誤って 200 + Location header だけ返した case は validation 失敗と誤識別されるが、`c.redirect` を使う限り発生しない
+- **303 follow 後の Accept / X-Hibana-Current-Layouts 引き継ぎ** = fetch spec §4.5 により request-body-header name (= Content-Type 等) のみ削除、それ以外の custom header は same-origin redirect で引き継がれる仕様に依存。dogfood (= 両 app の Delete / Update 経路) で動作確認済
+- **dev warning の動作範囲** = `process.env.NODE_ENV === "development"` check のため Vite dev server (`@hono/vite-dev-server`) 経由で動作する。CF Workers production / Node.js prod build では `process` 未定義 or `NODE_ENV !== "development"` で早期 return、overhead ゼロ。tsdown (= `vp pack`) は `process.env.NODE_ENV` を build 時に置換しない (= ライブラリ側として正しい)、app 側 Vite が prod build で置換 → dead code elimination が動く
+- **submitter override 無視** = `<button formaction="..." formmethod="...">` 等 SubmitEvent.submitter 由来 attribute は v1 では無視、`<button type="submit">` 1 個 + form 直 method/action の典型形に絞る。複数 submit button / formaction override が dogfood で必要になったら拡張
 
 ### 拡張余地 (= 将来 ADR or dogfood trigger)
 
