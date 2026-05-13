@@ -2,25 +2,23 @@
 
 ## Status
 
-**Draft** — 2026-05-13 (= 第 26 周目で起票、Phase 1〜7 着地後に Accepted へ昇格)
+**Accepted** — 2026-05-14 (= 第 26 周目で Phase 7 着地、両 app dogfood pass + code-reviewer agent Critical 2 件 fix 経由)
 
 経緯:
 
 - 2026-05-13 (= 第 25 周目、76th session): CRUD form dogfood (= Pure server 流 / island ゼロ) を両 app で完走 (`5cfeb87`)、痛み点 F2 (PRG URL 不整合) + F3 (form submit が ADR 0080 `<Link>` intercept 対象外で full page reload) を発見、`<Form>` + flash の起票候補として持ち越し (= memory [[project_hibana_crud_dogfood_findings]])
-- 2026-05-13 (= 第 26 周目、77th session): F2/F3 一緒解消の本 ADR 起票 (Phase 0)。flash 機構 (= cookie/session) は別 ADR (= 候補 0083) として後回し、F2/F3 解消は **redirect follow + pushState の制御だけで成立する**ことを設計時点で確認
+- 2026-05-13/14 (= 第 26 周目、77th session): F2/F3 一緒解消の本 ADR 起票 (Phase 0)。flash 機構 (= cookie/session) は別 ADR (= 候補 0083) として後回し、F2/F3 解消は **redirect follow + pushState の制御だけで成立する**ことを設計時点で確認。Phase 1〜5 着地後 code-reviewer review で Critical 2 件 (= C-1 4xx fallback / C-2 fallback URL は POST 先) を発見、fix 経由で Phase 7 Accepted 昇格
 
 着地時 commit:
 
-| commit | Phase   | 内容                                                                |
-| ------ | ------- | ------------------------------------------------------------------- |
-| TBD    | Phase 0 | ADR 0082 Draft 起票 + roadmap update                                |
-| TBD    | Phase 1 | `<Form>` JSX component (= packages/hibana/src/form.ts)              |
-| TBD    | Phase 2 | client submit intercept (= client-navigation.ts に submit listener) |
-| TBD    | Phase 3 | redirect follow + partial swap + 成功時のみ pushState               |
-| TBD    | Phase 4 | dev warning (= action / method 書き忘れ検出)                        |
-| TBD    | Phase 5 | dogfood (apps/hibana-demo + apps/hibana-demo-fs 両方 + Playwright)  |
-| TBD    | Phase 6 | code-reviewer agent review + Critical fix                           |
-| TBD    | Phase 7 | ADR Accepted 昇格 + memory update                                   |
+| commit    | Phase            | 内容                                                                |
+| --------- | ---------------- | ------------------------------------------------------------------- |
+| `5b817ba` | Phase 0          | ADR 0082 Draft 起票 + roadmap update                                |
+| `f297309` | Phase 1          | `<Form>` JSX component (= packages/hibana/src/form.ts)              |
+| `4978ea2` | Phase 2+3        | client submit intercept + redirect follow + 成功時のみ pushState    |
+| `808bba2` | Phase 4+5        | dev warning + 両 app dogfood (`<Form>` 化 + Playwright smoke)       |
+| `d272d5c` | Phase 6 fix      | review C-1 (4xx fallback) + C-2 (fallback URL) + ADR Trade-off 追記 |
+| TBD       | Phase 7 Accepted | Status Draft → Accepted + roadmap 全 ✓ + memory update              |
 
 依存: ADR 0080 (= `<Link>` + `<Frame>` + partial HTML wire) — 本 ADR は ADR 0080 の **form sibling**。partial wire / 共通祖先計算 / Frame swap 機構を **そのまま再利用**する、server 側変更ゼロを目指す
 関連: [[project_hibana_crud_dogfood_findings]], [[project_adr_0080_status]], [[project_hibana_overview]], [[project_html_first_wire]], [[project_legibility_test]], [[feedback_dx_first_design]]

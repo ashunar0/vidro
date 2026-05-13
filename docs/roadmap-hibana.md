@@ -5,7 +5,7 @@ Vidro の sibling、Hono の上に薄く乗る backend 主導 FW を縦串 MVP �
 本書は実行計画と進捗状態を扱う。
 
 > **Status**: Living document (実装の進捗とともに更新する)
-> **Last updated**: 2026-05-14 (Step 5 follow-up: ADR 0082 Draft 起票、`<Form>` で F2/F3 解消)
+> **Last updated**: 2026-05-14 (Step 5 follow-up 全完走、ADR 0082 Accepted 昇格)
 
 ---
 
@@ -196,7 +196,7 @@ Phase 分割 (= tasks #1-#8 に対応、全完走):
 | MVP: 最深 Frame だけ swap + layout 変更時 full reload | 「逃げ手」、user 哲学「FW 価値最大化」と逆                                                                                    |
 | Approach C (URL 計算) 即採用                          | filesystem-based 採用を前提化、ADR 0081 (= 旧 0080、layout 機構) を縛る                                                       |
 
-### Step 5 follow-up: form submit も HTML swap (1-2 日) — **進行中** (= 第 26 周目、ADR 0082 Draft)
+### Step 5 follow-up: form submit も HTML swap (1-2 日) — **完了** (= 第 26 周目、ADR 0082 Accepted)
 
 設計判断: ADR 0082 (`docs/decisions/0082-hibana-form-submit-navigation.md`) + memory [[project_hibana_crud_dogfood_findings]]
 
@@ -215,16 +215,14 @@ Phase 分割 (= tasks #1-#8 に対応、全完走):
 
 機構: ADR 0080 の partial wire / 共通祖先計算 / Frame swap / `Vary: Accept` を **そのまま再利用**、server 側変更ゼロ。`fetch` の `redirect: "follow"` で 303 自動 follow、`response.redirected` で success/failure 分岐。
 
-Phase 分割 (= tasks #1-#8 に対応):
+Phase 分割 (= tasks #1-#8 に対応、全完走):
 
-- [ ] **Phase 0** 設計 doc + roadmap update + ADR 0082 起票 (Draft)
-- [ ] **Phase 1** `<Form>` JSX component 実装 (= packages/hibana/src/form.ts + index.ts export)
-- [ ] **Phase 2** client submit intercept (= client-navigation.ts に submit listener + AbortController)
-- [ ] **Phase 3** redirect follow + partial swap + 成功時のみ pushState (= response.redirected 判定)
-- [ ] **Phase 4** dev warning (= action / method 書き忘れ + GET method 使用検出)
-- [ ] **Phase 5** dogfood (apps/hibana-demo + apps/hibana-demo-fs CRUD form を `<Form>` 化、Playwright)
-- [ ] **Phase 6** code-reviewer agent review + Critical fix
-- [ ] **Phase 7** ADR Accepted 昇格 + memory update
+- [x] **Phase 0** 設計 doc + roadmap update + ADR 0082 起票 (Draft) — `5b817ba`
+- [x] **Phase 1** `<Form>` JSX component 実装 (= packages/hibana/src/form.ts + index.ts export) — `f297309`
+- [x] **Phase 2+3** client submit intercept + redirect follow + 成功時のみ pushState — `4978ea2`
+- [x] **Phase 4+5** dev warning + 両 app dogfood (apps/hibana-demo + apps/hibana-demo-fs CRUD form を `<Form>` 化、Playwright smoke) — `808bba2`
+- [x] **Phase 6** code-reviewer agent review + Critical 2 件 fix (= C-1 4xx fallback + C-2 fallback URL) — `d272d5c`
+- [x] **Phase 7** ADR Accepted 昇格 + memory update
 
 却下案 (= ADR 0082 詳細参照):
 
