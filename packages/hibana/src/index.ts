@@ -198,6 +198,28 @@ const injectLayoutNames = (html: string, layoutNames: string[]): string => {
   });
 };
 
+// ADR 0080 Phase 5: dev warning。`hibanaLayout(L)` で layout を push してるのに L の中に
+// `<Frame>` が無いと partial navigation が壊れる (= 書き忘れ症状)。server が SSR 後の HTML を
+// inspect して、Frame 出現数 < layout 数なら警告を発火する。
+//
+// 第 24 周目 (= ADR 0080 review fix I-2): full / partial 両経路で発火させるため helper 化。
+// partial 経路では render 対象が「共通祖先以下の layouts」だけなので、その差分 (= layoutsBelow /
+// namesBelow) を渡す。partial 中に踏んだ Frame 書き忘れも検出できるようになった。
+//
+// NODE_ENV === "development" 時のみで prod では実行しない (= overhead 回避)。
+const warnIfFrameMissing = (rawBody: string, expectedFrameCount: number, layoutNames: string[]) => {
+  if (typeof process === "undefined" || process.env.NODE_ENV !== "development") return;
+  if (expectedFrameCount === 0) return;
+  const frameCount = (rawBody.match(/<hibana-frame /g) ?? []).length;
+  if (frameCount >= expectedFrameCount) return;
+  console.warn(
+    `[hibana] layout 数 (${expectedFrameCount}) > 出現した <Frame> 数 (${frameCount})。` +
+      `layout component の中に <Frame>{children}</Frame> を書き忘れてる可能性があります。` +
+      `ADR 0080 §軸 3 参照。\n` +
+      `  layout names: ${layoutNames.join(" > ")}`,
+  );
+};
+
 // ADR 0079: metadata を抽出して shell HTML の <head> 部分文字列に焼く。
 //
 // 取得経路は 2 つあり、優先順位は route metadata > component metadata:
@@ -341,6 +363,12 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
         // inject に使う name list は namesBelow (= 全 stack ではなく差分以下)。
         const body = injectLayoutNames(rawBody, namesBelow);
 
+        // dev warning (I-2): partial 経路でも Frame 書き忘れ検出。
+        // partial で render される layout 数は layoutsBelow.length なので、それを expected として渡す。
+        // 共通祖先より上で書き忘れがあっても初回 SSR の full 経路で既に警告されている前提なので、
+        // ここでは「partial 中に新規に踏んだ layout の書き忘れ」だけが検出対象になる。
+        warnIfFrameMissing(rawBody, layoutsBelow.length, namesBelow);
+
         // ADR 0079 metadata から title だけ抽出して header で送る。
         // <meta> / <link> 更新は v1 では skip (= dogfood で困ったら Phase 5 で対応)。
         const componentMetadata = (component as { metadata?: Metadata | MetadataFn<unknown> })
@@ -396,21 +424,8 @@ export const hibana = (options: HibanaOptions = {}): MiddlewareHandler => {
       // 順序: layouts = [親, ..., 子] と body 内 Frame 出現順 (= document order) が一致する前提。
       const body = injectLayoutNames(rawBody, layoutNames);
 
-      // Phase 5: dev warning。`hibanaLayout(L)` で layout を push してるのに L の中に
-      // <Frame> が無いと partial navigation が壊れる (= 書き忘れ症状)。
-      // server が SSR 後の HTML を inspect して、Frame 出現数 < layout stack 数なら警告。
-      // NODE_ENV === "development" 時のみで prod では実行しない (= overhead 回避)。
-      if (typeof process !== "undefined" && process.env.NODE_ENV === "development") {
-        const frameCount = (rawBody.match(/<hibana-frame /g) ?? []).length;
-        if (frameCount < layouts.length) {
-          console.warn(
-            `[hibana] layout stack 数 (${layouts.length}) > 出現した <Frame> 数 ` +
-              `(${frameCount})。layout component の中に <Frame>{children}</Frame> を ` +
-              `書き忘れてる可能性があります。ADR 0080 §軸 3 参照。\n` +
-              `  layout names: ${layoutNames.join(" > ")}`,
-          );
-        }
-      }
+      // Phase 5 dev warning。full / partial 両経路で同じ helper を経由する (I-2 fix)。
+      warnIfFrameMissing(rawBody, layouts.length, layoutNames);
 
       const html = `<!DOCTYPE html>
 <html>
