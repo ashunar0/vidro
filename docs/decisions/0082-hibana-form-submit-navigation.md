@@ -18,7 +18,7 @@
 | `4978ea2` | Phase 2+3        | client submit intercept + redirect follow + 成功時のみ pushState    |
 | `808bba2` | Phase 4+5        | dev warning + 両 app dogfood (`<Form>` 化 + Playwright smoke)       |
 | `d272d5c` | Phase 6 fix      | review C-1 (4xx fallback) + C-2 (fallback URL) + ADR Trade-off 追記 |
-| TBD       | Phase 7 Accepted | Status Draft → Accepted + roadmap 全 ✓ + memory update              |
+| `8ccaf6c` | Phase 7 Accepted | Status Draft → Accepted + roadmap 全 ✓ + memory update              |
 
 依存: ADR 0080 (= `<Link>` + `<Frame>` + partial HTML wire) — 本 ADR は ADR 0080 の **form sibling**。partial wire / 共通祖先計算 / Frame swap 機構を **そのまま再利用**する、server 側変更ゼロを目指す
 関連: [[project_hibana_crud_dogfood_findings]], [[project_adr_0080_status]], [[project_hibana_overview]], [[project_html_first_wire]], [[project_legibility_test]], [[feedback_dx_first_design]]
