@@ -21,6 +21,10 @@ export type { LinkProps } from "./link.js";
 export { Frame } from "./frame.js";
 export type { FrameProps } from "./frame.js";
 
+// ADR 0082: Step 5 follow-up (form submit を partial swap 化) の user-facing component
+export { Form } from "./form.js";
+export type { FormMethod, FormProps } from "./form.js";
+
 // Hibana の component 型 (server-side、関数参照ベース)。
 // 関数参照で受け取るのは Inertia のような文字列識別子と違い、TS の型推論 / リファクタ追従 /
 // IDE 補完が効くため (= 設計書「主要な設計決定とその根拠 / Render API」参照)。
