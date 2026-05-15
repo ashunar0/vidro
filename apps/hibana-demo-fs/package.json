@@ -12,6 +12,7 @@
   "dependencies": {
     "@vidro/core": "workspace:*",
     "@vidro/hibana": "workspace:*",
+    "@vidro/zod": "workspace:*",
     "hono": "^4.6.0",
     "zod": "catalog:"
   },

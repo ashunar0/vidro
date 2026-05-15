@@ -6,23 +6,14 @@
 
 import type { MetadataFn } from "@vidro/hibana";
 import { createRoute } from "@vidro/hibana/fs";
-import type { z } from "zod";
+import { fieldsFromZodError } from "@vidro/zod";
 import type { Post } from "../../domains/posts/schema.ts";
 import { postInputSchema } from "../../domains/posts/schema.ts";
 import { createPost, getPosts } from "../../domains/posts/service.ts";
 import { PostListPage } from "../../pages/PostListPage.tsx";
 import PostNewPage from "../../pages/PostNewPage.tsx";
 
-// zod ZodError → form field name → message map に変換する素朴 helper。
-// filesystem-based 版でも handler-based 版と同 logic を inline で複製している (= dogfood で痛みになったら util / pack に retreat)。
-const fieldsFromZodError = (err: z.ZodError): Record<string, string> => {
-  const fields: Record<string, string> = {};
-  for (const issue of err.issues) {
-    const key = issue.path[0];
-    if (typeof key === "string" && !(key in fields)) fields[key] = issue.message;
-  }
-  return fields;
-};
+// 第 27 周目 (= ADR 0083、F6 解消): inline 重複を `@vidro/zod` の sibling 共用 helper に置換。
 
 export const metadata: MetadataFn<{ posts: Post[] }> = ({ posts }) => ({
   title: `Posts (${posts.length})`,

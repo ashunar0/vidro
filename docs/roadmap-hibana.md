@@ -31,11 +31,15 @@ Vidro と Hibana の対比は短く下記。詳しくは設計書を参照する
 ```
 @vidro/core              ← reactive + JSX runtime (Vidro と共有、sibling 関係)
 @vidro/hibana            ← hibana() middleware + c.render API + Vite plugin (= 縦串 MVP の本体)
+@vidro/zod               ← fieldsFromZodError helper (Vidro と共有、ADR 0083 で sibling 共用)
 ─────────────────────
 (将来の opt-in pack 候補、まだ無い)
 @vidro/hibana-form       ← form helper、@vidro/form の Hibana 版相当
-@vidro/hibana-zod        ← validator middleware、@vidro/zod の Hibana 版相当
 ```
+
+`@vidro/hibana-zod` 当初案は ADR 0083 で却下 (= `@vidro/zod` の `fieldsFromZodError` を
+sibling 共用、別 package 不要)。`validateForm(c, schema)` 等 Hibana 固有の高 level helper
+需要が顕在化したら再起票する retreat path あり。
 
 Hibana 内部の層は単一パッケージ内のフォルダで `core / renderer / hono / vite / client`
 に分ける。core は外側を import しない一方通行ルールを守る (= 設計書「内部の層構造と

@@ -3,22 +3,13 @@
 
 import type { Metadata } from "@vidro/hibana";
 import { createRoute } from "@vidro/hibana/fs";
-import type { z } from "zod";
+import { fieldsFromZodError } from "@vidro/zod";
 import { getPost, updatePost } from "../../../domains/posts/service.ts";
 import { postInputSchema } from "../../../domains/posts/schema.ts";
 import { PostDetailPage } from "../../../pages/PostDetailPage.tsx";
 import PostEditPage from "../../../pages/PostEditPage.tsx";
 
-// inline 重複: handler-based 版 routes.ts + posts/index.tsx (= POST /posts) と同 logic。
-// Hibana validation helper が無いので route file ごとに同 logic を書く形 = dogfood F2 として memorize 予定。
-const fieldsFromZodError = (err: z.ZodError): Record<string, string> => {
-  const fields: Record<string, string> = {};
-  for (const issue of err.issues) {
-    const key = issue.path[0];
-    if (typeof key === "string" && !(key in fields)) fields[key] = issue.message;
-  }
-  return fields;
-};
+// 第 27 周目 (= ADR 0083、F6 解消): inline 重複を `@vidro/zod` の sibling 共用 helper に置換。
 
 export const metadata: Metadata = {
   title: "Post Detail — Hibana Demo FS",

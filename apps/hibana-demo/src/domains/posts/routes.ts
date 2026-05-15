@@ -7,8 +7,8 @@
 // 失敗時は同 page を values + errors 込みで再 render、成功時は redirect (= Rails 流 / "Pure server" 案 A)。
 
 import { Hono } from "hono";
-import type { z } from "zod";
 import { hibanaLayout } from "@vidro/hibana";
+import { fieldsFromZodError } from "@vidro/zod";
 import PostListPage from "./pages/PostListPage.tsx";
 import PostDetailPage from "./pages/PostDetailPage.tsx";
 import PostNewPage from "./pages/PostNewPage.tsx";
@@ -17,17 +17,8 @@ import { PostsLayout } from "./layouts/PostsLayout.tsx";
 import { createPost, deletePost, getPost, getPosts, updatePost } from "./service.ts";
 import { postInputSchema } from "./schema.ts";
 
-// zod ZodError → form field name → message map に変換する素朴 helper。
-// 同 field に複数 issue が来た場合は最初の 1 件のみ採用 (= 表示も 1 field 1 行で十分)。
-// Hibana に validation helper が無いので route file ごとに inline で書く形 = dogfood で痛みになったら util / pack に retreat。
-const fieldsFromZodError = (err: z.ZodError): Record<string, string> => {
-  const fields: Record<string, string> = {};
-  for (const issue of err.issues) {
-    const key = issue.path[0];
-    if (typeof key === "string" && !(key in fields)) fields[key] = issue.message;
-  }
-  return fields;
-};
+// 第 27 周目 (= ADR 0083、F6 解消): zod ZodError → form field name → message map の inline 重複を解消、
+// `@vidro/zod` の sibling 共用 helper に置換 (= Vidro/Hibana 共通の +pack tier helper)。
 
 // chain 形式で書く理由 (= Hono の TS 型 inference 要件):
 //   - `c.req.param("id")` の path param 型を narrow するため
